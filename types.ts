@@ -14,6 +14,9 @@ export enum FinalStatus {
 export interface User {
   name: string;
   category: string; 
+  plate?: string;
+  kmInicial?: number;
+  kmFinal?: number;
 }
 
 export interface BicycleData {

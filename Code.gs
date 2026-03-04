@@ -28,7 +28,7 @@ const COLUMN_INDICES = {
     TRAVA: 7, CARREGAMENTO: 8, ULTIMA_INFO: 9, LATITUDE: 10, LONGITUDE: 11
   },
   ACCESS: {
-    USUARIO: 1, LOGIN: 2, SENHA: 3, CATEGORIA: 4, STATUS_ONLINE: 5, GPS: 6
+    USUARIO: 1, LOGIN: 2, SENHA: 3, CATEGORIA: 4, STATUS_ONLINE: 5, GPS: 6, PLACA: 8, KM_INICIAL: 9, KM_FINAL: 10
   },
   REPORTS: {
     TIMESTAMP: 1, PATRIMONIO: 2, STATUS: 3, OBSERVACAO: 4, MOTORISTA: 5,
@@ -153,7 +153,8 @@ function doPost(e) {
     
     switch (action) {
       case 'getDriversSummary': response = { ...getDriversSummary(request.timeRange), version: BACKEND_VERSION }; break;
-      case 'login': response = { ...handleLogin(request.login, request.password), version: BACKEND_VERSION }; break;
+      case 'getVehiclePlates': response = { ...getVehiclePlates(), version: BACKEND_VERSION }; break;
+      case 'login': response = { ...handleLogin(request.login, request.password, request.plate, request.kmInicial), version: BACKEND_VERSION }; break;
       case 'logout': response = { ...handleLogout(request.userName), version: BACKEND_VERSION }; break;
       case 'search': response = { ...searchBike(request.bikeNumber), version: BACKEND_VERSION }; break;
       case 'getRequests': response = { ...getRequests(request.driverName, request.category), version: BACKEND_VERSION }; break;
@@ -163,7 +164,7 @@ function doPost(e) {
       case 'declineRequest': response = { ...declineRequest(request.requestId, request.driverName), version: BACKEND_VERSION }; break;
       case 'getStations': response = { ...getStations(), version: BACKEND_VERSION }; break;
       case 'getMotoristas': response = { ...getMotoristas(), version: BACKEND_VERSION }; break;
-      case 'logReport': response = { ...logReport(request.rowData), version: BACKEND_VERSION }; break;
+      case 'logReport': response = { ...logReport(request.rowData, request.kmFinal), version: BACKEND_VERSION }; break;
       case 'updateBikeAssignment': response = { ...updateBikeAssignment(request.bikeNumber, request.driverName), version: BACKEND_VERSION }; break;
       case 'getAllPatrimonioNumbers': response = { ...getAllPatrimonioNumbers(), version: BACKEND_VERSION }; break;
       case 'clearDriverRoute': response = { ...clearDriverRoute(request.driverName), version: BACKEND_VERSION }; break;
@@ -199,7 +200,39 @@ function doPost(e) {
 
 // --- LÓGICA DAS AÇÕES (REESCRITAS COM ÍNDICES FIXOS) ---
 
-function handleLogin(login, password) {
+function getVehiclePlates() {
+  try {
+    const sheet = ss.getSheetByName(ACCESS_SHEET_NAME);
+    if (!sheet) throw new Error(`Planilha "${ACCESS_SHEET_NAME}" não encontrada.`);
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { success: true, data: [] };
+
+    const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+    const platesMap = {};
+
+    data.forEach(row => {
+      const plate = (row[COLUMN_INDICES.ACCESS.PLACA - 1] || '').toString().trim();
+      if (plate) {
+        const kmFinal = parseFloat(row[COLUMN_INDICES.ACCESS.KM_FINAL - 1]) || 0;
+        // Mantemos o maior KM final encontrado para cada placa (ou o último, mas max é mais seguro para odômetro)
+        if (!platesMap[plate] || kmFinal > platesMap[plate]) {
+          platesMap[plate] = kmFinal;
+        }
+      }
+    });
+
+    const plates = Object.keys(platesMap).map(plate => ({
+      plate: plate,
+      lastKmFinal: platesMap[plate]
+    }));
+
+    return { success: true, data: plates };
+  } catch (e) {
+    return { success: false, error: "Erro ao buscar placas: " + e.message };
+  }
+}
+
+function handleLogin(login, password, plate, kmInicial) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
@@ -209,15 +242,12 @@ function handleLogin(login, password) {
     const lastRow = sheet.getLastRow();
     if (lastRow < 2) return { success: false, error: 'Nenhum usuário cadastrado.' };
 
-    // Busca todos os dados de uma vez e usa getDisplayValues para garantir que tudo seja string.
-    // Isso é mais robusto contra erros de formatação na planilha (ex: número tratado como texto).
     const dataRange = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
     const values = dataRange.getDisplayValues();
 
     const loginTrimmedLower = login.trim().toLowerCase();
     let foundRowIndex = -1;
 
-    // Itera manualmente sobre os valores para encontrar o login correspondente.
     for (let i = 0; i < values.length; i++) {
       const rowLogin = (values[i][COLUMN_INDICES.ACCESS.LOGIN - 1] || '').trim().toLowerCase();
       if (rowLogin === loginTrimmedLower) {
@@ -230,19 +260,45 @@ function handleLogin(login, password) {
       return { success: false, error: `Login "${login}" não encontrado.` };
     }
 
-    // Calcula o índice real da linha na planilha (soma 2 porque a busca começa na linha 2).
     const rowIndexInSheet = foundRowIndex + 2; 
     const rowData = values[foundRowIndex];
     
     const storedPassword = (rowData[COLUMN_INDICES.ACCESS.SENHA - 1] || '').toString().trim();
 
     if (storedPassword === password.toString().trim()) {
+      // Validação de Placa e KM se fornecidos (Login completo)
+      if (plate && kmInicial !== undefined) {
+        // Busca o KM final mais recente para esta placa em toda a planilha
+        const allPlates = getVehiclePlates();
+        if (allPlates.success) {
+          const vehicle = allPlates.data.find(v => v.plate === plate);
+          if (vehicle) {
+            const expectedKm = vehicle.lastKmFinal;
+            if (parseFloat(kmInicial) !== expectedKm) {
+              return { 
+                success: false, 
+                error: `KM Inicial incorreto para a placa ${plate}. O KM esperado é ${expectedKm}.` 
+              };
+            }
+          }
+        }
+        
+        // Atualiza placa e KM inicial do usuário
+        sheet.getRange(rowIndexInSheet, COLUMN_INDICES.ACCESS.PLACA).setValue(plate);
+        sheet.getRange(rowIndexInSheet, COLUMN_INDICES.ACCESS.KM_INICIAL).setValue(kmInicial);
+        // Limpa o KM final anterior para o novo turno
+        sheet.getRange(rowIndexInSheet, COLUMN_INDICES.ACCESS.KM_FINAL).setValue('');
+      }
+
       sheet.getRange(rowIndexInSheet, COLUMN_INDICES.ACCESS.STATUS_ONLINE).setValue('LOGADO');
+      
       return { 
         success: true, 
         user: { 
           name: rowData[COLUMN_INDICES.ACCESS.USUARIO - 1], 
-          category: rowData[COLUMN_INDICES.ACCESS.CATEGORIA - 1] || 'MOTORISTA' 
+          category: rowData[COLUMN_INDICES.ACCESS.CATEGORIA - 1] || 'MOTORISTA',
+          plate: plate || rowData[COLUMN_INDICES.ACCESS.PLACA - 1],
+          kmInicial: kmInicial !== undefined ? kmInicial : parseFloat(rowData[COLUMN_INDICES.ACCESS.KM_INICIAL - 1]) || 0
         } 
       };
     } else {
@@ -748,7 +804,7 @@ function getMotoristas() {
   return { success: true, data: motoristas };
 }
 
-function logReport(rowData) {
+function logReport(rowData, kmFinal) {
   if (!Array.isArray(rowData) || rowData.length === 0) {
     return { success: false, error: "Dados do relatório inválidos ou ausentes." };
   }
@@ -767,6 +823,21 @@ function logReport(rowData) {
     const observacao = (rowData[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
     const motorista = (rowData[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
     
+    // Atualização de KM Final se fornecido
+    if (kmFinal !== undefined && motorista) {
+      const accessSheet = ss.getSheetByName(ACCESS_SHEET_NAME);
+      if (accessSheet) {
+        const lastRowAccess = accessSheet.getLastRow();
+        const accessData = accessSheet.getRange(2, 1, lastRowAccess - 1, 1).getValues();
+        for (let i = 0; i < accessData.length; i++) {
+          if (accessData[i][0].toString().trim().toLowerCase() === motorista.toLowerCase()) {
+            accessSheet.getRange(i + 2, COLUMN_INDICES.ACCESS.KM_FINAL).setValue(kmFinal);
+            break;
+          }
+        }
+      }
+    }
+
     // Sincroniza com a aba de Solicitações para o histórico
     syncWithRequests(patrimonio, status, observacao, motorista);
 

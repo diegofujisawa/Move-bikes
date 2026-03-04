@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BicycleIcon, UserIcon, AlertTriangleIcon } from './icons';
+import { BicycleIcon, UserIcon, LockClosedIcon, AlertTriangleIcon } from './icons';
 import { User } from '../types';
 import { apiCall, checkApiConnection } from '../api';
 
@@ -9,7 +9,12 @@ interface LoginScreenProps {
 
 const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const [login, setLogin] = useState('');
+  const [password, setPassword] = useState('');
+  const [plate, setPlate] = useState('');
+  const [kmInicial, setKmInicial] = useState('');
+  const [plates, setPlates] = useState<{ plate: string, lastKmFinal: number }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingPlates, setIsLoadingPlates] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'testing' | 'ok' | 'error'>('testing');
   const [connectionError, setConnectionError] = useState('');
@@ -21,12 +26,27 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
       if (result.status === 'ok') {
         setApiVersion(result.version || 'N/A');
         setConnectionStatus('ok');
+        fetchPlates();
       } else {
         throw new Error('Resposta de teste inválida.');
       }
     } catch (err: any) {
       setConnectionStatus('error');
       setConnectionError(err.message || 'Erro desconhecido.');
+    }
+  };
+
+  const fetchPlates = async () => {
+    setIsLoadingPlates(true);
+    try {
+      const result = await apiCall({ action: 'getVehiclePlates' });
+      if (result.success) {
+        setPlates(result.data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch plates:", err);
+    } finally {
+      setIsLoadingPlates(false);
     }
   };
 
@@ -53,21 +73,37 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
       const result = await apiCall({
         action: 'login',
         login: login.trim(),
+        password: password,
+        plate: plate,
+        kmInicial: kmInicial ? parseFloat(kmInicial) : undefined
       });
 
       if (result.user) {
         onLogin({
           name: result.user.name,
           category: result.user.category,
+          plate: result.user.plate,
+          kmInicial: result.user.kmInicial
         });
       } else {
-        throw new Error('Resposta do servidor inválida ou incompleta.');
+        throw new Error(result.error || 'Resposta do servidor inválida ou incompleta.');
       }
     } catch (err) {
       console.error("Login failed:", err);
       setError(err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handlePlateChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const selectedPlate = e.target.value;
+    setPlate(selectedPlate);
+    const vehicle = plates.find(p => p.plate === selectedPlate);
+    if (vehicle) {
+      setKmInicial(vehicle.lastKmFinal.toString());
+    } else {
+      setKmInicial('');
     }
   };
 
@@ -123,10 +159,10 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   };
 
   return (
-    <div className="bg-white p-8 rounded-xl shadow-lg animate-fade-in-down">
+    <div className="bg-white p-8 rounded-xl shadow-lg animate-fade-in-down w-full max-w-md">
       <div className="flex flex-col items-center mb-6">
         <BicycleIcon className="w-16 h-16 text-blue-600" />
-        <h1 className="text-3xl font-bold text-gray-800 mt-4">Registro de Recolha</h1>
+        <h1 className="text-3xl font-bold text-gray-800 mt-4 text-center">Registro de Recolha</h1>
         <p className="text-gray-500 mt-1">Identifique-se para continuar</p>
       </div>
       
@@ -135,25 +171,90 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label htmlFor="login" className="block text-sm font-medium text-gray-700">
-            Login
-          </label>
-          <div className="mt-1 relative rounded-md shadow-sm">
-             <div className="pointer-events-none absolute inset-y-0 left-0 pl-3 flex items-center">
-                <UserIcon className="h-5 w-5 text-gray-400" />
+        <div className="grid grid-cols-1 gap-4">
+          <div>
+            <label htmlFor="login" className="block text-sm font-medium text-gray-700">
+              Login
+            </label>
+            <div className="mt-1 relative rounded-md shadow-sm">
+               <div className="pointer-events-none absolute inset-y-0 left-0 pl-3 flex items-center">
+                  <UserIcon className="h-5 w-5 text-gray-400" />
+              </div>
+              <input
+                type="text"
+                id="login"
+                value={login}
+                onChange={(e) => setLogin(e.target.value)}
+                className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                placeholder="Digite seu login"
+                required
+                autoCapitalize="none"
+                disabled={connectionStatus !== 'ok'}
+              />
             </div>
-            <input
-              type="text"
-              id="login"
-              value={login}
-              onChange={(e) => setLogin(e.target.value)}
-              className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-              placeholder="Digite seu login"
-              required
-              autoCapitalize="none"
-              disabled={connectionStatus !== 'ok'}
-            />
+          </div>
+          <div>
+            <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+              Senha
+            </label>
+            <div className="mt-1 relative rounded-md shadow-sm">
+               <div className="pointer-events-none absolute inset-y-0 left-0 pl-3 flex items-center">
+                  <LockClosedIcon className="h-5 w-5 text-gray-400" />
+              </div>
+              <input
+                type="password"
+                id="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                placeholder="Digite sua senha"
+                required
+                disabled={connectionStatus !== 'ok'}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-4 border-t border-gray-100">
+          <p className="text-xs font-bold text-gray-400 uppercase mb-3">Informações do Veículo</p>
+          <div className="grid grid-cols-1 gap-4">
+            <div>
+              <label htmlFor="plate" className="block text-sm font-medium text-gray-700">
+                Placa do Veículo
+              </label>
+              <select
+                id="plate"
+                value={plate}
+                onChange={handlePlateChange}
+                className="mt-1 block w-full pl-3 pr-10 py-3 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+                required
+                disabled={connectionStatus !== 'ok' || isLoadingPlates}
+              >
+                <option value="">Selecione a placa</option>
+                {plates.map((p) => (
+                  <option key={p.plate} value={p.plate}>
+                    {p.plate}
+                  </option>
+                ))}
+              </select>
+              {isLoadingPlates && <p className="text-[10px] text-blue-500 mt-1">Carregando placas...</p>}
+            </div>
+            <div>
+              <label htmlFor="kmInicial" className="block text-sm font-medium text-gray-700">
+                KM Inicial
+              </label>
+              <input
+                type="number"
+                id="kmInicial"
+                value={kmInicial}
+                onChange={(e) => setKmInicial(e.target.value)}
+                className="mt-1 block w-full px-3 py-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                placeholder="KM do odômetro"
+                required
+                disabled={connectionStatus !== 'ok'}
+              />
+              <p className="text-[10px] text-gray-400 mt-1 italic">Deve ser igual ao KM final do último turno.</p>
+            </div>
           </div>
         </div>
 
@@ -165,13 +266,13 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
 
         <button
           type="submit"
-          disabled={!login.trim() || isLoading || connectionStatus !== 'ok'}
-          className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+          disabled={!login.trim() || !plate || !kmInicial || isLoading || connectionStatus !== 'ok'}
+          className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors mt-6"
         >
           {isLoading ? (
             <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
           ) : (
-            'Entrar'
+            'Entrar e Iniciar Turno'
           )}
         </button>
       </form>

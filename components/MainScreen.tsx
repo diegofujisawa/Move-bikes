@@ -14,6 +14,7 @@ import { apiCall, apiGetCall } from '../api';
 interface MainScreenProps {
   driverName: string;
   category: string;
+  kmInicial?: number;
   onLogout: () => void;
   onShowMap: () => void; // Prop para mostrar o mapa
 }
@@ -49,7 +50,7 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
     return R * c; // Distance in km
 };
 
-const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, onLogout, onShowMap }) => {
+const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial, onLogout, onShowMap }) => {
     const [gpsError, setGpsError] = useState<string | null>(null);
     const [routeDistances, setRouteDistances] = useState<Record<string, { distance: string, duration: string, value: number }>>({});
     const [dailyActivity] = useState<DailyActivity>({
@@ -1868,6 +1869,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, onLogout,
                 isOpen={isReportModalOpen}
                 onClose={() => setReportModalOpen(false)}
                 driverName={driverName}
+                kmInicial={kmInicial}
                 activity={dailyActivity}
             />
 
