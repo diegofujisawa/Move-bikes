@@ -1,4 +1,4 @@
-import { SCRIPT_URL as RAW_SCRIPT_URL } from './constants';
+import { SCRIPT_URL as RAW_SCRIPT_URL } from './components/constants';
 
 const SCRIPT_URL = RAW_SCRIPT_URL.trim();
 

@@ -99,12 +99,8 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const handlePlateChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedPlate = e.target.value;
     setPlate(selectedPlate);
-    const vehicle = plates.find(p => p.plate === selectedPlate);
-    if (vehicle) {
-      setKmInicial(vehicle.lastKmFinal.toString());
-    } else {
-      setKmInicial('');
-    }
+    // REMOVIDO: O app não deve sugerir o KM correto nem manter preenchido.
+    setKmInicial('');
   };
 
   const renderConnectionStatus = () => {

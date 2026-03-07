@@ -73,6 +73,7 @@ const App: React.FC = () => {
             <MainScreen 
               driverName={user.name} 
               category={user.category} 
+              plate={user.plate}
               kmInicial={user.kmInicial}
               onLogout={handleLogout}
               onUpdateUser={(updates) => setUser(prev => prev ? { ...prev, ...updates } : null)}

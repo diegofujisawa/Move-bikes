@@ -180,7 +180,7 @@ function doPost(e) {
       case 'declineRequest': response = { ...declineRequest(request.requestId, request.driverName), version: BACKEND_VERSION }; break;
       case 'getStations': response = { ...getStations(), version: BACKEND_VERSION }; break;
       case 'getMotoristas': response = { ...getMotoristas(), version: BACKEND_VERSION }; break;
-      case 'logReport': response = { ...logReport(request.rowData, request.kmFinal), version: BACKEND_VERSION }; break;
+      case 'logReport': response = { ...logReport(request.rowData, request.kmFinal, request.plate), version: BACKEND_VERSION }; break;
       case 'updateBikeAssignment': response = { ...updateBikeAssignment(request.bikeNumber, request.driverName), version: BACKEND_VERSION }; break;
       case 'getAllPatrimonioNumbers': response = { ...getAllPatrimonioNumbers(), version: BACKEND_VERSION }; break;
       case 'clearDriverRoute': response = { ...clearDriverRoute(request.driverName), version: BACKEND_VERSION }; break;
@@ -202,6 +202,7 @@ function doPost(e) {
       case 'confirmVandalizedFound': response = { ...confirmVandalizedFound(request.alertId, request.driverName), version: BACKEND_VERSION }; break;
       case 'getRouteDetails': response = { ...getRouteDetails(request.driverName, request.bikeNumbers), version: BACKEND_VERSION }; break;
       case 'switchVehicle': response = { ...switchVehicle(request.driverName, request.plate, request.kmInicial), version: BACKEND_VERSION }; break;
+      case 'saveDailySummary': response = { ...saveDailySummary(request.summaryData), version: BACKEND_VERSION }; break;
       case 'getAdminAlerts': response = { ...getAdminAlerts(request.adminName), version: BACKEND_VERSION }; break;
       case 'clearAdminAlerts': response = { ...clearAdminAlerts(request.adminName), version: BACKEND_VERSION }; break;
       default: response = { success: false, error: 'Ação desconhecida: ' + action, version: BACKEND_VERSION }; break;
@@ -291,23 +292,19 @@ function handleLogin(login, password, plate, kmInicial) {
           return { success: false, error: 'Placa e KM Inicial são obrigatórios para motoristas.' };
         }
 
-        // Busca o KM final mais recente para esta placa em toda a planilha
-        const allPlates = getVehiclePlates();
-        if (allPlates.success) {
-          const vehicle = allPlates.data.find(v => v.plate === plate);
-          if (vehicle) {
-            const expectedKm = vehicle.lastKmFinal;
-            if (parseFloat(kmInicial) !== expectedKm) {
-              return { 
-                success: false, 
-                error: `KM Inicial incorreto para a placa ${plate}. Por favor, verifique o odômetro.` 
-              };
-            }
-          }
-        }
+        // REMOVIDO: Validação estrita de KM Inicial contra o último KM Final registrado.
+        // O motorista deve digitar o que vê no painel, que passa a ser a nova verdade.
         
-        // Atualiza apenas a placa do usuário na planilha de Acesso
-        sheet.getRange(rowIndexInSheet, COLUMN_INDICES.ACCESS.PLACA).setValue(plate);
+        const isFixedPlate = ['SYS4J63', 'TEG7C35', 'TEMA047'].includes(plate.toUpperCase());
+        
+        // Atualiza a placa do usuário na planilha de Acesso APENAS se não for uma placa fixa
+        // Isso evita duplicar a placa na coluna H (Placa)
+        if (!isFixedPlate) {
+          sheet.getRange(rowIndexInSheet, COLUMN_INDICES.ACCESS.PLACA).setValue(plate);
+        } else {
+          // Se for placa fixa, garantimos que a linha do motorista não tenha placa para não duplicar
+          sheet.getRange(rowIndexInSheet, COLUMN_INDICES.ACCESS.PLACA).setValue('');
+        }
         
         // Atualiza o KM na linha do VEÍCULO (independente do motorista)
         updateVehicleKm(plate, kmInicial, undefined);
@@ -843,10 +840,10 @@ function saveDailySummary(summaryData) {
     if (!sheet) {
       sheet = ss.insertSheet(DAILY_SUMMARY_SHEET_NAME);
       sheet.appendRow([
-        'Data', 'Motorista', 'Placa(s)', 'KM Total', 'Bateria Baixa', 'Manut. Bicicleta', 'Manut. Locker', 
+        'Data', 'Motorista', 'Placa(s)', 'KM Total', 'Bateria Baixa', 'Manut. Bicicleta', 'Manut. Locker', 'Solicitado Recolha',
         'Remanejadas (Estação)', 'Ocorrências', 'Não Encontradas', 'Vandalizadas', 'Início', 'Fim', 'Observações'
       ]);
-      sheet.getRange(1, 1, 1, 14).setFontWeight('bold').setBackground('#f3f3f3');
+      sheet.getRange(1, 1, 1, 15).setFontWeight('bold').setBackground('#f3f3f3');
       sheet.setFrozenRows(1);
     }
 
@@ -858,6 +855,7 @@ function saveDailySummary(summaryData) {
       summaryData.bateriaCount,
       summaryData.manutBikeCount,
       summaryData.manutLockerCount,
+      summaryData.solicitadoRecolhaCount || 0,
       summaryData.remanejadasCount,
       summaryData.ocorrenciasCount,
       summaryData.naoEncontradasCount,
@@ -874,7 +872,7 @@ function saveDailySummary(summaryData) {
   }
 }
 
-function logReport(rowData, kmFinal) {
+function logReport(rowData, kmFinal, plate) {
   if (!Array.isArray(rowData) || rowData.length === 0) {
     return { success: false, error: "Dados do relatório inválidos ou ausentes." };
   }
@@ -901,10 +899,10 @@ function logReport(rowData, kmFinal) {
         const rowStatus = row[COLUMN_INDICES.REPORTS.STATUS - 1];
         const rowMotorista = row[COLUMN_INDICES.REPORTS.MOTORISTA - 1];
 
-        // Se for a mesma bike, mesmo status, mesmo motorista e em menos de 10 segundos
-        if (rowPatrimonio == patrimonio && rowStatus == status && rowMotorista == motorista) {
+        // Se for a mesma bike, mesmo status, mesmo motorista e em menos de 60 segundos
+        if (String(rowPatrimonio) === String(patrimonio) && String(rowStatus) === String(status) && String(rowMotorista) === String(motorista)) {
           const diff = (now.getTime() - rowTimestamp.getTime()) / 1000;
-          if (diff < 10) {
+          if (diff < 60) {
             return { success: true, message: "Registro duplicado ignorado." };
           }
         }
@@ -928,22 +926,26 @@ function logReport(rowData, kmFinal) {
     const motorista = (rowData[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
     
     // Atualização de KM Final se fornecido
-    if (kmFinal !== undefined && motorista) {
-      const accessSheet = ss.getSheetByName(ACCESS_SHEET_NAME);
-      if (accessSheet) {
-        const lastRowAccess = accessSheet.getLastRow();
-        const accessData = accessSheet.getRange(2, 1, lastRowAccess - 1, 1).getValues();
-        for (let i = 0; i < accessData.length; i++) {
-          if (accessData[i][0].toString().trim().toLowerCase() === motorista.toLowerCase()) {
-            // Busca a placa atual do motorista
-            const currentPlate = accessSheet.getRange(i + 2, COLUMN_INDICES.ACCESS.PLACA).getValue();
-            if (currentPlate) {
-              // Atualiza o KM na linha do VEÍCULO
-              updateVehicleKm(currentPlate, undefined, kmFinal);
+    if (kmFinal !== undefined && (plate || motorista)) {
+      let plateToUpdate = plate;
+      
+      // Se não veio a placa do frontend, tenta buscar na planilha de acesso
+      if (!plateToUpdate && motorista) {
+        const accessSheet = ss.getSheetByName(ACCESS_SHEET_NAME);
+        if (accessSheet) {
+          const lastRowAccess = accessSheet.getLastRow();
+          const accessData = accessSheet.getRange(2, 1, lastRowAccess - 1, 1).getValues();
+          for (let i = 0; i < accessData.length; i++) {
+            if (accessData[i][0].toString().trim().toLowerCase() === motorista.toLowerCase()) {
+              plateToUpdate = accessSheet.getRange(i + 2, COLUMN_INDICES.ACCESS.PLACA).getValue();
+              break;
             }
-            break;
           }
         }
+      }
+      
+      if (plateToUpdate) {
+        updateVehicleKm(plateToUpdate, undefined, kmFinal);
       }
     }
 
@@ -1578,6 +1580,7 @@ function finalizeCollectedBike(request) {
     const { driverName, bikeNumber, finalStatus, finalObservation, routeBikes, collectedBikes } = request;
     
     // 1. Get bike details for the report (if not provided)
+    // OTIMIZAÇÃO: Busca os detalhes da bike uma única vez
     const bikeResult = searchBike(bikeNumber);
     if (!bikeResult.success) throw new Error(`Bicicleta ${bikeNumber} não encontrada.`);
     const bikeDetails = bikeResult.data;
@@ -1587,21 +1590,26 @@ function finalizeCollectedBike(request) {
       formatDateTime(new Date()), bikeNumber, finalStatus, finalObservation, driverName,
       bikeDetails['Status'], bikeDetails['Bateria'], bikeDetails['Trava'], bikeDetails['Localidade']
     ];
-    logReport(rowData);
     
-    // 3. Update driver state
+    // OTIMIZAÇÃO: Chama logReport e updateDriverState de forma sequencial mas eficiente
+    logReport(rowData);
     updateDriverState(driverName, routeBikes, collectedBikes);
     
     return { success: true };
   } catch (error) {
+    console.error("Erro em finalizeCollectedBike:", error);
     return { success: false, error: error.message };
   }
 }
 
 function updateDriverState(driverName, routeBikes, collectedBikes) {
   const lock = LockService.getScriptLock();
-  lock.waitLock(10000);
   try {
+    // Tenta obter o lock por até 5 segundos (reduzido de 10 para ser mais ágil)
+    if (!lock.tryLock(5000)) {
+       console.warn("Não foi possível obter o lock para updateDriverState. Continuando sem lock para evitar lentidão extrema.");
+    }
+    
     const sheet = ss.getSheetByName(STATE_SHEET_NAME);
     if (!sheet) throw new Error(`Planilha "${STATE_SHEET_NAME}" não encontrada.`);
 
@@ -1609,6 +1617,7 @@ function updateDriverState(driverName, routeBikes, collectedBikes) {
     const lastRow = sheet.getLastRow();
     let rowIndex = -1;
 
+    // OTIMIZAÇÃO: Busca o motorista de forma mais direta
     if (lastRow >= 2) {
       const driverColumnRange = sheet.getRange(2, driverCol, lastRow - 1, 1);
       const textFinder = driverColumnRange.createTextFinder(String(driverName).trim()).matchEntireCell(true);
@@ -1618,13 +1627,15 @@ function updateDriverState(driverName, routeBikes, collectedBikes) {
       }
     }
 
-    const routeString = Array.isArray(routeBikes) ? routeBikes.join(', ') : '';
-    const collectedString = Array.isArray(collectedBikes) ? collectedBikes.join(', ') : '';
+    const routeString = Array.isArray(routeBikes) ? [...new Set(routeBikes.map(b => String(b).trim()))].filter(Boolean).join(', ') : '';
+    const collectedString = Array.isArray(collectedBikes) ? [...new Set(collectedBikes.map(b => String(b).trim()))].filter(Boolean).join(', ') : '';
 
     if (rowIndex !== -1) {
-      // Atualiza a linha existente
-      sheet.getRange(rowIndex, COLUMN_INDICES.STATE.ROTEIRO).setValue(routeString);
-      sheet.getRange(rowIndex, COLUMN_INDICES.STATE.RECOLHIDAS).setValue(collectedString);
+      // OTIMIZAÇÃO: Atualiza as duas colunas em uma única chamada se forem adjacentes (não são, então usamos batch se possível)
+      // No caso atual, as colunas são 3 e 4, então podemos atualizar o range (rowIndex, 3, 1, 2)
+      const range = sheet.getRange(rowIndex, Math.min(COLUMN_INDICES.STATE.ROTEIRO, COLUMN_INDICES.STATE.RECOLHIDAS), 1, 2);
+      // Assume que ROTEIRO é 3 e RECOLHIDAS é 4
+      range.setValues([[routeString, collectedString]]);
     } else {
       // Adiciona uma nova linha se o motorista não existir
       const newRow = new Array(sheet.getLastColumn()).fill('');
@@ -1635,6 +1646,9 @@ function updateDriverState(driverName, routeBikes, collectedBikes) {
     }
 
     return { success: true };
+  } catch (e) {
+    console.error("Erro em updateDriverState:", e);
+    return { success: false, error: e.message };
   } finally {
     lock.releaseLock();
   }
@@ -1692,7 +1706,8 @@ function getDailyReportData(driverName, timeRange = 'day') {
         counts: {
           bateriaBaixa: 0,
           manutencaoBicicleta: 0,
-          manutencaoLocker: 0
+          manutencaoLocker: 0,
+          solicitadoRecolha: 0
         }
     };
 
@@ -1739,6 +1754,18 @@ function getDailyReportData(driverName, timeRange = 'day') {
                     if (statusLower === 'vandalizada') {
                         report.vandalizadas.push(patrimonio);
                     }
+                    
+                    // Contabiliza sub-status da Filial baseado na observação
+                    const obsLower = observacao.toLowerCase();
+                    if (obsLower.includes('bateria baixa')) {
+                        report.counts.bateriaBaixa++;
+                    } else if (obsLower.includes('manutenção bicicleta') || obsLower.includes('manutencao bicicleta')) {
+                        report.counts.manutencaoBicicleta++;
+                    } else if (obsLower.includes('manutenção locker') || obsLower.includes('manutencao locker')) {
+                        report.counts.manutencaoLocker++;
+                    } else if (obsLower.includes('solicitado recolha')) {
+                        report.counts.solicitadoRecolha++;
+                    }
                 } else if (statusLower === 'estação' || statusLower === 'estacao') {
                     report.remanejadas.push(patrimonio);
                     const stationName = (observacao || 'Estação').trim();
@@ -1764,7 +1791,7 @@ function getDailyReportData(driverName, timeRange = 'day') {
       });
     });
 
-    // Processa a aba Solicitacao para Ocorrências
+    // Processa a aba Solicitacao para Ocorrências (apenas para a lista de ocorrências, os contadores agora vêm do Relatório)
     if (requestSheet.getLastRow() > 1) {
         const requestData = requestSheet.getRange(2, 1, requestSheet.getLastRow() - 1, requestSheet.getLastColumn()).getValues();
         requestData.forEach(row => {
@@ -1777,15 +1804,6 @@ function getDailyReportData(driverName, timeRange = 'day') {
                 if (timestamp >= filterDate && timestamp <= todayEnd) {
                     const patrimonio = (row[COLUMN_INDICES.REQUESTS.PATRIMONIO - 1] || '').toString().trim();
                     const ocorrencia = (row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '').toString().trim();
-                    const ocorrenciaLower = ocorrencia.toLowerCase();
-
-                    if (ocorrenciaLower.includes('bateria')) {
-                      report.counts.bateriaBaixa++;
-                    } else if (ocorrenciaLower.includes('manutenção bicicleta') || ocorrenciaLower.includes('manutencao bicicleta')) {
-                      report.counts.manutencaoBicicleta++;
-                    } else if (ocorrenciaLower.includes('manutenção locker') || ocorrenciaLower.includes('manutencao locker')) {
-                      report.counts.manutencaoLocker++;
-                    }
 
                     if (!local.toLowerCase().includes('roteiro')) {
                         report.ocorrencias.push(`${patrimonio}: ${ocorrencia}`);
@@ -2181,23 +2199,18 @@ function switchVehicle(driverName, plate, kmInicial) {
 
     const rowIndexInSheet = foundRowIndex + 2; 
 
-    // Validação de Placa e KM
-    const allPlates = getVehiclePlates();
-    if (allPlates.success) {
-      const vehicle = allPlates.data.find(v => v.plate === plate);
-      if (vehicle) {
-        const expectedKm = vehicle.lastKmFinal;
-        if (parseFloat(kmInicial) !== expectedKm) {
-          return { 
-            success: false, 
-            error: `KM Inicial incorreto para a placa ${plate}. Por favor, verifique o odômetro.` 
-          };
-        }
-      }
-    }
+    // REMOVIDO: Validação estrita de KM Inicial contra o último KM Final registrado.
+    // O motorista deve digitar o que vê no painel.
     
-    // Atualiza apenas a placa do usuário na planilha de Acesso
-    sheet.getRange(rowIndexInSheet, COLUMN_INDICES.ACCESS.PLACA).setValue(plate);
+    const isFixedPlate = ['SYS4J63', 'TEG7C35', 'TEMA047'].includes(plate.toUpperCase());
+
+    // Atualiza a placa do usuário na planilha de Acesso APENAS se não for uma placa fixa
+    if (!isFixedPlate) {
+      sheet.getRange(rowIndexInSheet, COLUMN_INDICES.ACCESS.PLACA).setValue(plate);
+    } else {
+      // Se for placa fixa, garantimos que a linha do motorista não tenha placa para não duplicar
+      sheet.getRange(rowIndexInSheet, COLUMN_INDICES.ACCESS.PLACA).setValue('');
+    }
     
     // Atualiza o KM na linha do VEÍCULO (independente do motorista)
     updateVehicleKm(plate, kmInicial, undefined);
@@ -2221,20 +2234,31 @@ function updateVehicleKm(plate, kmInicial, kmFinal) {
   const sheet = ss.getSheetByName(ACCESS_SHEET_NAME);
   if (!sheet) return;
   
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
-  
-  const plates = sheet.getRange(2, COLUMN_INDICES.ACCESS.PLACA, lastRow - 1, 1).getValues();
   let vehicleRowIndex = -1;
+  const plateUpper = plate.toString().trim().toUpperCase();
   
-  for (let i = 0; i < plates.length; i++) {
-    const p = plates[i][0].toString().trim();
-    if (p.toLowerCase() === plate.toLowerCase()) {
-      // Verifica se a coluna A (USUARIO) está vazia para garantir que é a linha do veículo
-      const userVal = sheet.getRange(i + 2, COLUMN_INDICES.ACCESS.USUARIO).getValue();
-      if (!userVal || userVal.toString().trim() === "") {
-        vehicleRowIndex = i + 2;
-        break;
+  // Mapeamento de linhas fixas para placas específicas (conforme solicitado pelo usuário)
+  if (plateUpper === 'SYS4J63') {
+    vehicleRowIndex = 2;
+  } else if (plateUpper === 'TEG7C35') {
+    vehicleRowIndex = 3;
+  } else if (plateUpper === 'TEMA047') {
+    vehicleRowIndex = 4;
+  } else {
+    // Fallback para busca dinâmica se não for uma das placas fixas
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      const plates = sheet.getRange(2, COLUMN_INDICES.ACCESS.PLACA, lastRow - 1, 1).getValues();
+      for (let i = 0; i < plates.length; i++) {
+        const p = plates[i][0].toString().trim().toUpperCase();
+        if (p === plateUpper) {
+          // Verifica se a coluna A (USUARIO) está vazia para garantir que é a linha do veículo
+          const userVal = sheet.getRange(i + 2, COLUMN_INDICES.ACCESS.USUARIO).getValue();
+          if (!userVal || userVal.toString().trim() === "") {
+            vehicleRowIndex = i + 2;
+            break;
+          }
+        }
       }
     }
   }
@@ -2401,8 +2425,10 @@ function checkDivergences(rowData) {
   const motorista = (rowData[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
   const statusSistema = (rowData[COLUMN_INDICES.REPORTS.STATUS_SISTEMA - 1] || '').toString().trim();
   const bateriaRaw = rowData[COLUMN_INDICES.REPORTS.BATERIA - 1];
-  const bVal = parseFloat(bateriaRaw) || 0;
-  const bateria = bVal > 1 ? Math.round(bVal) : Math.round(bVal * 100);
+  const bVal = parseFloat(String(bateriaRaw).replace('%', '').replace(',', '.')) || 0;
+  // Se o valor for <= 1, assumimos que é decimal (ex: 0.95 -> 95%, 1 -> 100%)
+  // Se for > 1, assumimos que já é o percentual inteiro (ex: 95 -> 95%)
+  const bateria = bVal <= 1 ? Math.round(bVal * 100) : Math.round(bVal);
   const localidade = (rowData[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] || '').toString().trim();
 
   const filiais = ['Filial', 'Serttel Filial SJC', 'Serttel Filial 1'];

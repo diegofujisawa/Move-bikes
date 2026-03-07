@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { DailyActivity, BicycleData, PickupRequest, DriverLocation } from '../types';
+import { BicycleData, PickupRequest, DriverLocation } from '../types';
 import { LogoutIcon, PlusIcon, PlusPlusIcon, MapIcon, SheetIcon, SearchIcon, AlertIcon, CalendarIcon, CarIcon, XIcon, BicycleIcon, MovingIcon, UserIcon, AlertTriangleIcon, RefreshIcon } from './icons';
 import ScheduleModal from './ScheduleModal';
 import ReporModal from './ReporModal';
@@ -17,6 +17,7 @@ import { User } from '../types';
 interface MainScreenProps {
   driverName: string;
   category: string;
+  plate?: string;
   kmInicial?: number;
   onLogout: () => void;
   onShowMap: () => void; // Prop para mostrar o mapa
@@ -54,17 +55,9 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
     return R * c; // Distance in km
 };
 
-const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial, onLogout, onShowMap, onUpdateUser }) => {
+const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, kmInicial, onLogout, onShowMap, onUpdateUser }) => {
     const [gpsError, setGpsError] = useState<string | null>(null);
     const [routeDistances, setRouteDistances] = useState<Record<string, { distance: string, duration: string, value: number }>>({});
-    const [dailyActivity] = useState<DailyActivity>({
-        date: new Date().toISOString().split('T')[0],
-        remanejadasEstacao: [],
-        remanejadasFilial: [],
-        vandalizadas: [],
-        naoEncontradas: [],
-        ocorrencias: [],
-    });
     const [motoristas, setMotoristas] = useState<string[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     
@@ -411,8 +404,17 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
         const originalRouteBikes = [...routeBikes];
         
         // ATUALIZAÇÃO OTIMISTA: Remove da lista e adiciona ao roteiro imediatamente
-        setPendingRequests(prev => prev.filter(r => r.id !== requestId));
         const bikesToAdd = bikeNumbers.split(',').map(s => s.trim()).filter(Boolean);
+        
+        // Verifica se alguma bike já está no roteiro ou em posse
+        const alreadyInPossession = bikesToAdd.filter(b => collectedBikes.includes(b));
+        
+        if (alreadyInPossession.length > 0) {
+            alert(`As seguintes bikes já estão em sua posse: ${alreadyInPossession.join(', ')}`);
+            return;
+        }
+
+        setPendingRequests(prev => prev.filter(r => r.id !== requestId));
         const newRouteBikes = [...new Set([...routeBikes, ...bikesToAdd])];
         setRouteBikes(newRouteBikes);
 
@@ -534,20 +536,51 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
 
     const handleStatusUpdate = async (status: string) => {
         if (!searchedBike) return;
-
         const bikeNumber = searchedBike['Patrimônio'];
         const originalSearchedBike = searchedBike;
         const originalSearchTerm = searchTerm;
         const originalBikeInLimbo = bikeInLimbo;
+        const originalCollectedBikes = [...collectedBikes];
+        const originalRouteBikes = [...routeBikes];
 
-        // ATUALIZAÇÃO OTIMISTA: Limpa a busca imediatamente
+        // ATUALIZAÇÃO OTIMISTA: Limpa a busca e atualiza as listas imediatamente
         setSearchedBike(null);
         setSearchTerm('');
         setBikeInLimbo(null);
-        
-        setIsLoading(true);
         setError(null);
 
+        if (status === 'Recolhida') {
+            if (collectedBikes.includes(bikeNumber)) {
+                alert(`Você já está em posse da bicicleta ${bikeNumber}.`);
+                return;
+            }
+            const newCollectedBikes = [...new Set([...collectedBikes, bikeNumber])];
+            const newRouteBikes = routeBikes.filter(b => b !== bikeNumber);
+            setCollectedBikes(newCollectedBikes);
+            setRouteBikes(newRouteBikes);
+            
+            // Sincroniza em background
+            apiCall({
+                action: 'updateDriverState',
+                driverName,
+                routeBikes: newRouteBikes,
+                collectedBikes: newCollectedBikes
+            }).then(result => {
+                if (!result.success) {
+                    setError(`Falha ao sincronizar estado da bike ${bikeNumber}.`);
+                    setCollectedBikes(originalCollectedBikes);
+                    setRouteBikes(originalRouteBikes);
+                }
+            }).catch(() => {
+                setError(`Erro de conexão ao sincronizar bike ${bikeNumber}.`);
+                setCollectedBikes(originalCollectedBikes);
+                setRouteBikes(originalRouteBikes);
+            });
+            
+            return; // Sai cedo para não bloquear a UI
+        }
+
+        setIsLoading(true);
         try {
             // Se o status for "Não encontrada", loga diretamente no relatório.
             if (status === 'Não encontrada') {
@@ -560,25 +593,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
                     throw new Error(reportResult.error || 'Falha ao registrar "Não encontrada".');
                 }
                 alert(`Bicicleta ${bikeNumber} registrada como "Não encontrada".`);
-            } else {
-                // Para "Recolhida", apenas adiciona à lista de recolhidas.
-                const newCollectedBikes = collectedBikes.includes(bikeNumber) ? collectedBikes : [...collectedBikes, bikeNumber];
-                const newRouteBikes = routeBikes.filter(b => b !== bikeNumber); // Remove da rota se estiver lá
-
-                const stateResult = await apiCall({
-                    action: 'updateDriverState',
-                    driverName,
-                    routeBikes: newRouteBikes,
-                    collectedBikes: newCollectedBikes
-                });
-
-                if (stateResult.success) {
-                    setCollectedBikes(newCollectedBikes);
-                    setRouteBikes(newRouteBikes);
-                    alert(`Bicicleta ${bikeNumber} movida para a lista de "Bikes Recolhidas".`);
-                } else {
-                    throw new Error(stateResult.error || 'Falha ao mover a bicicleta.');
-                }
             }
         } catch (err: any) {
             // ROLLBACK em caso de erro
@@ -605,10 +619,21 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
         return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
     };
 
+    const allActiveBikes = useMemo(() => {
+        const bikes = new Set<string>();
+        driversSummary.forEach(d => {
+            (d.realTime.route || []).forEach((b: string) => bikes.add(String(b).trim()));
+            (d.realTime.collected || []).forEach((b: string) => bikes.add(String(b).trim()));
+        });
+        return bikes;
+    }, [driversSummary]);
+
     const formatBattery = (value: any) => {
-        const num = parseFloat(value);
+        const num = parseFloat(String(value).replace('%', '').replace(',', '.'));
         if (isNaN(num)) return value;
-        const finalVal = num > 1 ? Math.round(num) : Math.round(num * 100);
+        // Se o valor for <= 1, assumimos que é decimal (ex: 0.95 -> 95%, 1 -> 100%)
+        // Se for > 1, assumimos que já é o percentual inteiro (ex: 95 -> 95%)
+        const finalVal = num <= 1 ? Math.round(num * 100) : Math.round(num);
         return `${finalVal}%`;
     };
 
@@ -811,21 +836,35 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
         }
     };
 
-    const handleCollectedBikeAction = async (bikeNumber: string, status: string) => {
+    const handleCollectedBikeAction = (bikeNumber: string, status: string) => {
         if (status === 'Enviada para Estação') {
             setDestinationModal({ isOpen: true, bikeNumber, type: 'Estação', stationName: 'Buscando...' });
-            try {
-                const userLocation = await getCurrentPosition();
-                const closestStation = stations.reduce((prev, curr) => {
-                    const dist = getDistanceInMeters(userLocation.latitude, userLocation.longitude, curr.Latitude, curr.Longitude);
-                    return (dist < prev.minDistance) ? { station: curr, minDistance: dist } : prev;
-                }, { station: null, minDistance: Infinity });
+            
+            // Busca localização e estação mais próxima em background para não travar a abertura do modal
+            (async () => {
+                try {
+                    const userLocation = await getCurrentPosition();
+                    const closestStation = stations.reduce((prev, curr) => {
+                        const dist = getDistanceInMeters(userLocation.latitude, userLocation.longitude, curr.Latitude, curr.Longitude);
+                        return (dist < prev.minDistance) ? { station: curr, minDistance: dist } : prev;
+                    }, { station: null, minDistance: Infinity });
 
-                const stationName = (closestStation.station && closestStation.minDistance <= 50) ? closestStation.station.Name : 'Fora da Estação';
-                setDestinationModal(prev => ({ ...prev, stationName }));
-            } catch {
-                setDestinationModal(prev => ({ ...prev, stationName: 'Fora da Estação' }));
-            }
+                    const stationName = (closestStation.station && closestStation.minDistance <= 50) ? closestStation.station.Name : 'Fora da Estação';
+                    setDestinationModal(prev => {
+                        if (prev.isOpen && prev.bikeNumber === bikeNumber) {
+                            return { ...prev, stationName };
+                        }
+                        return prev;
+                    });
+                } catch {
+                    setDestinationModal(prev => {
+                        if (prev.isOpen && prev.bikeNumber === bikeNumber) {
+                            return { ...prev, stationName: 'Fora da Estação' };
+                        }
+                        return prev;
+                    });
+                }
+            })();
         } else if (status === 'Enviada para Filial') {
             setDestinationModal({ isOpen: true, bikeNumber, type: 'Filial' });
         } else if (status === 'Vandalizada') {
@@ -835,7 +874,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
 
     const executeCollectedBikeAction = async (bikeNumber: string, status: string, observation: string) => {
         setDestinationModal(prev => ({ ...prev, isOpen: false }));
-        setIsLoading(true);
+        // OTIMIZAÇÃO: Não bloqueia a UI inteira, apenas marca que estamos atualizando
         isUpdatingStateRef.current = true;
         
         // Salva o estado original para rollback
@@ -861,7 +900,8 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
             }
 
             // Usa a nova ação combinada para ser mais ágil e evitar inconsistências
-            const result = await apiCall({ 
+            // Sincroniza em background
+            apiCall({ 
                 action: 'finalizeCollectedBike', 
                 driverName, 
                 bikeNumber, 
@@ -869,17 +909,22 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
                 finalObservation,
                 routeBikes, // Mantém o roteiro atual
                 collectedBikes: newCollectedBikes // Envia a nova lista
+            }).then(result => {
+                if (!result.success) {
+                    setError(`Falha ao registrar "${status}" para a bike ${bikeNumber}.`);
+                    setCollectedBikes(originalCollectedBikes);
+                }
+            }).catch(() => {
+                setError(`Erro de conexão ao registrar "${status}" para a bike ${bikeNumber}.`);
+                setCollectedBikes(originalCollectedBikes);
+            }).finally(() => {
+                isUpdatingStateRef.current = false;
             });
 
-            if (!result.success) throw new Error(result.error || `Falha ao registrar "${status}".`);
-
-            alert(`Bicicleta ${bikeNumber} registrada com sucesso.`);
         } catch (err: any) {
             console.error(err);
-            setError(`Erro ao registrar: ${err.message}`);
+            setError(`Erro ao processar: ${err.message}`);
             setCollectedBikes(originalCollectedBikes);
-        } finally {
-            setIsLoading(false);
             isUpdatingStateRef.current = false;
         }
     };
@@ -1368,6 +1413,14 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
                             <XIcon className="w-5 h-5" />
                         </button>
                         <h3 className="text-lg font-semibold text-green-800 mb-3">Resultado da Consulta</h3>
+                        
+                        {collectedBikes.includes(String(searchedBike['Patrimônio'])) && (
+                            <div className="mb-3 p-2 bg-yellow-100 border border-yellow-400 text-yellow-800 text-[10px] font-bold rounded flex items-center gap-2">
+                                <AlertTriangleIcon className="w-4 h-4" />
+                                <span>ATENÇÃO: Você já está em posse desta bicicleta.</span>
+                            </div>
+                        )}
+
                         <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
                             <div>
                                 <p className="font-semibold text-gray-500 text-xs uppercase">Status</p>
@@ -1918,7 +1971,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
                 onClose={() => setRouteModalOpen(false)}
                 onSubmit={handleCreateRoute}
                 isLoading={isLoading}
-                pendingBikeNumbers={new Set()}
+                pendingBikeNumbers={allActiveBikes}
                 motoristas={motoristas}
                 error={error}
                 clearError={() => setError(null)}
@@ -1928,8 +1981,8 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, kmInicial
                 isOpen={isReportModalOpen}
                 onClose={() => setReportModalOpen(false)}
                 driverName={driverName}
+                plate={plate}
                 kmInicial={kmInicial}
-                activity={dailyActivity}
             />
 
             <DestinationModal
