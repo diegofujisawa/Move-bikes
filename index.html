@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Registro de Bicicletas</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     <style>
       html, body, #root {
         height: 100%;
@@ -20,11 +21,9 @@
       }
     </style>
     <!-- 
-      ATENÇÃO: A chave de API está correta. A biblioteca "marker" foi removida
-      porque estamos trocando os "Advanced Markers" (que não funcionavam)
-      pelos marcadores clássicos, que são mais confiáveis e não precisam dela.
+      ATENÇÃO: A API do Google Maps foi removida para evitar cobranças.
+      O sistema agora utiliza Leaflet (OpenStreetMap) que é 100% gratuito.
     -->
-    <script async src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAw8KQGF_3F8-ynru_lw3EvaW9ainspAM8"></script>
     <script type="importmap">
 {
   "imports": {

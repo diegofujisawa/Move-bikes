@@ -12,7 +12,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const [password, setPassword] = useState('');
   const [plate, setPlate] = useState('');
   const [kmInicial, setKmInicial] = useState('');
-  const [plates, setPlates] = useState<{ plate: string, lastKmFinal: number }[]>([]);
+  const [plates, setPlates] = useState<{ plate: string }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingPlates, setIsLoadingPlates] = useState(false);
   const [error, setError] = useState<string | null>(null);

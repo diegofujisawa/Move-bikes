@@ -228,22 +228,17 @@ function getVehiclePlates() {
     if (lastRow < 2) return { success: true, data: [] };
 
     const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
-    const platesMap = {};
+    const platesSet = new Set();
 
     data.forEach(row => {
       const plate = (row[COLUMN_INDICES.ACCESS.PLACA - 1] || '').toString().trim();
       if (plate) {
-        const kmFinal = parseFloat(row[COLUMN_INDICES.ACCESS.KM_FINAL - 1]) || 0;
-        // Mantemos o maior KM final encontrado para cada placa (ou o último, mas max é mais seguro para odômetro)
-        if (!platesMap[plate] || kmFinal > platesMap[plate]) {
-          platesMap[plate] = kmFinal;
-        }
+        platesSet.add(plate);
       }
     });
 
-    const plates = Object.keys(platesMap).map(plate => ({
-      plate: plate,
-      lastKmFinal: platesMap[plate]
+    const plates = Array.from(platesSet).map(plate => ({
+      plate: plate
     }));
 
     return { success: true, data: plates };
@@ -292,8 +287,16 @@ function handleLogin(login, password, plate, kmInicial) {
           return { success: false, error: 'Placa e KM Inicial são obrigatórios para motoristas.' };
         }
 
-        // REMOVIDO: Validação estrita de KM Inicial contra o último KM Final registrado.
-        // O motorista deve digitar o que vê no painel, que passa a ser a nova verdade.
+        // Validação estrita de KM Inicial contra o último KM Final registrado.
+        // O motorista deve digitar exatamente o KM final do turno anterior.
+        const expectedKm = getVehicleKmFinal(plate);
+        if (expectedKm !== null && expectedKm !== undefined && expectedKm !== "" && parseFloat(kmInicial) !== parseFloat(expectedKm)) {
+          // Se o KM esperado for 0 e o usuário digitar 0, está ok.
+          // Mas se o KM esperado for > 0 e o usuário digitar algo diferente, bloqueia.
+          if (!(parseFloat(expectedKm) === 0 && parseFloat(kmInicial) === 0)) {
+            return { success: false, error: 'KM Inicial incorreto. Verifique o odômetro do veículo.' };
+          }
+        }
         
         const isFixedPlate = ['SYS4J63', 'TEG7C35', 'TEMA047'].includes(plate.toUpperCase());
         
@@ -2228,6 +2231,41 @@ function switchVehicle(driverName, plate, kmInicial) {
   } finally {
     lock.releaseLock();
   }
+}
+
+function getVehicleKmFinal(plate) {
+  const sheet = ss.getSheetByName(ACCESS_SHEET_NAME);
+  if (!sheet) return null;
+  
+  let vehicleRowIndex = -1;
+  const plateUpper = plate.toString().trim().toUpperCase();
+  
+  if (plateUpper === 'SYS4J63') {
+    vehicleRowIndex = 2;
+  } else if (plateUpper === 'TEG7C35') {
+    vehicleRowIndex = 3;
+  } else if (plateUpper === 'TEMA047') {
+    vehicleRowIndex = 4;
+  } else {
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      const plates = sheet.getRange(2, COLUMN_INDICES.ACCESS.PLACA, lastRow - 1, 1).getValues();
+      for (let i = 0; i < plates.length; i++) {
+        if (plates[i][0].toString().trim().toUpperCase() === plateUpper) {
+          const userVal = sheet.getRange(i + 2, COLUMN_INDICES.ACCESS.USUARIO).getValue();
+          if (!userVal || userVal.toString().trim() === "") {
+            vehicleRowIndex = i + 2;
+            break;
+          }
+        }
+      }
+    }
+  }
+  
+  if (vehicleRowIndex !== -1) {
+    return sheet.getRange(vehicleRowIndex, COLUMN_INDICES.ACCESS.KM_FINAL).getValue();
+  }
+  return null;
 }
 
 function updateVehicleKm(plate, kmInicial, kmFinal) {

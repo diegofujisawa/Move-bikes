@@ -1162,56 +1162,31 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         };
     }, [driverName, category]);
 
-    const lastDistanceMatrixUpdateRef = useRef<number>(0);
-
-    // Efeito para calcular distâncias reais via Google Maps Distance Matrix
+    // Efeito para calcular distâncias via Haversine (Gratuito)
     useEffect(() => {
-        if (!currentDriverLocation || routeBikes.length === 0 || !window.google) return;
+        if (!currentDriverLocation || routeBikes.length === 0) return;
 
-        // OTIMIZAÇÃO: Throttle de 10 segundos para chamadas ao Google Maps Distance Matrix
-        const now = Date.now();
-        if (now - lastDistanceMatrixUpdateRef.current < 10000) return;
-        lastDistanceMatrixUpdateRef.current = now;
-
-        const service = new google.maps.DistanceMatrixService();
-        const origins = [new google.maps.LatLng(currentDriverLocation.lat, currentDriverLocation.lng)];
+        const newDistances: Record<string, any> = {};
         
-        // Mapeia as bikes para suas coordenadas
-        const destinations = routeBikes.map(bikeId => {
+        routeBikes.forEach(bikeId => {
             const details = routeBikesDetails[bikeId];
             if (details && details.currentLat !== null && details.currentLng !== null) {
-                return new google.maps.LatLng(details.currentLat, details.currentLng);
-            }
-            return null;
-        }).filter(Boolean) as google.maps.LatLng[];
-
-        if (destinations.length === 0) return;
-
-        service.getDistanceMatrix({
-            origins,
-            destinations,
-            travelMode: google.maps.TravelMode.DRIVING,
-            unitSystem: google.maps.UnitSystem.METRIC,
-        }, (response, status) => {
-            if (status === 'OK' && response) {
-                const newDistances: Record<string, any> = {};
-                const validBikeIds = routeBikes.filter(bikeId => {
-                    const details = routeBikesDetails[bikeId];
-                    return details && details.currentLat !== null && details.currentLng !== null;
-                });
-
-                response.rows[0].elements.forEach((element, index) => {
-                    if (element.status === 'OK') {
-                        newDistances[validBikeIds[index]] = {
-                            distance: element.distance.text,
-                            duration: element.duration.text,
-                            value: element.distance.value
-                        };
-                    }
-                });
-                setRouteDistances(newDistances);
+                const distKm = calculateDistance(
+                    currentDriverLocation.lat, 
+                    currentDriverLocation.lng, 
+                    details.currentLat, 
+                    details.currentLng
+                );
+                
+                newDistances[bikeId] = {
+                    distance: distKm < 1 ? `${(distKm * 1000).toFixed(0)}m` : `${distKm.toFixed(1)}km`,
+                    duration: `~${Math.round(distKm * 3)} min`, // Estimativa simples: 3 min por km
+                    value: distKm * 1000
+                };
             }
         });
+        
+        setRouteDistances(newDistances);
     }, [currentDriverLocation, routeBikes, routeBikesDetails]);
 
     const fetchRequests = async () => {
