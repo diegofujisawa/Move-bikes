@@ -1,7 +1,8 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { BicycleData, PickupRequest, DriverLocation } from '../types';
-import { LogoutIcon, PlusIcon, PlusPlusIcon, MapIcon, SheetIcon, SearchIcon, AlertIcon, CalendarIcon, CarIcon, XIcon, BicycleIcon, MovingIcon, UserIcon, AlertTriangleIcon, RefreshIcon } from './icons';
+import { LogoutIcon, PlusIcon, PlusPlusIcon, MapIcon, SheetIcon, SearchIcon, AlertIcon, CalendarIcon, CarIcon, XIcon, BicycleIcon, MovingIcon, UserIcon, AlertTriangleIcon, RefreshIcon, QrCodeIcon } from './icons';
+import { Html5Qrcode } from 'html5-qrcode';
 import ScheduleModal from './ScheduleModal';
 import ReporModal from './ReporModal';
 import RequestModal from './RequestModal';
@@ -139,8 +140,14 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
     const [requestsHistory, setRequestsHistory] = useState<any[]>([]);
     const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+    const [processingBikes, setProcessingBikes] = useState<Set<string>>(new Set());
     const isUpdatingStateRef = useRef(false);
     const lastLocationUpdateRef = useRef<number>(0);
+
+    const [lastSyncTime, setLastSyncTime] = useState<string>(new Date().toLocaleTimeString());
+    const [isSyncing, setIsSyncing] = useState(false);
+    const [isScannerOpen, setIsScannerOpen] = useState(false);
+    const scannerRef = useRef<Html5Qrcode | null>(null);
 
     const fetchAlerts = async () => {
         if (!category.includes('ADM')) return;
@@ -326,7 +333,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
             }
         };
         fetchAlertCount();
-        const interval = setInterval(fetchAlertCount, 60000); // Poll every minute
+        const interval = setInterval(fetchAlertCount, 20000); // Reduzido para 20 segundos para alertas mais rápidos
         return () => clearInterval(interval);
     }, [driverName, lastViewedAlertCount]);
 
@@ -398,6 +405,68 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         setIsHistoryModalOpen(true);
         fetchRequestsHistory();
     };
+
+    const startScanner = async () => {
+        setIsScannerOpen(true);
+        setTimeout(async () => {
+            try {
+                const html5QrCode = new Html5Qrcode("qr-reader");
+                scannerRef.current = html5QrCode;
+                await html5QrCode.start(
+                    { facingMode: "environment" },
+                    {
+                        fps: 10,
+                        qrbox: { width: 250, height: 250 }
+                    },
+                    (decodedText) => {
+                        // Exemplo: http://www.bikesjc.com.br/home/download/400
+                        const match = decodedText.match(/\/download\/(\d+)/);
+                        if (match && match[1]) {
+                            const bikeId = match[1];
+                            setSearchTerm(bikeId);
+                            stopScanner();
+                            handleSearch(bikeId);
+                        } else {
+                            // Se não bater com o padrão, tenta usar o texto puro se for só número
+                            if (/^\d+$/.test(decodedText)) {
+                                setSearchTerm(decodedText);
+                                stopScanner();
+                                handleSearch(decodedText);
+                            }
+                        }
+                    },
+                    () => {
+                        // Erros de leitura ignorados (acontece o tempo todo enquanto busca)
+                    }
+                );
+            } catch (err) {
+                console.error("Erro ao iniciar scanner:", err);
+                setError("Não foi possível acessar a câmera para ler o QR Code.");
+                setIsScannerOpen(false);
+            }
+        }, 100);
+    };
+
+    const stopScanner = async () => {
+        if (scannerRef.current) {
+            try {
+                await scannerRef.current.stop();
+                await scannerRef.current.clear();
+            } catch (err) {
+                console.error("Erro ao parar scanner:", err);
+            }
+            scannerRef.current = null;
+        }
+        setIsScannerOpen(false);
+    };
+
+    useEffect(() => {
+        return () => {
+            if (scannerRef.current) {
+                scannerRef.current.stop().catch(console.error);
+            }
+        };
+    }, []);
 
     const handleAcceptRequest = async (requestId: number, bikeNumbers: string) => {
         const originalPendingRequests = [...pendingRequests];
@@ -537,11 +606,17 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     const handleStatusUpdate = async (status: string) => {
         if (!searchedBike) return;
         const bikeNumber = searchedBike['Patrimônio'];
+        
+        // TRAVA: Impede processamento duplicado
+        if (processingBikes.has(bikeNumber)) return;
+        
         const originalSearchedBike = searchedBike;
         const originalSearchTerm = searchTerm;
         const originalBikeInLimbo = bikeInLimbo;
         const originalCollectedBikes = [...collectedBikes];
         const originalRouteBikes = [...routeBikes];
+
+        setProcessingBikes(prev => new Set(prev).add(bikeNumber));
 
         // ATUALIZAÇÃO OTIMISTA: Limpa a busca e atualiza as listas imediatamente
         setSearchedBike(null);
@@ -552,6 +627,11 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         if (status === 'Recolhida') {
             if (collectedBikes.includes(bikeNumber)) {
                 alert(`Você já está em posse da bicicleta ${bikeNumber}.`);
+                setProcessingBikes(prev => {
+                    const next = new Set(prev);
+                    next.delete(bikeNumber);
+                    return next;
+                });
                 return;
             }
             const newCollectedBikes = [...new Set([...collectedBikes, bikeNumber])];
@@ -575,9 +655,15 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 setError(`Erro de conexão ao sincronizar bike ${bikeNumber}.`);
                 setCollectedBikes(originalCollectedBikes);
                 setRouteBikes(originalRouteBikes);
+            }).finally(() => {
+                setProcessingBikes(prev => {
+                    const next = new Set(prev);
+                    next.delete(bikeNumber);
+                    return next;
+                });
             });
             
-            return; // Sai cedo para não bloquear a UI
+            return; 
         }
 
         setIsLoading(true);
@@ -602,6 +688,11 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
             setError(err.message || `Ocorreu um erro ao processar a ação: ${status}`);
         } finally {
             setIsLoading(false);
+            setProcessingBikes(prev => {
+                const next = new Set(prev);
+                next.delete(bikeNumber);
+                return next;
+            });
         }
     };
 
@@ -758,16 +849,20 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     
 
     const handleRecolherClick = async (bikeNumber: string) => {
+        if (processingBikes.has(bikeNumber)) return;
+        
         // Salva o estado original para rollback
         const originalRouteBikes = [...routeBikes];
         isUpdatingStateRef.current = true;
-        setIsLoading(true); // Bloqueia outros cliques
+        setIsLoading(true); 
+
+        setProcessingBikes(prev => new Set(prev).add(bikeNumber));
 
         // ATUALIZAÇÃO OTIMISTA: Remove a bike da rota na UI e inicia a consulta
         const newRouteBikes = routeBikes.filter(b => b !== bikeNumber);
         setRouteBikes(newRouteBikes);
-        setBikeInLimbo(bikeNumber); // Marca a bike como em processamento (limbo)
-        handleSearch(bikeNumber); // Mostra os detalhes da bike
+        setBikeInLimbo(bikeNumber); 
+        handleSearch(bikeNumber); 
 
         // Tenta sincronizar com o backend em segundo plano
         try {
@@ -775,14 +870,12 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 action: 'updateDriverState',
                 driverName,
                 routeBikes: newRouteBikes,
-                collectedBikes: collectedBikes // A lista de recolhidas não é alterada
+                collectedBikes: collectedBikes 
             });
 
             if (!stateResult.success) {
                 throw new Error(stateResult.error || 'Falha ao sincronizar com o servidor.');
             }
-            // Se for sucesso, a UI já está correta.
-
         } catch {
             // ROLLBACK: Se a chamada falhar, restaura o estado original
             setError(`Falha ao remover a bike ${bikeNumber} do roteiro. Restaurando.`);
@@ -791,6 +884,11 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         } finally {
             isUpdatingStateRef.current = false;
             setIsLoading(false);
+            setProcessingBikes(prev => {
+                const next = new Set(prev);
+                next.delete(bikeNumber);
+                return next;
+            });
         }
     };
 
@@ -873,9 +971,18 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     };
 
     const executeCollectedBikeAction = async (bikeNumber: string, status: string, observation: string) => {
+        if (processingBikes.has(bikeNumber)) return;
+        
+        // VALIDAÇÃO CRÍTICA: Verifica se a bike ainda está na posse antes de agir
+        if (!collectedBikes.includes(bikeNumber)) {
+            alert(`Erro: A bicicleta ${bikeNumber} não está mais em sua posse.`);
+            setDestinationModal(prev => ({ ...prev, isOpen: false }));
+            return;
+        }
+
         setDestinationModal(prev => ({ ...prev, isOpen: false }));
-        // OTIMIZAÇÃO: Não bloqueia a UI inteira, apenas marca que estamos atualizando
         isUpdatingStateRef.current = true;
+        setProcessingBikes(prev => new Set(prev).add(bikeNumber));
         
         // Salva o estado original para rollback
         const originalCollectedBikes = [...collectedBikes];
@@ -890,25 +997,23 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
 
             if (status === 'Enviada para Estação') {
                 finalStatus = 'ESTAÇÃO'; 
-                finalObservation = observation; // Nome da estação
+                finalObservation = observation; 
             } else if (status === 'Enviada para Filial') {
                 finalStatus = 'Filial';
-                finalObservation = observation; // Justificativa
+                finalObservation = observation; 
             } else if (status === 'Vandalizada') {
                 finalStatus = 'Vandalizada';
-                finalObservation = observation; // Justificativa
+                finalObservation = observation; 
             }
 
-            // Usa a nova ação combinada para ser mais ágil e evitar inconsistências
-            // Sincroniza em background
             apiCall({ 
                 action: 'finalizeCollectedBike', 
                 driverName, 
                 bikeNumber, 
                 finalStatus, 
                 finalObservation,
-                routeBikes, // Mantém o roteiro atual
-                collectedBikes: newCollectedBikes // Envia a nova lista
+                routeBikes, 
+                collectedBikes: newCollectedBikes 
             }).then(result => {
                 if (!result.success) {
                     setError(`Falha ao registrar "${status}" para a bike ${bikeNumber}.`);
@@ -919,6 +1024,11 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 setCollectedBikes(originalCollectedBikes);
             }).finally(() => {
                 isUpdatingStateRef.current = false;
+                setProcessingBikes(prev => {
+                    const next = new Set(prev);
+                    next.delete(bikeNumber);
+                    return next;
+                });
             });
 
         } catch (err: any) {
@@ -926,6 +1036,11 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
             setError(`Erro ao processar: ${err.message}`);
             setCollectedBikes(originalCollectedBikes);
             isUpdatingStateRef.current = false;
+            setProcessingBikes(prev => {
+                const next = new Set(prev);
+                next.delete(bikeNumber);
+                return next;
+            });
         }
     };
 
@@ -1074,6 +1189,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         const refreshAll = async () => {
             if (document.visibilityState === 'hidden' || isUpdatingStateRef.current) return;
             
+            setIsSyncing(true);
             try {
                 await Promise.all([
                     fetchRequests(),
@@ -1087,15 +1203,18 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                     category.includes('ADM') ? fetchVandalized() : Promise.resolve(),
                     category.includes('ADM') ? fetchChangeStatusData() : Promise.resolve()
                 ]);
+                setLastSyncTime(new Date().toLocaleTimeString());
             } catch (err) {
                 console.error("Erro na atualização automática:", err);
+            } finally {
+                setIsSyncing(false);
             }
         };
 
         refreshAll();
         fetchStations(); // Estações mudam pouco, busca uma vez
 
-        const interval = setInterval(refreshAll, 15000); // Aumentado para 15 segundos para ser mais leve
+        const interval = setInterval(refreshAll, 10000); // Reduzido para 10 segundos para tempo real
 
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'visible') {
@@ -1263,7 +1382,13 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 <div className="flex items-center gap-3">
                     <div>
                         <p className="font-bold text-base text-gray-800 leading-tight">{driverName}</p>
-                        <p className="text-xs text-gray-600 uppercase tracking-wider">{category}</p>
+                        <div className="flex items-center gap-2">
+                            <p className="text-xs text-gray-600 uppercase tracking-wider">{category}</p>
+                            <span className="text-[10px] text-gray-400 flex items-center gap-1">
+                                <span className={`w-1.5 h-1.5 rounded-full ${isSyncing ? 'bg-blue-500 animate-pulse' : 'bg-green-500'}`}></span>
+                                {lastSyncTime}
+                            </span>
+                        </div>
                     </div>
                 </div>
                 <div className="flex items-center flex-wrap gap-1 mt-4 sm:mt-0">
@@ -1342,36 +1467,63 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 {!category.includes('ADM') && (
                     <div className="mb-4 p-3 border rounded-lg bg-gray-50">
                         <h2 className="text-base font-medium text-gray-700 mb-2">Consultar Bicicleta</h2>
-                        <div className="flex items-center gap-2">
-                            <div className="relative flex-grow">
-                                <input 
-                                    type="text" 
-                                    value={searchTerm}
-                                    onChange={(e) => setSearchTerm(e.target.value)}
-                                    placeholder="Digite o patrimônio..."
-                                    className="w-full p-1.5 pr-8 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm"
-                                />
-                                {searchTerm && (
+                        <div className="flex flex-col gap-3">
+                            <div className="flex items-center gap-2">
+                                <div className="relative flex-grow">
+                                    <input 
+                                        type="text" 
+                                        value={searchTerm}
+                                        onChange={(e) => setSearchTerm(e.target.value)}
+                                        placeholder="Digite o patrimônio..."
+                                        className="w-full p-1.5 pr-8 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm"
+                                    />
+                                    {searchTerm && (
+                                        <button 
+                                            onClick={() => { setSearchTerm(''); handleSearch(''); }}
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                            title="Limpar busca"
+                                        >
+                                            <XIcon className="w-4 h-4" />
+                                        </button>
+                                    )}
+                                </div>
+                                <button 
+                                    onClick={() => isScannerOpen ? stopScanner() : startScanner()}
+                                    className={`p-1.5 rounded-md border transition-all ${isScannerOpen ? 'bg-red-50 border-red-200 text-red-600' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+                                    title={isScannerOpen ? "Fechar Scanner" : "Ler QR Code"}
+                                >
+                                    <QrCodeIcon className="w-5 h-5" />
+                                </button>
+                                <button 
+                                    onClick={() => handleSearch()}
+                                    disabled={isSearching || isScannerOpen}
+                                    className="px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 active:scale-95 transition-all disabled:bg-gray-400 flex items-center gap-2 text-sm"
+                                >
+                                    {isSearching ? 
+                                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : 
+                                        <SearchIcon className="w-4 h-4" />
+                                    }
+                                    <span>{isSearching ? 'Buscando...' : 'Consultar'}</span>
+                                </button>
+                            </div>
+
+                            {isScannerOpen && (
+                                <div className="relative overflow-hidden rounded-lg bg-black aspect-square max-w-[300px] mx-auto w-full border-2 border-blue-500 shadow-xl animate-fade-in">
+                                    <div id="qr-reader" className="w-full h-full"></div>
+                                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                        <div className="w-48 h-48 border-2 border-blue-400/50 rounded-lg"></div>
+                                    </div>
                                     <button 
-                                        onClick={() => { setSearchTerm(''); handleSearch(''); }}
-                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                                        title="Limpar busca"
+                                        onClick={stopScanner}
+                                        className="absolute top-2 right-2 bg-black/50 text-white p-1 rounded-full hover:bg-black/70"
                                     >
                                         <XIcon className="w-4 h-4" />
                                     </button>
-                                )}
-                            </div>
-                            <button 
-                                onClick={() => handleSearch()}
-                                disabled={isSearching}
-                                className="px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 active:scale-95 transition-all disabled:bg-gray-400 flex items-center gap-2 text-sm"
-                            >
-                                {isSearching ? 
-                                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : 
-                                    <SearchIcon className="w-4 h-4" />
-                                }
-                                <span>{isSearching ? 'Buscando...' : 'Consultar'}</span>
-                            </button>
+                                    <p className="absolute bottom-2 left-0 right-0 text-center text-[10px] text-white bg-black/50 py-1">
+                                        Aponte para o QR Code da bicicleta
+                                    </p>
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}

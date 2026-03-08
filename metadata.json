@@ -2,6 +2,7 @@
   "name": "Move Bikes",
   "description": "Um aplicativo para motoristas registrarem o status de recolha de bicicletas, consultando e atualizando uma planilha do Google Sheets.",
   "requestFramePermissions": [
-    "geolocation"
+    "geolocation",
+    "camera"
   ]
 }

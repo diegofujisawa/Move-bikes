@@ -24,7 +24,16 @@ const AdminAlerts: React.FC<AdminAlertsProps> = ({ adminName, isOpen, onClose })
         try {
             const response = await apiCall({ action: 'getAdminAlerts', adminName });
             if (response.success) {
-                setAlerts(response.alerts || []);
+                const fetchedAlerts = response.alerts || [];
+                setAlerts(fetchedAlerts);
+                
+                // Se houver alertas, vamos limpá-los automaticamente após a "leitura" (abertura do modal)
+                if (fetchedAlerts.length > 0) {
+                    // Limpa no servidor sem pedir confirmação, pois o usuário já está vendo
+                    apiCall({ action: 'clearAdminAlerts', adminName }, 1, true).catch(err => {
+                        console.error("Erro ao limpar alertas automaticamente:", err);
+                    });
+                }
             }
         } catch (error) {
             console.error("Erro ao buscar alertas:", error);
