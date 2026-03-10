@@ -142,7 +142,7 @@ function doGet(e) {
 }
 
 
-const BACKEND_VERSION = "76.0-vehicle-control";
+const BACKEND_VERSION = "77.0-optimized-sync";
 
 /**
  * Formata uma data para o padrão brasileiro (DD/MM/AAAA HH:mm:ss).
@@ -168,6 +168,7 @@ function doPost(e) {
     const action = (request.action || '').toString().trim();
     
     switch (action) {
+      case 'getSyncData': response = { ...getSyncData(request), version: BACKEND_VERSION }; break;
       case 'getDriversSummary': response = { ...getDriversSummary(request.timeRange), version: BACKEND_VERSION }; break;
       case 'getVehiclePlates': response = { ...getVehiclePlates(), version: BACKEND_VERSION }; break;
       case 'login': response = { ...handleLogin(request.login, request.password, request.plate, request.kmInicial), version: BACKEND_VERSION }; break;
@@ -2621,5 +2622,95 @@ function clearAdminAlerts(adminName) {
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
+  }
+}
+
+function getBikeDetailsBatch(bikeNumbers) {
+  if (!bikeNumbers || bikeNumbers.length === 0) return { success: true, data: {} };
+  
+  const bikesSheet = ss.getSheetByName(BIKES_SHEET_NAME);
+  if (!bikesSheet) throw new Error("Planilha de bicicletas não encontrada.");
+
+  const bikesData = bikesSheet.getDataRange().getValues();
+  const bikeNumberSet = new Set(bikeNumbers.map(String));
+  const result = {};
+
+  bikesData.forEach((row, idx) => {
+    if (idx === 0) return;
+    const patrimonio = String(row[COLUMN_INDICES.BIKES.PATRIMONIO - 1]).trim();
+    if (bikeNumberSet.has(patrimonio)) {
+      result[patrimonio] = {
+        bikeNumber: patrimonio,
+        currentLat: parseCoordinate(row[COLUMN_INDICES.BIKES.LATITUDE - 1]),
+        currentLng: parseCoordinate(row[COLUMN_INDICES.BIKES.LONGITUDE - 1]),
+        battery: row[COLUMN_INDICES.BIKES.BATERIA - 1],
+        status: row[COLUMN_INDICES.BIKES.STATUS - 1],
+        localidade: row[COLUMN_INDICES.BIKES.LOCALIDADE - 1],
+        ultimaInfo: row[COLUMN_INDICES.BIKES.ULTIMA_INFO - 1]
+      };
+    }
+  });
+
+  return { success: true, data: result };
+}
+
+function getSyncData(request) {
+  const { driverName, category, bikeNumbers, includeAdminData } = request;
+  const result = { success: true, data: {} };
+  
+  try {
+    // 1. Driver State (Route and Collected)
+    const state = getDriverState(driverName);
+    result.data.driverState = state.success ? state.data : { routeBikes: [], collectedBikes: [] };
+    
+    // 2. Bike Details (Batch)
+    const allBikes = new Set(bikeNumbers || []);
+    if (result.data.driverState.routeBikes) result.data.driverState.routeBikes.forEach(b => allBikes.add(b));
+    if (result.data.driverState.collectedBikes) result.data.driverState.collectedBikes.forEach(b => allBikes.add(b));
+    
+    if (allBikes.size > 0) {
+      const details = getBikeDetailsBatch(Array.from(allBikes));
+      result.data.bikeDetails = details.success ? details.data : {};
+      
+      // Também pega detalhes da rota (initialLat/Lng)
+      const routeDetails = getRouteDetails(driverName, Array.from(allBikes));
+      if (routeDetails.success) {
+        Object.keys(routeDetails.data).forEach(bike => {
+          if (result.data.bikeDetails[bike]) {
+            result.data.bikeDetails[bike].initialLat = routeDetails.data[bike].initialLat;
+            result.data.bikeDetails[bike].initialLng = routeDetails.data[bike].initialLng;
+          }
+        });
+      }
+    }
+    
+    // 3. Alerts
+    const alerts = getAlerts();
+    result.data.alerts = alerts.success ? alerts.data : [];
+    
+    // 4. Vandalized
+    const vandalized = getVandalized();
+    result.data.vandalized = vandalized.success ? vandalized.data : [];
+    
+    // 5. Pending Requests
+    const requests = getRequests(driverName, category);
+    result.data.pendingRequests = requests.success ? requests.data : [];
+
+    // 6. Bike Conflicts (Statuses)
+    const bikeStatuses = getBikeStatuses();
+    result.data.bikeConflicts = bikeStatuses.success ? bikeStatuses.data : {};
+
+    // 7. Admin Data (Optional)
+    if (includeAdminData && category && category.toUpperCase().includes('ADM')) {
+      const locations = getDriverLocations();
+      result.data.driverLocations = locations.success ? locations.data : [];
+      
+      const adminAlerts = getAdminAlerts(driverName);
+      adminAlerts.success ? result.data.adminAlerts = adminAlerts.alerts : result.data.adminAlerts = [];
+    }
+    
+    return result;
+  } catch (e) {
+    return { success: false, error: "Erro no sincronismo em lote: " + e.message };
   }
 }

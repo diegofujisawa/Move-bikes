@@ -117,6 +117,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     const [alertCount, setAlertCount] = useState(0);
     const [hasNewAlerts, setHasNewAlerts] = useState(false);
     const [lastViewedAlertCount, setLastViewedAlertCount] = useState(0);
+    const [fullAdminAlerts, setFullAdminAlerts] = useState<any[]>([]);
     const [isReporModalOpen, setIsReporModalOpen] = useState(false);
     const [reporData, setReporData] = useState<any[]>([]);
     const [isReporLoading, setIsReporLoading] = useState(false);
@@ -127,13 +128,11 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     const [alerts, setAlerts] = useState<any[]>([]);
     const [isAlertsLoading, setIsAlertsLoading] = useState(false);
     const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
-    const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
     const [changeStatusData, setChangeStatusData] = useState<{ vandalizadas: string[], filial: string[] }>({ vandalizadas: [], filial: [] });
     const [statusTimeRange, setStatusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
     const [isStatusLoading, setIsStatusLoading] = useState(false);
     const [backendVersion, setBackendVersion] = useState<string | null>(null);
     const [userSchedule, setUserSchedule] = useState<Record<string, string>>({});
-    const [bikeInLimbo, setBikeInLimbo] = useState<string | null>(null);
     const [destinationModal, setDestinationModal] = useState<{
         isOpen: boolean;
         bikeNumber: string;
@@ -192,24 +191,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         }
     };
 
-    const fetchVandalized = async () => {
-        if (!category.includes('ADM')) return;
-        setIsVandalizedLoading(true);
-        try {
-            const result = await apiGetCall('getVandalized');
-            if (result.success) {
-                setVandalizedBikes(result.data);
-                if (result.version) setBackendVersion(result.version);
-            }
-        } catch (err: any) {
-            console.error("Erro ao buscar vandalizadas:", err);
-            if (err.message && err.message.includes('Ação desconhecida')) {
-                alert("BACKEND DESATUALIZADO: O script do Google Apps Script precisa ser reimplantado como 'Nova Implantação' para suportar o sistema de vandalismo.");
-            }
-        } finally {
-            setIsVandalizedLoading(false);
-        }
-    };
+
 
     const handleConfirmVandalizedFound = async (alertId: number) => {
         if (!window.confirm("Confirmar que esta bicicleta vandalizada foi encontrada?")) return;
@@ -346,7 +328,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
 
     useEffect(() => {
         const fetchAlertCount = async () => {
-            if (!driverName) return;
+            if (!driverName || !category.includes('ADM')) return;
             try {
                 const response = await apiCall({ action: 'getAdminAlerts', adminName: driverName }, 1, true);
                 if (response.success) {
@@ -361,9 +343,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
             }
         };
         fetchAlertCount();
-        const interval = setInterval(fetchAlertCount, 3000); // Reduzido para 3 segundos para alertas mais rápidos
-        return () => clearInterval(interval);
-    }, [driverName, lastViewedAlertCount]);
+    }, [driverName, lastViewedAlertCount, category]);
 
     const runDriversSummaryFallback = async () => {
         const currentRange = summaryTimeRange;
@@ -695,7 +675,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         
         const originalSearchedBike = searchedBike;
         const originalSearchTerm = searchTerm;
-        const originalBikeInLimbo = bikeInLimbo;
         const originalCollectedBikes = [...collectedBikes];
         const originalRouteBikes = [...routeBikes];
 
@@ -704,7 +683,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         // ATUALIZAÇÃO OTIMISTA: Limpa a busca e atualiza as listas imediatamente
         setSearchedBike(null);
         setSearchTerm('');
-        setBikeInLimbo(null);
         setError(null);
 
         if (status === 'Recolhida') {
@@ -751,13 +729,21 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
 
         setIsLoading(true);
         try {
-            // Se o status for "Não encontrada", loga diretamente no relatório.
+            // Se o status for "Não encontrada", loga diretamente no relatório e remove do roteiro.
             if (status === 'Não encontrada') {
-                const rowData = [
-                    formatDateTime(new Date()), bikeNumber, "Não encontrada", "", driverName,
-                    originalSearchedBike['Status'], originalSearchedBike['Bateria'], originalSearchedBike['Trava'], originalSearchedBike['Localidade']
-                ];
-                const reportResult = await apiCall({ action: 'logReport', rowData });
+                const newRouteBikes = routeBikes.filter(b => b !== bikeNumber);
+                setRouteBikes(newRouteBikes);
+
+                const reportResult = await apiCall({ 
+                    action: 'finalizeRouteBike', 
+                    driverName, 
+                    bikeNumber, 
+                    finalStatus: 'Não encontrada', 
+                    finalObservation: '',
+                    routeBikes: newRouteBikes,
+                    collectedBikes
+                });
+
                 if (!reportResult.success) {
                     throw new Error(reportResult.error || 'Falha ao registrar "Não encontrada".');
                 }
@@ -767,7 +753,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
             // ROLLBACK em caso de erro
             setSearchedBike(originalSearchedBike);
             setSearchTerm(originalSearchTerm);
-            setBikeInLimbo(originalBikeInLimbo);
             setError(err.message || `Ocorreu um erro ao processar a ação: ${status}`);
         } finally {
             setIsLoading(false);
@@ -861,19 +846,11 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     const handleSearch = async (bikeToSearch?: string) => {
         const term = bikeToSearch || searchTerm.trim();
         
-        // Se o termo for vazio e houver bike no limbo, restaura ela para o roteiro
+        // Se o termo for vazio, limpa a busca
         if (!term) {
-            if (bikeInLimbo) {
-                await restoreLimboBike();
-            }
             setSearchedBike(null);
             setSearchTerm('');
             return;
-        }
-
-        // Se estiver buscando uma bike diferente da que está no limbo, restaura a do limbo primeiro
-        if (bikeInLimbo && term !== bikeInLimbo) {
-            await restoreLimboBike();
         }
 
         setIsSearching(true);
@@ -903,43 +880,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         }
     };
 
-    const restoreLimboBike = async () => {
-        if (!bikeInLimbo) return;
-        
-        const bikeToRestore = bikeInLimbo;
-        setBikeInLimbo(null);
-        
-        isUpdatingStateRef.current = true;
-        
-        // Atualiza localmente primeiro
-        let newRouteBikes: string[] = [];
-        setRouteBikes(prev => {
-            if (prev.includes(bikeToRestore)) {
-                newRouteBikes = prev;
-                return prev;
-            }
-            newRouteBikes = [...prev, bikeToRestore];
-            return newRouteBikes;
-        });
 
-        try {
-            // Sincroniza com o servidor
-            await apiCall({
-                action: 'updateDriverState',
-                driverName,
-                routeBikes: newRouteBikes.length > 0 ? newRouteBikes : [...routeBikes, bikeToRestore],
-                collectedBikes: collectedBikes
-            });
-            refreshAll(true);
-        } catch (err) {
-            console.error("Erro ao restaurar bike do limbo:", err);
-        } finally {
-            // Pequeno delay para garantir que o servidor processou antes de liberar o fetch de fundo
-            setTimeout(() => {
-                isUpdatingStateRef.current = false;
-            }, 1000);
-        }
-    };
 
     
 
@@ -948,46 +889,18 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     const handleRecolherClick = async (bikeNumber: string) => {
         if (processingBikes.has(bikeNumber)) return;
         
-        // Salva o estado original para rollback
-        const originalRouteBikes = [...routeBikes];
-        isUpdatingStateRef.current = true;
         setIsLoading(true); 
-
         setProcessingBikes(prev => new Set(prev).add(bikeNumber));
 
-        // ATUALIZAÇÃO OTIMISTA: Remove a bike da rota na UI e inicia a consulta
-        const newRouteBikes = routeBikes.filter(b => b !== bikeNumber);
-        setRouteBikes(newRouteBikes);
-        setBikeInLimbo(bikeNumber); 
+        // Apenas inicia a consulta, sem remover do roteiro
         handleSearch(bikeNumber); 
 
-        // Tenta sincronizar com o backend em segundo plano
-        try {
-            const stateResult = await apiCall({
-                action: 'updateDriverState',
-                driverName,
-                routeBikes: newRouteBikes,
-                collectedBikes: collectedBikes 
-            });
-
-            if (!stateResult.success) {
-                throw new Error(stateResult.error || 'Falha ao sincronizar com o servidor.');
-            }
-            refreshAll(true);
-        } catch {
-            // ROLLBACK: Se a chamada falhar, restaura o estado original
-            setError(`Falha ao remover a bike ${bikeNumber} do roteiro. Restaurando.`);
-            setRouteBikes(originalRouteBikes);
-            setBikeInLimbo(null);
-        } finally {
-            isUpdatingStateRef.current = false;
-            setIsLoading(false);
-            setProcessingBikes(prev => {
-                const next = new Set(prev);
-                next.delete(bikeNumber);
-                return next;
-            });
-        }
+        setIsLoading(false);
+        setProcessingBikes(prev => {
+            const next = new Set(prev);
+            next.delete(bikeNumber);
+            return next;
+        });
     };
 
     const handleNaoAtendidaClick = async (bikeNumber: string, silent = false) => {
@@ -1169,73 +1082,9 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
 
     
 
-    const fetchDriverState = async () => {
-        if (isUpdatingStateRef.current) return; // Ignora se houver uma atualização local em curso
-        try {
-            const result = await apiCall({ action: 'getDriverState', driverName });
-            if (result.success && result.data && !isUpdatingStateRef.current) {
-                setRouteBikes(result.data.routeBikes || []);
-                setCollectedBikes(result.data.collectedBikes || []);
-            }
-        } catch (err: any) {
-            console.error('Erro ao buscar estado do motorista:', err.message);
-        }
-    };
 
-    const fetchRouteDetails = async () => {
-        if (routeBikes.length === 0 || document.visibilityState === 'hidden') {
-            if (routeBikes.length === 0) setRouteBikesDetails({});
-            return;
-        }
-        try {
-            const result = await apiCall({ action: 'getRouteDetails', driverName, bikeNumbers: routeBikes });
-            if (result.success && result.data) {
-                setRouteBikesDetails(prev => {
-                    const newData = { ...result.data };
-                    Object.keys(newData).forEach(bikeId => {
-                        // OTIMIZAÇÃO: Preserva a posição inicial original para detectar movimento acumulado.
-                        // Só define a inicial se ela ainda for nula.
-                        if (prev[bikeId] && prev[bikeId].initialLat !== null) {
-                            newData[bikeId].initialLat = prev[bikeId].initialLat;
-                            newData[bikeId].initialLng = prev[bikeId].initialLng;
-                        } else if (newData[bikeId].initialLat === null) {
-                            // Se o backend não mandou e não tínhamos antes, usa a posição atual como ponto de partida.
-                            newData[bikeId].initialLat = newData[bikeId].currentLat;
-                            newData[bikeId].initialLng = newData[bikeId].currentLng;
-                        }
-                    });
-                    return newData;
-                });
-            }
-        } catch (err: any) {
-            console.error('Erro ao buscar detalhes do roteiro:', err.message);
-        }
-    };
 
-    const fetchCollectedDetails = async () => {
-        if (collectedBikes.length === 0 || document.visibilityState === 'hidden') {
-            if (collectedBikes.length === 0) setCollectedBikesDetails({});
-            return;
-        }
-        try {
-            const result = await apiCall({ action: 'getRouteDetails', driverName, bikeNumbers: collectedBikes });
-            if (result.success && result.data) {
-                setCollectedBikesDetails(result.data);
-            }
-        } catch (err: any) {
-            console.error('Erro ao buscar detalhes das bikes recolhidas:', err.message);
-        }
-    };
 
-    useEffect(() => {
-        fetchRouteDetails();
-        fetchCollectedDetails();
-        const interval = setInterval(() => {
-            fetchRouteDetails();
-            fetchCollectedDetails();
-        }, 3000);
-        return () => clearInterval(interval);
-    }, [routeBikes, collectedBikes, driverName]);
 
     const sortedRouteBikes = useMemo(() => {
         if (!currentDriverLocation || routeBikes.length === 0) return routeBikes;
@@ -1260,16 +1109,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         });
     }, [routeBikes, routeBikesDetails, currentDriverLocation, routeDistances]);
 
-    const fetchBikeConflicts = async () => {
-        try {
-            const result = await apiCall({ action: 'getBikeStatuses' });
-            if (result.success && result.data) {
-                setBikeConflicts(result.data);
-            }
-        } catch (err: any) {
-            console.error('Falha ao buscar conflitos de bicicletas:', err.message);
-        }
-    };
+
 
     const fetchMotoristas = async () => {
         try {
@@ -1294,48 +1134,81 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         }
     };
 
-    const fetchDriverLocations = async () => {
-        try {
-            const result = await apiGetCall('getDriverLocations');
-            console.log('Localizações dos motoristas buscadas:', result);
-            if (result.success && result.data) {
-                setDriverLocations(result.data);
-            }
-        } catch (err: any) {
-            console.error('Erro ao buscar localizações dos motoristas:', err.message);
-        }
-    };
+
 
     const refreshAll = React.useCallback(async (force = false) => {
         if (!force && (document.visibilityState === 'hidden' || isUpdatingStateRef.current)) return;
         
         setIsSyncing(true);
         try {
-            await Promise.all([
-                fetchRequests(),
-                fetchDriverState(),
-                fetchBikeConflicts(),
-                fetchSchedule(),
-                fetchMotoristas(),
-                fetchDriverLocations(),
-                category.includes('ADM') ? fetchDriversSummary() : Promise.resolve(),
-                category.includes('ADM') ? fetchAlerts() : Promise.resolve(),
-                category.includes('ADM') ? fetchVandalized() : Promise.resolve(),
-                category.includes('ADM') ? fetchChangeStatusData() : Promise.resolve()
-            ]);
-            setLastSyncTime(new Date().toLocaleTimeString());
+            const result = await apiCall({
+                action: 'getSyncData',
+                driverName,
+                category,
+                bikeNumbers: [...routeBikes, ...collectedBikes],
+                includeAdminData: category.includes('ADM')
+            }, 1, true);
+
+            if (result.success && result.data) {
+                const { driverState, bikeDetails, alerts, vandalized, pendingRequests, bikeConflicts, driverLocations, adminAlerts } = result.data;
+
+                if (driverState) {
+                    setRouteBikes(driverState.routeBikes || []);
+                    setCollectedBikes(driverState.collectedBikes || []);
+                }
+
+                if (bikeDetails) {
+                    const routeDetails: Record<string, any> = {};
+                    const collectedDetails: Record<string, any> = {};
+                    Object.entries(bikeDetails).forEach(([bike, details]: [string, any]) => {
+                        if (driverState?.routeBikes?.includes(bike)) routeDetails[bike] = details;
+                        if (driverState?.collectedBikes?.includes(bike)) collectedDetails[bike] = details;
+                    });
+                    setRouteBikesDetails(routeDetails);
+                    setCollectedBikesDetails(collectedDetails);
+                }
+
+                if (alerts) setAlerts(alerts);
+                if (vandalized) setVandalizedBikes(vandalized);
+                if (pendingRequests) setPendingRequests(pendingRequests);
+                if (bikeConflicts) setBikeConflicts(bikeConflicts);
+                if (driverLocations) setDriverLocations(driverLocations);
+                if (adminAlerts) {
+                    setFullAdminAlerts(adminAlerts);
+                    setAlertCount(adminAlerts.length);
+                    if (adminAlerts.length > lastViewedAlertCount) {
+                        setHasNewAlerts(true);
+                    }
+                }
+
+                if (result.version) setBackendVersion(result.version);
+                setLastSyncTime(new Date().toLocaleTimeString());
+            }
+
+            // Atualizações menos frequentes ou manuais
+            if (force) {
+                await Promise.all([
+                    fetchSchedule(),
+                    fetchMotoristas(),
+                    category.includes('ADM') ? fetchChangeStatusData() : Promise.resolve()
+                ]);
+            }
         } catch (err) {
-            console.error("Erro na atualização automática:", err);
+            console.error("Erro na atualização automática otimizada:", err);
         } finally {
             setIsSyncing(false);
         }
-    }, [driverName, category, summaryTimeRange, statusTimeRange]);
+    }, [driverName, category, routeBikes, collectedBikes, lastViewedAlertCount, summaryTimeRange, statusTimeRange]);
 
     useEffect(() => {
-        refreshAll();
+        refreshAll(true); // Força uma carga completa no início (incluindo escala e motoristas)
         fetchStations(); // Estações mudam pouco, busca uma vez
 
-        const interval = setInterval(() => refreshAll(), 3000); // Reduzido para 3 segundos para tempo real
+        const interval = setInterval(() => {
+            if (document.visibilityState === 'visible') {
+                refreshAll();
+            }
+        }, 3000);
 
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'visible') {
@@ -1429,18 +1302,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         setRouteDistances(newDistances);
     }, [currentDriverLocation, routeBikes, routeBikesDetails]);
 
-    const fetchRequests = async () => {
-        try {
-            const result = await apiCall({ action: 'getRequests', driverName, category });
-            if (result.success) {
-                setPendingRequests(result.data || []);
-            } else {
-                setError(result.error || 'Falha ao buscar solicitações.');
-            }
-        } catch (err: any) {
-            setError(err.message || 'Erro de comunicação ao buscar solicitações.');
-        }
-    };
+
 
 
     const renderLocationWithMap = (location: string) => {
@@ -1657,7 +1519,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 {!category.includes('ADM') && searchedBike && (
                     <div className="p-4 border rounded-lg bg-green-50 animate-fade-in-down relative">
                         <button 
-                            onClick={() => { setSearchedBike(null); setSearchTerm(''); if (bikeInLimbo) restoreLimboBike(); }}
+                            onClick={() => { setSearchedBike(null); setSearchTerm(''); }}
                             className="absolute top-2 right-2 p-1 text-green-700 hover:bg-green-100 rounded-full transition-colors"
                             title="Fechar consulta"
                         >
@@ -2029,7 +1891,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                                                 ) : (
                                                     <tr>
                                                         <td colSpan={5} className="p-4 text-center text-gray-400 text-xs italic">
-                                                            {isVandalizedLoading ? 'Buscando vandalizadas...' : 'Nenhuma bike vandalizada no momento.'}
+                                                            {isSyncing ? 'Buscando vandalizadas...' : 'Nenhuma bike vandalizada no momento.'}
                                                         </td>
                                                     </tr>
                                                 )}
@@ -2314,6 +2176,8 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 isOpen={isAdminAlertsOpen}
                 onClose={() => setIsAdminAlertsOpen(false)}
                 adminName={driverName}
+                alerts={fullAdminAlerts}
+                onRefresh={() => refreshAll()}
             />
 
             <ReporModal
