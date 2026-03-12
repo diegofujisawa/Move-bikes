@@ -12,23 +12,35 @@ interface AdminAlertsProps {
     adminName: string;
     isOpen: boolean;
     onClose: () => void;
-    alerts: Alert[];
-    onRefresh: () => void;
 }
 
-const AdminAlerts: React.FC<AdminAlertsProps> = ({ adminName, isOpen, onClose, alerts, onRefresh }) => {
+const AdminAlerts: React.FC<AdminAlertsProps> = ({ adminName, isOpen, onClose }) => {
+    const [alerts, setAlerts] = useState<Alert[]>([]);
     const [isLoading, setIsLoading] = useState(false);
 
-    useEffect(() => {
-        if (isOpen && alerts.length > 0) {
-            // Limpa no servidor sem pedir confirmação, pois o usuário já está vendo
-            apiCall({ action: 'clearAdminAlerts', adminName }, 1, true).then(() => {
-                onRefresh(); // Notifica o pai para atualizar a lista (que virá vazia)
-            }).catch(err => {
-                console.error("Erro ao limpar alertas automaticamente:", err);
-            });
+    const fetchAlerts = async () => {
+        if (!adminName) return;
+        setIsLoading(true);
+        try {
+            const response = await apiCall({ action: 'getAdminAlerts', adminName });
+            if (response.success) {
+                const fetchedAlerts = response.alerts || [];
+                setAlerts(fetchedAlerts);
+                
+                // Se houver alertas, vamos limpá-los no servidor pois o usuário já os viu (abriu o modal)
+                if (fetchedAlerts.length > 0) {
+                    // Limpa no servidor de forma silenciosa
+                    apiCall({ action: 'clearAdminAlerts', adminName }, 0, true).catch(err => {
+                        console.error("Erro ao limpar alertas automaticamente:", err);
+                    });
+                }
+            }
+        } catch (error) {
+            console.error("Erro ao buscar alertas:", error);
+        } finally {
+            setIsLoading(false);
         }
-    }, [isOpen, adminName, alerts.length]);
+    };
 
     const clearAlerts = async () => {
         if (!adminName) return;
@@ -38,7 +50,7 @@ const AdminAlerts: React.FC<AdminAlertsProps> = ({ adminName, isOpen, onClose, a
         try {
             const response = await apiCall({ action: 'clearAdminAlerts', adminName });
             if (response.success) {
-                onRefresh();
+                setAlerts([]);
             }
         } catch (error) {
             console.error("Erro ao limpar alertas:", error);
@@ -46,6 +58,15 @@ const AdminAlerts: React.FC<AdminAlertsProps> = ({ adminName, isOpen, onClose, a
             setIsLoading(false);
         }
     };
+
+    useEffect(() => {
+        if (isOpen) {
+            fetchAlerts();
+            // Poll every 10 seconds while open (increased from 3s)
+            const interval = setInterval(fetchAlerts, 10000);
+            return () => clearInterval(interval);
+        }
+    }, [isOpen, adminName]);
 
     if (!isOpen) return null;
 

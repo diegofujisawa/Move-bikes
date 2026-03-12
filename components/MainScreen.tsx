@@ -117,7 +117,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     const [alertCount, setAlertCount] = useState(0);
     const [hasNewAlerts, setHasNewAlerts] = useState(false);
     const [lastViewedAlertCount, setLastViewedAlertCount] = useState(0);
-    const [fullAdminAlerts, setFullAdminAlerts] = useState<any[]>([]);
     const [isReporModalOpen, setIsReporModalOpen] = useState(false);
     const [reporData, setReporData] = useState<any[]>([]);
     const [isReporLoading, setIsReporLoading] = useState(false);
@@ -128,9 +127,10 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     const [alerts, setAlerts] = useState<any[]>([]);
     const [isAlertsLoading, setIsAlertsLoading] = useState(false);
     const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
+    const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
+    const [isStatusLoading, setIsStatusLoading] = useState(false);
     const [changeStatusData, setChangeStatusData] = useState<{ vandalizadas: string[], filial: string[] }>({ vandalizadas: [], filial: [] });
     const [statusTimeRange, setStatusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
-    const [isStatusLoading, setIsStatusLoading] = useState(false);
     const [backendVersion, setBackendVersion] = useState<string | null>(null);
     const [userSchedule, setUserSchedule] = useState<Record<string, string>>({});
     const [destinationModal, setDestinationModal] = useState<{
@@ -147,6 +147,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     const [processingBikes, setProcessingBikes] = useState<Set<string>>(new Set());
     const isUpdatingStateRef = useRef(false);
     const lastLocationUpdateRef = useRef<number>(0);
+    const lastLocationRef = useRef<{ lat: number, lng: number } | null>(null);
 
     const [lastSyncTime, setLastSyncTime] = useState<string>(new Date().toLocaleTimeString());
     const [isSyncing, setIsSyncing] = useState(false);
@@ -191,8 +192,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         }
     };
 
-
-
     const handleConfirmVandalizedFound = async (alertId: number) => {
         if (!window.confirm("Confirmar que esta bicicleta vandalizada foi encontrada?")) return;
         
@@ -232,21 +231,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
             alert("Erro ao atualizar: " + err.message);
         } finally {
             setIsLoading(false);
-        }
-    };
-
-    const fetchChangeStatusData = async () => {
-        if (!category.includes('ADM')) return;
-        setIsStatusLoading(true);
-        try {
-            const result = await apiGetCall('getChangeStatusData', { timeRange: statusTimeRange });
-            if (result.success) {
-                setChangeStatusData(result.data);
-            }
-        } catch (err: any) {
-            console.error("Erro ao buscar dados de status:", err);
-        } finally {
-            setIsStatusLoading(false);
         }
     };
 
@@ -327,23 +311,9 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     }, [summaryTimeRange]);
 
     useEffect(() => {
-        const fetchAlertCount = async () => {
-            if (!driverName || !category.includes('ADM')) return;
-            try {
-                const response = await apiCall({ action: 'getAdminAlerts', adminName: driverName }, 1, true);
-                if (response.success) {
-                    const newCount = response.alerts?.length || 0;
-                    setAlertCount(newCount);
-                    if (newCount > lastViewedAlertCount) {
-                        setHasNewAlerts(true);
-                    }
-                }
-            } catch {
-                // Silent error for polling
-            }
-        };
-        fetchAlertCount();
-    }, [driverName, lastViewedAlertCount, category]);
+        // O contador de alertas agora é atualizado via refreshAll (sync)
+        // Mantemos apenas o estado inicial aqui se necessário, mas o refreshAll já cuida disso
+    }, [driverName, lastViewedAlertCount]);
 
     const runDriversSummaryFallback = async () => {
         const currentRange = summaryTimeRange;
@@ -1082,9 +1052,9 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
 
     
 
-
-
-
+    useEffect(() => {
+        // Detalhes do roteiro agora são atualizados via refreshAll (sync)
+    }, [routeBikes, collectedBikes, driverName]);
 
     const sortedRouteBikes = useMemo(() => {
         if (!currentDriverLocation || routeBikes.length === 0) return routeBikes;
@@ -1109,20 +1079,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         });
     }, [routeBikes, routeBikesDetails, currentDriverLocation, routeDistances]);
 
-
-
-    const fetchMotoristas = async () => {
-        try {
-            const result = await apiGetCall('getMotoristas');
-            console.log('Motoristas buscados:', result);
-            if (result.success && result.data) {
-                setMotoristas(result.data);
-            }
-        } catch (err: any) {
-            console.error('Erro ao buscar motoristas:', err.message);
-        }
-    };
-
     const fetchStations = async () => {
         try {
             const result = await apiGetCall('getStations');
@@ -1134,81 +1090,127 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         }
     };
 
-
-
     const refreshAll = React.useCallback(async (force = false) => {
         if (!force && (document.visibilityState === 'hidden' || isUpdatingStateRef.current)) return;
         
         setIsSyncing(true);
+        if (category.includes('ADM')) {
+            setIsSummaryLoading(true);
+            setIsAlertsLoading(true);
+            setIsVandalizedLoading(true);
+            setIsStatusLoading(true);
+        }
         try {
-            const result = await apiCall({
-                action: 'getSyncData',
-                driverName,
-                category,
-                bikeNumbers: [...routeBikes, ...collectedBikes],
-                includeAdminData: category.includes('ADM')
-            }, 1, true);
+            const result = await apiCall({ 
+                action: 'sync', 
+                driverName, 
+                category, 
+                summaryTimeRange, 
+                statusTimeRange 
+            }, 2); // Aumentado para 2 retries para maior resiliência
 
             if (result.success && result.data) {
-                const { driverState, bikeDetails, alerts, vandalized, pendingRequests, bikeConflicts, driverLocations, adminAlerts } = result.data;
-
-                if (driverState) {
-                    setRouteBikes(driverState.routeBikes || []);
-                    setCollectedBikes(driverState.collectedBikes || []);
+                const d = result.data;
+                
+                // 1. Requests
+                if (d.requests) setPendingRequests(d.requests);
+                
+                // 2. Driver State
+                if (d.driverState && !isUpdatingStateRef.current) {
+                    setRouteBikes(d.driverState.routeBikes || []);
+                    setCollectedBikes(d.driverState.collectedBikes || []);
                 }
-
-                if (bikeDetails) {
+                
+                // 3. Bike Statuses (Conflicts)
+                if (d.bikeStatuses) setBikeConflicts(d.bikeStatuses);
+                
+                // 4. Schedule
+                if (d.schedule) setUserSchedule(d.schedule);
+                
+                // 5. Motoristas
+                if (d.motoristas) setMotoristas(d.motoristas);
+                
+                // 6. Driver Locations
+                if (d.driverLocations) setDriverLocations(d.driverLocations);
+                
+                // 11. Bike Details (Route and Collected)
+                if (d.bikeDetails) {
+                    const details = d.bikeDetails;
                     const routeDetails: Record<string, any> = {};
                     const collectedDetails: Record<string, any> = {};
-                    Object.entries(bikeDetails).forEach(([bike, details]: [string, any]) => {
-                        if (driverState?.routeBikes?.includes(bike)) routeDetails[bike] = details;
-                        if (driverState?.collectedBikes?.includes(bike)) collectedDetails[bike] = details;
+                    
+                    (d.driverState?.routeBikes || []).forEach((b: string) => {
+                        if (details[b]) routeDetails[b] = details[b];
                     });
-                    setRouteBikesDetails(routeDetails);
+                    (d.driverState?.collectedBikes || []).forEach((b: string) => {
+                        if (details[b]) collectedDetails[b] = details[b];
+                    });
+                    
+                    setRouteBikesDetails(prev => {
+                        const next = { ...routeDetails };
+                        Object.keys(next).forEach(id => {
+                            if (prev[id] && prev[id].initialLat !== null) {
+                                next[id].initialLat = prev[id].initialLat;
+                                next[id].initialLng = prev[id].initialLng;
+                            }
+                        });
+                        return next;
+                    });
                     setCollectedBikesDetails(collectedDetails);
                 }
+                
+                if (category.includes('ADM')) {
+                    // 7. Drivers Summary
+                    if (d.driversSummary) setDriversSummary(d.driversSummary);
+                    
+                    // 8. Alerts
+                    if (d.alerts) setAlerts(d.alerts);
+                    
+                    // 9. Vandalized
+                    if (d.vandalized) setVandalizedBikes(d.vandalized);
+                    
+                    // 10. Change Status Data
+                    if (d.changeStatusData) setChangeStatusData(d.changeStatusData);
 
-                if (alerts) setAlerts(alerts);
-                if (vandalized) setVandalizedBikes(vandalized);
-                if (pendingRequests) setPendingRequests(pendingRequests);
-                if (bikeConflicts) setBikeConflicts(bikeConflicts);
-                if (driverLocations) setDriverLocations(driverLocations);
-                if (adminAlerts) {
-                    setFullAdminAlerts(adminAlerts);
-                    setAlertCount(adminAlerts.length);
-                    if (adminAlerts.length > lastViewedAlertCount) {
-                        setHasNewAlerts(true);
+                    // 12. Admin Alerts
+                    if (d.adminAlerts) {
+                        const newCount = d.adminAlerts.length;
+                        setAlertCount(newCount);
+                        if (newCount > lastViewedAlertCount) {
+                            setHasNewAlerts(true);
+                        }
                     }
                 }
 
                 if (result.version) setBackendVersion(result.version);
                 setLastSyncTime(new Date().toLocaleTimeString());
+            } else {
+                setError(result.error || 'Falha na sincronização de dados.');
             }
-
-            // Atualizações menos frequentes ou manuais
-            if (force) {
-                await Promise.all([
-                    fetchSchedule(),
-                    fetchMotoristas(),
-                    category.includes('ADM') ? fetchChangeStatusData() : Promise.resolve()
-                ]);
+        } catch (err: any) {
+            console.error("Erro na atualização automática:", err);
+            // Se o erro for "Ação desconhecida", o backend ainda não foi atualizado
+            if (err.message && err.message.includes('Ação desconhecida')) {
+                console.warn("Backend não suporta 'sync'. Usando modo legado.");
+                // Fallback para o modo antigo se necessário (opcional, mas bom para transição)
             }
-        } catch (err) {
-            console.error("Erro na atualização automática otimizada:", err);
         } finally {
             setIsSyncing(false);
+            if (category.includes('ADM')) {
+                setIsSummaryLoading(false);
+                setIsAlertsLoading(false);
+                setIsVandalizedLoading(false);
+                setIsStatusLoading(false);
+            }
         }
-    }, [driverName, category, routeBikes, collectedBikes, lastViewedAlertCount, summaryTimeRange, statusTimeRange]);
+    }, [driverName, category, summaryTimeRange, statusTimeRange]);
 
     useEffect(() => {
-        refreshAll(true); // Força uma carga completa no início (incluindo escala e motoristas)
+        refreshAll();
         fetchStations(); // Estações mudam pouco, busca uma vez
 
-        const interval = setInterval(() => {
-            if (document.visibilityState === 'visible') {
-                refreshAll();
-            }
-        }, 3000);
+        // ATUALIZAÇÃO: Intervalo aumentado de 3s para 10s para reduzir carga no servidor
+        const interval = setInterval(() => refreshAll(), 30000); 
 
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'visible') {
@@ -1240,10 +1242,37 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 setGpsError(null);
                 setCurrentDriverLocation({ lat: latitude, lng: longitude });
                 
-                // OTIMIZAÇÃO: Throttle de 10 segundos para atualizações de localização no servidor
+                // OTIMIZAÇÃO: Throttle de 10 segundos E verificação de distância (mínimo 10 metros)
                 const now = Date.now();
+                const lastPos = lastLocationRef.current;
+                
+                let shouldUpdate = false;
                 if (now - lastLocationUpdateRef.current > 10000) {
+                    if (!lastPos) {
+                        shouldUpdate = true;
+                    } else {
+                        // Calcula distância em metros
+                        const R = 6371e3; // raio da terra em metros
+                        const φ1 = latitude * Math.PI/180;
+                        const φ2 = lastPos.lat * Math.PI/180;
+                        const Δφ = (lastPos.lat - latitude) * Math.PI/180;
+                        const Δλ = (lastPos.lng - longitude) * Math.PI/180;
+
+                        const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+                                Math.cos(φ1) * Math.cos(φ2) *
+                                Math.sin(Δλ/2) * Math.sin(Δλ/2);
+                        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                        const distance = R * c;
+
+                        if (distance > 10) { // 10 metros
+                            shouldUpdate = true;
+                        }
+                    }
+                }
+
+                if (shouldUpdate) {
                     lastLocationUpdateRef.current = now;
+                    lastLocationRef.current = { lat: latitude, lng: longitude };
                     apiGetCall('updateLocation', {
                         driverName,
                         latitude: latitude.toFixed(6),
@@ -1301,9 +1330,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         
         setRouteDistances(newDistances);
     }, [currentDriverLocation, routeBikes, routeBikesDetails]);
-
-
-
 
     const renderLocationWithMap = (location: string) => {
         if (!location) return null;
@@ -1388,6 +1414,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                         onClick={() => {
                             setIsAdminAlertsOpen(true);
                             setHasNewAlerts(false);
+                            setAlertCount(0);
                             setLastViewedAlertCount(alertCount);
                         }} 
                         disabled={isLoading} 
@@ -1891,7 +1918,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                                                 ) : (
                                                     <tr>
                                                         <td colSpan={5} className="p-4 text-center text-gray-400 text-xs italic">
-                                                            {isSyncing ? 'Buscando vandalizadas...' : 'Nenhuma bike vandalizada no momento.'}
+                                                            {isVandalizedLoading ? 'Buscando vandalizadas...' : 'Nenhuma bike vandalizada no momento.'}
                                                         </td>
                                                     </tr>
                                                 )}
@@ -2176,8 +2203,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 isOpen={isAdminAlertsOpen}
                 onClose={() => setIsAdminAlertsOpen(false)}
                 adminName={driverName}
-                alerts={fullAdminAlerts}
-                onRefresh={() => refreshAll()}
             />
 
             <ReporModal

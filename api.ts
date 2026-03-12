@@ -198,7 +198,22 @@ export const apiCall = async (payload: any, retries = 1, silent = false): Promis
     try {
         result = JSON.parse(textResponse);
     } catch {
-        if (!silent) console.error("Falha ao parsear a resposta JSON:", textResponse);
+        console.error("Falha ao parsear a resposta JSON:", textResponse);
+        
+        // Se a resposta contiver erros típicos de concorrência do Google
+        if (textResponse.includes('Service invoked too many times') || 
+            textResponse.includes('Too many simultaneous invocations') ||
+            textResponse.includes('ScriptError')) {
+          
+          if (retries > 0) {
+            const backoff = (2 - retries + 1) * 2000 + Math.random() * 1000;
+            if (!silent) console.warn(`Servidor sobrecarregado. Tentando novamente em ${Math.round(backoff)}ms...`);
+            await new Promise(resolve => setTimeout(resolve, backoff));
+            return apiCall(payload, retries - 1, silent);
+          }
+          throw new Error('O servidor está com muitos acessos simultâneos no momento. Por favor, aguarde alguns segundos e tente novamente.');
+        }
+
         let detailedError = "O servidor retornou uma resposta inesperada (não-JSON). Isso geralmente indica um erro no script do Google. ";
         detailedError += "Verifique os logs de execução do script para mais detalhes.";
         
