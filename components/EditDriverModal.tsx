@@ -36,12 +36,17 @@ const EditDriverModal: React.FC<EditDriverModalProps> = ({ isOpen, onClose, driv
         if (!bike) return;
 
         if (activeTab === 'route') {
-            if (!routeBikes.includes(bike)) {
+            // Não adiciona ao roteiro se já estiver no roteiro ou já estiver em posse
+            if (!routeBikes.includes(bike) && !collectedBikes.includes(bike)) {
                 setRouteBikes([...routeBikes, bike]);
+            } else if (collectedBikes.includes(bike)) {
+                alert(`A bicicleta ${bike} já está em posse do motorista.`);
             }
         } else {
+            // Se adicionar em posse, remove do roteiro se estiver lá
             if (!collectedBikes.includes(bike)) {
                 setCollectedBikes([...collectedBikes, bike]);
+                setRouteBikes(routeBikes.filter(b => b !== bike));
             }
         }
         setNewBike('');

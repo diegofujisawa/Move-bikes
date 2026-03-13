@@ -80,12 +80,19 @@ function inspectBikesSheet() {
   return { success: true, headers: headers, data: data };
 }
 
+function inspectStateSheet() {
+  const sheet = ss.getSheetByName(STATE_SHEET_NAME);
+  if (!sheet) return { error: 'Sheet not found' };
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  return { success: true, headers: headers };
+}
+
 function doGet(e) {
   const action = e.parameter.action;
   
-  if (action === 'inspectBikes') {
+  if (action === 'inspectState') {
     return ContentService
-      .createTextOutput(JSON.stringify(inspectBikesSheet()))
+      .createTextOutput(JSON.stringify(inspectStateSheet()))
       .setMimeType(ContentService.MimeType.JSON);
   }
 
@@ -233,26 +240,30 @@ function handleSync(request) {
   
   try {
     // OTIMIZAÇÃO: Abre as abas principais uma única vez
-    const requestsSheet = ss.getSheetByName(REQUESTS_SHEET_NAME);
-    const stateSheet = ss.getSheetByName(STATE_SHEET_NAME);
-    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
-    const accessSheet = ss.getSheetByName(ACCESS_SHEET_NAME);
+    const sheets = {
+      requests: ss.getSheetByName(REQUESTS_SHEET_NAME),
+      state: ss.getSheetByName(STATE_SHEET_NAME),
+      report: ss.getSheetByName(REPORT_SHEET_NAME),
+      access: ss.getSheetByName(ACCESS_SHEET_NAME),
+      bikes: ss.getSheetByName(BIKES_SHEET_NAME),
+      stations: ss.getSheetByName(STATIONS_SHEET_NAME)
+    };
     
     // 1. Requests (Solicitações Pendentes)
-    response.data.requests = getRequests(driverName, category, requestsSheet).data || [];
+    response.data.requests = getRequests(driverName, category, sheets.requests).data || [];
     
     // 2. Driver State (Roteiro e Posse)
-    const driverStateResult = getDriverState(driverName, stateSheet);
+    const driverStateResult = getDriverState(driverName, sheets.state);
     response.data.driverState = driverStateResult.data || { routeBikes: [], collectedBikes: [] };
     
     // 3. Bike Statuses (Conflitos e Status Críticos)
-    response.data.bikeStatuses = getBikeStatuses(stateSheet, reportSheet).data || {};
+    response.data.bikeStatuses = getBikeStatuses(sheets.state, sheets.report).data || {};
     
     // 4. Schedule (Escala)
     response.data.schedule = getSchedule(driverName).data || {};
     
     // 5 & 6. Motoristas e Localizações (Ambos usam ACCESS sheet)
-    const accessData = accessSheet ? accessSheet.getDataRange().getValues() : [];
+    const accessData = sheets.access ? sheets.access.getDataRange().getValues() : [];
     response.data.motoristas = getMotoristas(accessData).data || [];
     response.data.driverLocations = getDriverLocations(accessData).data || [];
     
@@ -262,15 +273,14 @@ function handleSync(request) {
     const allBikes = [...new Set([...routeBikes, ...collectedBikes])];
     
     if (allBikes.length > 0) {
-      const bikesSheet = ss.getSheetByName(BIKES_SHEET_NAME);
-      response.data.bikeDetails = getRouteDetails(driverName, allBikes, bikesSheet, requestsSheet).data || {};
+      response.data.bikeDetails = getRouteDetails(driverName, allBikes, sheets.bikes, sheets.requests).data || {};
     } else {
       response.data.bikeDetails = {};
     }
     
     if (isAdm) {
       // 7. Drivers Summary
-      response.data.driversSummary = getDriversSummary(summaryTimeRange).data || [];
+      response.data.driversSummary = getDriversSummary(summaryTimeRange, sheets).data || [];
       
       // 8. Alerts
       response.data.alerts = getAlerts().data || [];
@@ -279,7 +289,7 @@ function handleSync(request) {
       response.data.vandalized = getVandalized().data || [];
       
       // 10. Change Status Data
-      response.data.changeStatusData = getChangeStatusData(statusTimeRange).data || { vandalizadas: [], filial: [] };
+      response.data.changeStatusData = getChangeStatusData(statusTimeRange, sheets).data || { vandalizadas: [], filial: [] };
       
       // 12. Admin Alerts
       response.data.adminAlerts = getAdminAlerts(driverName).alerts || [];
@@ -343,8 +353,9 @@ function handleLogin(login, password, plate, kmInicial) {
     }
 
     const rowIndexInSheet = foundCell.getRow();
-    const rowData = sheet.getRange(rowIndexInSheet, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
-    const category = (rowData[COLUMN_INDICES.ACCESS.CATEGORIA - 1] || 'MOTORISTA').trim().toUpperCase();
+    const lastCol = sheet.getLastColumn();
+    const rowData = sheet.getRange(rowIndexInSheet, 1, 1, lastCol).getValues()[0];
+    const category = (rowData[COLUMN_INDICES.ACCESS.CATEGORIA - 1] || 'MOTORISTA').toString().trim().toUpperCase();
     const storedPassword = (rowData[COLUMN_INDICES.ACCESS.SENHA - 1] || '').toString().trim();
 
     if (storedPassword === password.toString().trim()) {
@@ -491,14 +502,23 @@ function updateLocation(driverName, latitude, longitude) {
   }
 }
 
-function getDriverLocations() {
-  const sheet = ss.getSheetByName(ACCESS_SHEET_NAME);
-  if (!sheet) throw new Error(`Planilha "${ACCESS_SHEET_NAME}" não encontrada.`);
+function getDriverLocations(providedData) {
+  let data = providedData;
+  if (!data) {
+    const sheet = ss.getSheetByName(ACCESS_SHEET_NAME);
+    if (!sheet) throw new Error(`Planilha "${ACCESS_SHEET_NAME}" não encontrada.`);
 
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return { success: true, data: [] };
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { success: true, data: [] };
 
-  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+    data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  } else {
+    // Se os dados foram providos, removemos o cabeçalho se ele estiver lá
+    if (data.length > 0 && (data[0][0] === 'Usuário' || data[0][0] === 'USUARIO')) {
+      data = data.slice(1);
+    }
+  }
+
   const locations = [];
   const now = new Date();
   const TEN_MINUTES_IN_MS = 10 * 60 * 1000;
@@ -600,7 +620,8 @@ function getRequests(driverName, category, providedSheet) {
     const lastRow = sheet.getLastRow();
 
     if (lastRow >= 2) {
-        const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getDisplayValues();
+        const lastCol = sheet.getLastColumn();
+        const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
         const userCategory = (category || '').toUpperCase();
         const isMotorista = userCategory.includes('MOTORISTA');
         const userNameLower = (driverName || '').toLowerCase();
@@ -644,8 +665,10 @@ function getRequestsHistory(driverName, category) {
     
     let history = [];
 
-    if (sheet.getLastRow() >= 2) {
-        const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+        const lastCol = sheet.getLastColumn();
+        const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
         const isAdm = category && category.toUpperCase().includes('ADM');
 
         history = data.map((row, index) => {
@@ -847,7 +870,7 @@ function getStations() {
 
     const stations = data.map(row => {
       const name = (row[COLUMN_INDICES.STATIONS.NAME - 1] || '').toString();
-      const nameKey = name.trim().toLowerCase();
+      const nameKey = name.toString().trim().toLowerCase();
       return {
         Id: row[COLUMN_INDICES.STATIONS.ID - 1],
         Numb: row[COLUMN_INDICES.STATIONS.NUMB - 1],
@@ -888,7 +911,7 @@ function getMotoristas(providedData) {
     if (!sheet) throw new Error(`Planilha "${ACCESS_SHEET_NAME}" não encontrada.`);
     const lastRow = sheet.getLastRow();
     if (lastRow < 2) return { success: true, data: [] };
-    data = sheet.getRange(2, 1, lastRow - 1, COLUMN_INDICES.ACCESS.CATEGORIA).getDisplayValues();
+    data = sheet.getRange(2, 1, lastRow - 1, COLUMN_INDICES.ACCESS.CATEGORIA).getValues();
   } else {
     // Se os dados foram providos, removemos o cabeçalho se ele estiver lá
     if (data.length > 0 && (data[0][0] === 'Usuário' || data[0][0] === 'USUARIO')) {
@@ -961,27 +984,43 @@ function logReport(rowData, kmFinal, plate) {
     const sheet = ss.getSheetByName(REPORT_SHEET_NAME);
     if (!sheet) throw new Error(`Planilha "${REPORT_SHEET_NAME}" não encontrada.`);
 
-    // Prevenção de duplicidade: verifica se já existe um registro idêntico nos últimos 10 segundos
+    // Prevenção de duplicidade robusta: verifica se já existe um registro idêntico nos últimos minutos
+    // O usuário solicitou que o app exclua a linha da segunda informação duplicada (mesmo local, mesma estação, diferença de minutos)
     const lastRow = sheet.getLastRow();
     if (lastRow > 1) {
-      const lastData = sheet.getRange(Math.max(2, lastRow - 5), 1, Math.min(lastRow - 1, 5), sheet.getLastColumn()).getValues();
+      // Verificamos as últimas 100 linhas para garantir que pegamos duplicatas mesmo com tráfego intenso
+      const numRowsToCheck = Math.min(lastRow - 1, 100);
+      const lastData = sheet.getRange(lastRow - numRowsToCheck + 1, 1, numRowsToCheck, sheet.getLastColumn()).getValues();
       const now = new Date();
-      const patrimonio = rowData[COLUMN_INDICES.REPORTS.PATRIMONIO - 1];
-      const status = rowData[COLUMN_INDICES.REPORTS.STATUS - 1];
-      const motorista = rowData[COLUMN_INDICES.REPORTS.MOTORISTA - 1];
+      
+      const patrimonio = (rowData[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim();
+      const status = (rowData[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim();
+      const observacao = (rowData[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
+      const localidade = (rowData[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] || '').toString().trim();
+      const motorista = (rowData[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
 
       for (let i = lastData.length - 1; i >= 0; i--) {
         const row = lastData[i];
         const rowTimestamp = new Date(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
-        const rowPatrimonio = row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1];
-        const rowStatus = row[COLUMN_INDICES.REPORTS.STATUS - 1];
-        const rowMotorista = row[COLUMN_INDICES.REPORTS.MOTORISTA - 1];
+        const rowPatrimonio = (row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim();
+        const rowStatus = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim();
+        const rowObservacao = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
+        const rowLocalidade = (row[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] || '').toString().trim();
+        const rowMotorista = (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
 
-        // Se for a mesma bike, mesmo status, mesmo motorista e em menos de 60 segundos
-        if (String(rowPatrimonio) === String(patrimonio) && String(rowStatus) === String(status) && String(rowMotorista) === String(motorista)) {
-          const diff = (now.getTime() - rowTimestamp.getTime()) / 1000;
-          if (diff < 60) {
-            return { success: true, message: "Registro duplicado ignorado." };
+        // Critérios de duplicidade: mesma bike, mesmo status e mesmo motorista
+        const isSameBikeAndStatus = rowPatrimonio === patrimonio && rowStatus === status;
+        const isSameMotorista = rowMotorista === motorista;
+        
+        if (isSameBikeAndStatus && isSameMotorista) {
+          const diffMinutes = Math.abs(now.getTime() - rowTimestamp.getTime()) / (1000 * 60);
+          
+          // Se for a mesma bike, mesmo status e mesmo motorista em menos de 10 minutos, 
+          // consideramos duplicata mesmo que o local ou observação variem ligeiramente
+          // (ex: uma com GPS e outra sem, ou uma com observação automática e outra manual)
+          if (diffMinutes < 10) {
+            console.log(`Duplicidade detectada para bike ${patrimonio}. Ignorando nova entrada.`);
+            return { success: true, message: "Registro duplicado detectado e ignorado." };
           }
         }
       }
@@ -1044,6 +1083,13 @@ function logReport(rowData, kmFinal, plate) {
       // Se a bike for registrada com qualquer outro status, ela foi "encontrada"
       resolveAlert(patrimonio, motorista || 'Sistema');
       resolveVandalized(patrimonio, motorista || 'Sistema');
+    }
+
+    // Limpeza de duplicatas recentes (garantia extra)
+    try {
+      cleanupRecentDuplicates();
+    } catch (e) {
+      console.error("Erro na limpeza de duplicatas:", e);
     }
 
     return { success: true };
@@ -1201,12 +1247,9 @@ function getOrCreateSheet(activeSS, sheetName, headers) {
 
 function getAlerts() {
   try {
-    const activeSS = SpreadsheetApp.openById(SPREADSHEET_ID);
-    if (!activeSS) throw new Error("Não foi possível abrir a planilha pelo ID.");
-
-    const reportSheet = activeSS.getSheetByName(REPORT_SHEET_NAME);
+    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
     // Tenta pegar ou criar a aba Alertas
-    const alertsSheet = getOrCreateSheet(activeSS, ALERTS_SHEET_NAME, 
+    const alertsSheet = getOrCreateSheet(ss, ALERTS_SHEET_NAME, 
       ['Patrimônio', 'Check 1', 'Check 2', 'Check 3', 'Situação', 'Encontrada Por', 'Data Encontrada']);
     
     if (!reportSheet) return { success: true, data: [] };
@@ -1404,11 +1447,8 @@ function resolveVandalized(patrimonio, motorista) {
 
 function getVandalized() {
   try {
-    const activeSS = SpreadsheetApp.openById(SPREADSHEET_ID);
-    if (!activeSS) throw new Error("Não foi possível abrir a planilha pelo ID.");
-
-    const reportSheet = activeSS.getSheetByName(REPORT_SHEET_NAME);
-    const vandalizedSheet = getOrCreateSheet(activeSS, VANDALIZED_SHEET_NAME,
+    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
+    const vandalizedSheet = getOrCreateSheet(ss, VANDALIZED_SHEET_NAME,
       ['Patrimônio', 'Data', 'Defeito', 'Local', 'Situação', 'Encontrada Por', 'Data Encontrada']);
     
     if (!reportSheet) return { success: true, data: [] };
@@ -1535,13 +1575,15 @@ function updateBikeAssignment(bikeNumber, driverName) {
   if (!sheet) throw new Error(`Planilha "${STATE_SHEET_NAME}" não encontrada.`);
   if (sheet.getLastRow() < 2) return { success: true };
 
-  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
   
   // Para cada motorista, verifica se a bike está na sua lista de recolhidas
   for (let i = 0; i < data.length; i++) {
     const row = data[i];
     const currentRowDriver = row[COLUMN_INDICES.STATE.MOTORISTA - 1];
-    let collectedBikes = (row[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').split(',').map(s => s.trim()).filter(Boolean);
+    let collectedBikes = (row[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
     const bikeIndex = collectedBikes.indexOf(bikeNumber.toString());
 
     if (currentRowDriver.toLowerCase() === (driverName || '').toLowerCase()) {
@@ -1568,7 +1610,7 @@ function getAllPatrimonioNumbers() {
   if (sheet.getLastRow() < 2) return { success: true, data: [] };
 
   const patrimonioColumn = sheet.getRange(2, COLUMN_INDICES.BIKES.PATRIMONIO, sheet.getLastRow() - 1, 1);
-  const numbers = patrimonioColumn.getDisplayValues().flat().filter(String);
+  const numbers = patrimonioColumn.getValues().flat().filter(String);
   return { success: true, data: numbers };
 }
 
@@ -1582,7 +1624,7 @@ function clearDriverRoute(driverName) {
         if (!requestSheet) throw new Error(`Planilha "${REQUESTS_SHEET_NAME}" não encontrada.`);
 
         const data = requestSheet.getRange(2, 1, requestSheet.getLastRow() - 1, requestSheet.getLastColumn()).getValues();
-        const driverTrimmedLower = driverName.trim().toLowerCase();
+        const driverTrimmedLower = (driverName || '').toString().trim().toLowerCase();
         let changesMade = false;
 
         for (let i = 0; i < data.length; i++) {
@@ -1623,10 +1665,11 @@ function getDriverState(driverName, providedSheet) {
 
   if (foundCell) {
     const rowIndex = foundCell.getRow();
-    const rowData = sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+    const lastCol = sheet.getLastColumn();
+    const rowData = sheet.getRange(rowIndex, 1, 1, lastCol).getValues()[0];
     
-    const routeBikes = (rowData[COLUMN_INDICES.STATE.ROTEIRO - 1] || '').split(',').map(s => s.trim()).filter(Boolean);
-    const collectedBikes = (rowData[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').split(',').map(s => s.trim()).filter(Boolean);
+    const routeBikes = (rowData[COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
+    const collectedBikes = (rowData[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
     
     return { success: true, data: { routeBikes, collectedBikes } };
   }
@@ -1687,7 +1730,7 @@ function finalizeCollectedBike(request) {
 function updateDriverState(driverName, routeBikes, collectedBikes) {
   const lock = LockService.getScriptLock();
   try {
-    // Tenta obter o lock por até 5 segundos (reduzido de 10 para ser mais ágil)
+    // Tenta obter o lock por até 5 segundos
     if (!lock.tryLock(5000)) {
        console.warn("Não foi possível obter o lock para updateDriverState. Continuando sem lock para evitar lentidão extrema.");
     }
@@ -1695,36 +1738,77 @@ function updateDriverState(driverName, routeBikes, collectedBikes) {
     const sheet = ss.getSheetByName(STATE_SHEET_NAME);
     if (!sheet) throw new Error(`Planilha "${STATE_SHEET_NAME}" não encontrada.`);
 
-    const driverCol = COLUMN_INDICES.STATE.MOTORISTA;
     const lastRow = sheet.getLastRow();
-    let rowIndex = -1;
+    if (lastRow < 2) {
+      // Se a planilha estiver vazia, adiciona o primeiro motorista
+      const newRow = new Array(sheet.getLastColumn() || 4).fill('');
+      newRow[COLUMN_INDICES.STATE.MOTORISTA - 1] = driverName;
+      newRow[COLUMN_INDICES.STATE.ROTEIRO - 1] = Array.isArray(routeBikes) ? routeBikes.join(', ') : '';
+      newRow[COLUMN_INDICES.STATE.RECOLHIDAS - 1] = Array.isArray(collectedBikes) ? collectedBikes.join(', ') : '';
+      sheet.appendRow(newRow);
+      return { success: true };
+    }
 
-    // OTIMIZAÇÃO: Busca o motorista de forma mais direta
-    if (lastRow >= 2) {
-      const driverColumnRange = sheet.getRange(2, driverCol, lastRow - 1, 1);
-      const textFinder = driverColumnRange.createTextFinder(String(driverName).trim()).matchEntireCell(true);
-      const foundCell = textFinder.findNext();
-      if (foundCell) {
-        rowIndex = foundCell.getRow();
+    const allData = sheet.getDataRange().getValues();
+    const headers = allData[0];
+    const dataRows = allData.slice(1);
+    
+    const driverColIdx = COLUMN_INDICES.STATE.MOTORISTA - 1;
+    const routeColIdx = COLUMN_INDICES.STATE.ROTEIRO - 1;
+    const collectedColIdx = COLUMN_INDICES.STATE.RECOLHIDAS - 1;
+    
+    const routeString = Array.isArray(routeBikes) ? [...new Set(routeBikes.map(b => String(b).trim()))].filter(Boolean).join(', ') : '';
+    const collectedString = Array.isArray(collectedBikes) ? [...new Set(collectedBikes.map(b => String(b).trim()))].filter(Boolean).join(', ') : '';
+    const bikesToClean = Array.isArray(collectedBikes) ? collectedBikes.map(b => String(b).trim()).filter(Boolean) : [];
+
+    let driverFound = false;
+    let changed = false;
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const currentDriver = String(dataRows[i][driverColIdx]).trim();
+      
+      if (currentDriver.toLowerCase() === String(driverName).trim().toLowerCase()) {
+        // Atualiza o motorista atual
+        dataRows[i][routeColIdx] = routeString;
+        dataRows[i][collectedColIdx] = collectedString;
+        driverFound = true;
+        changed = true;
+      } else if (bikesToClean.length > 0) {
+        // GARANTIA DE UNICIDADE: Remove as bikes recolhidas de qualquer outro motorista
+        let otherRoute = String(dataRows[i][routeColIdx] || '').split(',').map(s => s.trim()).filter(Boolean);
+        let otherCollected = String(dataRows[i][collectedColIdx] || '').split(',').map(s => s.trim()).filter(Boolean);
+        
+        let rowChanged = false;
+        bikesToClean.forEach(bike => {
+          const rIdx = otherRoute.indexOf(bike);
+          if (rIdx !== -1) {
+            otherRoute.splice(rIdx, 1);
+            rowChanged = true;
+          }
+          const cIdx = otherCollected.indexOf(bike);
+          if (cIdx !== -1) {
+            otherCollected.splice(cIdx, 1);
+            rowChanged = true;
+          }
+        });
+        
+        if (rowChanged) {
+          dataRows[i][routeColIdx] = otherRoute.join(', ');
+          dataRows[i][collectedColIdx] = otherCollected.join(', ');
+          changed = true;
+        }
       }
     }
 
-    const routeString = Array.isArray(routeBikes) ? [...new Set(routeBikes.map(b => String(b).trim()))].filter(Boolean).join(', ') : '';
-    const collectedString = Array.isArray(collectedBikes) ? [...new Set(collectedBikes.map(b => String(b).trim()))].filter(Boolean).join(', ') : '';
-
-    if (rowIndex !== -1) {
-      // OTIMIZAÇÃO: Atualiza as duas colunas em uma única chamada se forem adjacentes (não são, então usamos batch se possível)
-      // No caso atual, as colunas são 3 e 4, então podemos atualizar o range (rowIndex, 3, 1, 2)
-      const range = sheet.getRange(rowIndex, Math.min(COLUMN_INDICES.STATE.ROTEIRO, COLUMN_INDICES.STATE.RECOLHIDAS), 1, 2);
-      // Assume que ROTEIRO é 3 e RECOLHIDAS é 4
-      range.setValues([[routeString, collectedString]]);
-    } else {
-      // Adiciona uma nova linha se o motorista não existir
-      const newRow = new Array(sheet.getLastColumn()).fill('');
-      newRow[COLUMN_INDICES.STATE.MOTORISTA - 1] = driverName;
-      newRow[COLUMN_INDICES.STATE.ROTEIRO - 1] = routeString;
-      newRow[COLUMN_INDICES.STATE.RECOLHIDAS - 1] = collectedString;
+    if (!driverFound) {
+      const newRow = new Array(headers.length).fill('');
+      newRow[driverColIdx] = driverName;
+      newRow[routeColIdx] = routeString;
+      newRow[collectedColIdx] = collectedString;
       sheet.appendRow(newRow);
+    } else if (changed) {
+      // Grava tudo de volta em uma única operação se houve mudanças
+      sheet.getRange(2, 1, dataRows.length, headers.length).setValues(dataRows);
     }
 
     return { success: true };
@@ -1797,8 +1881,10 @@ function getDailyReportData(driverName, timeRange = 'day') {
     const sessions = {}; // { plate: [ { inicio: KM, fim: KM } ] }
 
     // Processa a aba Relatorio
-    if (reportSheet.getLastRow() > 1) {
-        const reportData = reportSheet.getRange(2, 1, reportSheet.getLastRow() - 1, reportSheet.getLastColumn()).getValues();
+    const lastRowReport = reportSheet.getLastRow();
+    if (lastRowReport > 1) {
+        const lastColReport = reportSheet.getLastColumn();
+        const reportData = reportSheet.getRange(2, 1, lastRowReport - 1, lastColReport).getValues();
         reportData.forEach(row => {
             const timestamp = new Date(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
             const motorista = (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
@@ -1850,7 +1936,7 @@ function getDailyReportData(driverName, timeRange = 'day') {
                     }
                 } else if (statusLower === 'estação' || statusLower === 'estacao') {
                     report.remanejadas.push(patrimonio);
-                    const stationName = (observacao || 'Estação').trim();
+                    const stationName = (observacao || 'Estação').toString().trim();
                     report.estacoes[stationName] = (report.estacoes[stationName] || 0) + 1;
                 } else if (statusLower === 'não encontrada' || statusLower === 'nao encontrada') {
                     report.naoEncontrada.push(patrimonio);
@@ -1881,7 +1967,7 @@ function getDailyReportData(driverName, timeRange = 'day') {
             const acceptedDate = row[COLUMN_INDICES.REQUESTS.ACEITA_DATA - 1];
             const local = (row[COLUMN_INDICES.REQUESTS.LOCAL - 1] || '').toString().trim();
 
-            if (acceptedBy.trim().toLowerCase() === driverName.trim().toLowerCase() && acceptedDate) {
+            if ((acceptedBy || '').toString().trim().toLowerCase() === (driverName || '').toString().trim().toLowerCase() && acceptedDate) {
                 const timestamp = new Date(acceptedDate);
                 if (timestamp >= filterDate && timestamp <= todayEnd) {
                     const patrimonio = (row[COLUMN_INDICES.REQUESTS.PATRIMONIO - 1] || '').toString().trim();
@@ -1963,7 +2049,7 @@ function getSchedule(driverName) {
     if (!sheet) return { success: false, error: 'Aba "Escala" não encontrada.' };
     
     const range = sheet.getDataRange();
-    const values = range.getDisplayValues(); // Use display values for exact text from spreadsheet
+    const values = range.getValues(); // Use display values for exact text from spreadsheet
     if (values.length < 2) return { success: true, data: {} };
     
     const headers = values[0];
@@ -1979,11 +2065,11 @@ function getSchedule(driverName) {
         for (let j = 0; j < headers.length; j++) {
           if (j === driverColumnIndex) continue;
           
-          let header = headers[j].trim();
+          let header = headers[j].toString().trim();
           if (header) {
-            let val1 = values[i][j].trim();
+            let val1 = (values[i][j] || '').toString().trim();
             // Check if next column belongs to this day (empty header)
-            let val2 = (j + 1 < headers.length && !headers[j+1].trim()) ? values[i][j+1].trim() : '';
+            let val2 = (j + 1 < headers.length && !headers[j+1].toString().trim()) ? (values[i][j+1] || '').toString().trim() : '';
             
             // Clean up common time formats if they have seconds (e.g. 08:00:00 -> 08:00)
             const cleanTime = (t) => {
@@ -2060,7 +2146,8 @@ function getBikeStatuses(providedStateSheet, providedReportSheet) {
       const lastRow = reportSheet.getLastRow();
       if (lastRow > 1) {
         const numRows = Math.min(lastRow - 1, 300);
-        const reportData = reportSheet.getRange(lastRow - numRows + 1, 1, numRows, reportSheet.getLastColumn()).getValues();
+        const lastCol = reportSheet.getLastColumn();
+        const reportData = reportSheet.getRange(lastRow - numRows + 1, 1, numRows, lastCol).getValues();
         
         for (let i = reportData.length - 1; i >= 0; i--) {
           const row = reportData[i];
@@ -2093,15 +2180,14 @@ function getBikeStatuses(providedStateSheet, providedReportSheet) {
 
 function getReporData() {
   try {
-    const activeSS = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const sheet = activeSS.getSheetByName(REPOR_SHEET_NAME);
+    const sheet = ss.getSheetByName(REPOR_SHEET_NAME);
     if (!sheet) return { success: false, error: 'Aba "Repor" não encontrada.' };
     
     const lastRow = sheet.getLastRow();
     if (lastRow < 1) return { success: true, data: [] };
     
     const lastCol = sheet.getLastColumn();
-    const allValues = sheet.getRange(1, 1, lastRow, lastCol).getDisplayValues();
+    const allValues = sheet.getRange(1, 1, lastRow, lastCol).getValues();
     
     // Detectar se a primeira linha é cabeçalho
     const firstRow = allValues[0];
@@ -2111,7 +2197,7 @@ function getReporData() {
     let startIdx = 0;
     
     if (isHeader) {
-      headers = firstRow.map(h => h.trim());
+      headers = firstRow.map(h => (h || '').toString().trim());
       startIdx = 1;
     } else {
       // Cabeçalhos padrão baseados na imagem do usuário
@@ -2129,7 +2215,7 @@ function getReporData() {
         const key = header || `Coluna ${index + 1}`;
         const val = allValues[i][index];
         rowObj[key] = val;
-        if (val && val.trim() !== "") hasContent = true;
+        if (val && (val || '').toString().trim() !== "") hasContent = true;
       });
       if (hasContent) data.push(rowObj);
     }
@@ -2140,11 +2226,11 @@ function getReporData() {
   }
 }
 
-function getChangeStatusData(timeRange = '24h') {
+function getChangeStatusData(timeRange = '24h', providedSheets = null) {
   try {
-    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
-    const stationSheet = ss.getSheetByName(STATIONS_SHEET_NAME);
-    const bikeSheet = ss.getSheetByName(BIKES_SHEET_NAME);
+    const reportSheet = providedSheets ? providedSheets.report : ss.getSheetByName(REPORT_SHEET_NAME);
+    const stationSheet = providedSheets ? providedSheets.stations : ss.getSheetByName(STATIONS_SHEET_NAME);
+    const bikeSheet = providedSheets ? providedSheets.bikes : ss.getSheetByName(BIKES_SHEET_NAME);
     
     if (!reportSheet) return { success: true, data: { vandalizadas: [], filial: [] } };
 
@@ -2266,7 +2352,7 @@ function switchVehicle(driverName, plate, kmInicial) {
     if (lastRow < 2) return { success: false, error: 'Nenhum usuário cadastrado.' };
 
     const dataRange = sheet.getRange(2, 1, lastRow - 1, 1);
-    const values = dataRange.getDisplayValues();
+    const values = dataRange.getValues();
 
     let foundRowIndex = -1;
     for (let i = 0; i < values.length; i++) {
@@ -2393,12 +2479,13 @@ function updateVehicleKm(plate, kmInicial, kmFinal) {
   }
 }
 
-function getDriversSummary(timeRange = 'day') {
+function getDriversSummary(timeRange = 'day', providedSheets = null) {
   try {
-    const accessSheet = ss.getSheetByName(ACCESS_SHEET_NAME);
-    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
-    const stateSheet = ss.getSheetByName(STATE_SHEET_NAME);
-    const requestsSheet = ss.getSheetByName(REQUESTS_SHEET_NAME);
+    const accessSheet = providedSheets ? providedSheets.access : ss.getSheetByName(ACCESS_SHEET_NAME);
+    const reportSheet = providedSheets ? providedSheets.report : ss.getSheetByName(REPORT_SHEET_NAME);
+    const stateSheet = providedSheets ? providedSheets.state : ss.getSheetByName(STATE_SHEET_NAME);
+    const requestsSheet = providedSheets ? providedSheets.requests : ss.getSheetByName(REQUESTS_SHEET_NAME);
+    const stationSheet = providedSheets ? providedSheets.stations : ss.getSheetByName(STATIONS_SHEET_NAME);
 
     if (!accessSheet || !reportSheet || !stateSheet || !requestsSheet) {
       throw new Error('Uma ou mais planilhas necessárias não foram encontradas.');
@@ -2408,10 +2495,11 @@ function getDriversSummary(timeRange = 'day') {
     const lastRowAccess = accessSheet.getLastRow();
     if (lastRowAccess < 2) return { success: true, data: [] };
     
-    const driversData = accessSheet.getRange(2, 1, lastRowAccess - 1, accessSheet.getLastColumn()).getDisplayValues();
-    const drivers = driversData
-      .filter(row => (row[COLUMN_INDICES.ACCESS.CATEGORIA - 1] || '').toUpperCase().includes('MOTORISTA'))
-      .map(row => row[COLUMN_INDICES.ACCESS.USUARIO - 1]);
+    const lastColAccess = accessSheet.getLastColumn();
+    const driversData = accessSheet.getRange(2, 1, lastRowAccess - 1, lastColAccess).getValues();
+    const drivers = [...new Set(driversData
+      .filter(row => (row[COLUMN_INDICES.ACCESS.CATEGORIA - 1] || '').toString().toUpperCase().includes('MOTORISTA'))
+      .map(row => row[COLUMN_INDICES.ACCESS.USUARIO - 1].toString().trim()))];
 
     // 2. Calculate date filter
     const now = new Date();
@@ -2427,7 +2515,6 @@ function getDriversSummary(timeRange = 'day') {
     }
 
     // 2.5 Get station names for comparison
-    const stationSheet = ss.getSheetByName(STATIONS_SHEET_NAME);
     const stationNames = [];
     if (stationSheet && stationSheet.getLastRow() > 1) {
       const stationData = stationSheet.getRange(2, COLUMN_INDICES.STATIONS.NAME, stationSheet.getLastRow() - 1, 1).getValues();
@@ -2480,20 +2567,24 @@ function getDriversSummary(timeRange = 'day') {
     });
 
     // 3. Get real-time state (route and collected)
-    const stateData = stateSheet.getRange(2, 1, stateSheet.getLastRow() - 1, stateSheet.getLastColumn()).getDisplayValues();
+    const lastRowState = stateSheet.getLastRow();
+    const lastColState = stateSheet.getLastColumn();
+    const stateData = stateSheet.getRange(2, 1, lastRowState - 1, lastColState).getValues();
     const realTime = {};
     stateData.forEach(row => {
       const driver = row[COLUMN_INDICES.STATE.MOTORISTA - 1];
       if (drivers.includes(driver)) {
         realTime[driver] = {
-          route: (row[COLUMN_INDICES.STATE.ROTEIRO - 1] || '').split(',').map(s => s.trim()).filter(s => s),
-          collected: (row[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').split(',').map(s => s.trim()).filter(s => s)
+          route: (row[COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(s => s),
+          collected: (row[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(s => s)
         };
       }
     });
 
     // 4. Get pending requests count
-    const requestsData = requestsSheet.getRange(2, 1, requestsSheet.getLastRow() - 1, requestsSheet.getLastColumn()).getDisplayValues();
+    const lastRowRequests = requestsSheet.getLastRow();
+    const lastColRequests = requestsSheet.getLastColumn();
+    const requestsData = requestsSheet.getRange(2, 1, lastRowRequests - 1, lastColRequests).getValues();
     const pendingCounts = {};
     drivers.forEach(d => pendingCounts[d] = 0);
 
@@ -2570,8 +2661,8 @@ function checkDivergences(rowData) {
   // 3. Location Divergence (Column D vs Column I)
   const stations = getStations().data || [];
   const stationNames = stations.map(s => s.name);
-  const obsLower = (observacao || '').toLowerCase().trim();
-  const locLower = (localidade || '').toLowerCase().trim();
+  const obsLower = (observacao || '').toString().toLowerCase().trim();
+  const locLower = (localidade || '').toString().toLowerCase().trim();
 
   const filialTerms = ['filial', 'serttel filial sjc'];
   const isObsFilial = filialTerms.some(term => obsLower.includes(term.toLowerCase()));
@@ -2754,5 +2845,85 @@ function clearAdminAlerts(adminName) {
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Remove duplicatas recentes da aba de relatórios.
+ * Verifica as últimas 100 linhas e exclui a segunda ocorrência de registros idênticos em curto intervalo.
+ */
+function cleanupRecentDuplicates() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const sheet = ss.getSheetByName(REPORT_SHEET_NAME);
+    if (!sheet) return 0;
+    
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 3) return 0;
+    
+    // Aumentamos para 200 linhas para garantir que pegamos duplicatas mais antigas se necessário
+    const numRows = Math.min(lastRow - 1, 200);
+    const startRow = lastRow - numRows + 1;
+    const data = sheet.getRange(startRow, 1, numRows, sheet.getLastColumn()).getValues();
+    const rowsToDelete = [];
+    
+    for (let i = data.length - 1; i >= 1; i--) {
+      const current = data[i];
+      const currentTimestamp = new Date(current[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+      const currentPatrimonio = (current[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim();
+      const currentStatus = (current[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim();
+      const currentObservacao = (current[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
+      const currentLocalidade = (current[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] || '').toString().trim();
+      const currentMotorista = (current[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
+      
+      if (!currentPatrimonio || isNaN(currentTimestamp.getTime())) continue;
+
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = data[j];
+        const prevTimestamp = new Date(prev[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+        const prevPatrimonio = (prev[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim();
+        const prevStatus = (prev[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim();
+        const prevObservacao = (prev[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
+        const prevLocalidade = (prev[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] || '').toString().trim();
+        const prevMotorista = (prev[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
+        
+        const sameBike = (currentPatrimonio === prevPatrimonio);
+        const sameStatus = (currentStatus === prevStatus);
+        const sameDriver = (currentMotorista === prevMotorista);
+        const samePlace = (currentObservacao === prevObservacao || currentLocalidade === prevLocalidade || 
+                           (currentObservacao === prevLocalidade && currentObservacao !== "") || 
+                           (currentLocalidade === prevObservacao && currentLocalidade !== ""));
+        
+        if (sameBike && sameStatus && samePlace && sameDriver) {
+          const diffMinutes = Math.abs(currentTimestamp.getTime() - prevTimestamp.getTime()) / (1000 * 60);
+          // Se for em menos de 10 minutos, consideramos duplicata
+          if (diffMinutes < 10) {
+            rowsToDelete.push(startRow + i);
+            console.log(`Marcando linha ${startRow + i} para exclusão (duplicata de ${startRow + j})`);
+            break;
+          }
+        }
+      }
+    }
+    
+    // Remove duplicatas da lista para não tentar excluir a mesma linha duas vezes
+    const uniqueRowsToDelete = [...new Set(rowsToDelete)].sort((a, b) => b - a);
+    
+    uniqueRowsToDelete.forEach(row => {
+      try {
+        sheet.deleteRow(row);
+      } catch (e) {
+        console.error(`Erro ao excluir linha ${row}:`, e);
+      }
+    });
+    
+    if (uniqueRowsToDelete.length > 0) {
+      SpreadsheetApp.flush();
+    }
+    
+    return uniqueRowsToDelete.length;
+  } finally {
+    lock.releaseLock();
   }
 }

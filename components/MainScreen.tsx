@@ -145,7 +145,9 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     const [requestsHistory, setRequestsHistory] = useState<any[]>([]);
     const [isHistoryLoading, setIsHistoryLoading] = useState(false);
     const [processingBikes, setProcessingBikes] = useState<Set<string>>(new Set());
+    const processingBikesRef = useRef<Set<string>>(new Set());
     const isUpdatingStateRef = useRef(false);
+    const lastManualUpdateRef = useRef<number>(0);
     const lastLocationUpdateRef = useRef<number>(0);
     const lastLocationRef = useRef<{ lat: number, lng: number } | null>(null);
 
@@ -471,7 +473,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         if (isTrailer) {
             // Se for carretinha, adiciona diretamente às bikes recolhidas e garante que não estejam no roteiro
             newCollectedBikes = [...new Set([...collectedBikes, ...bikesToAdd])];
-            newRouteBikes = routeBikes.filter(b => !bikesToAdd.includes(b));
+            newRouteBikes = routeBikes.filter(b => !bikesToAdd.includes(String(b)));
             setCollectedBikes(newCollectedBikes);
             setRouteBikes(newRouteBikes);
         } else {
@@ -638,17 +640,19 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
 
     const handleStatusUpdate = async (status: string) => {
         if (!searchedBike) return;
-        const bikeNumber = searchedBike['Patrimônio'];
+        const bikeNumber = String(searchedBike['Patrimônio']);
         
-        // TRAVA: Impede processamento duplicado
-        if (processingBikes.has(bikeNumber)) return;
+        // TRAVA: Impede processamento duplicado usando Ref para ser síncrono
+        if (processingBikesRef.current.has(bikeNumber)) return;
+        processingBikesRef.current.add(bikeNumber);
         
         const originalSearchedBike = searchedBike;
         const originalSearchTerm = searchTerm;
         const originalCollectedBikes = [...collectedBikes];
         const originalRouteBikes = [...routeBikes];
 
-        setProcessingBikes(prev => new Set(prev).add(bikeNumber));
+        setProcessingBikes(new Set(processingBikesRef.current));
+        isUpdatingStateRef.current = true;
 
         // ATUALIZAÇÃO OTIMISTA: Limpa a busca e atualiza as listas imediatamente
         setSearchedBike(null);
@@ -658,41 +662,46 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         if (status === 'Recolhida') {
             if (collectedBikes.includes(bikeNumber)) {
                 alert(`Você já está em posse da bicicleta ${bikeNumber}.`);
-                setProcessingBikes(prev => {
-                    const next = new Set(prev);
-                    next.delete(bikeNumber);
-                    return next;
-                });
+                isUpdatingStateRef.current = false;
+                processingBikesRef.current.delete(bikeNumber);
+                setProcessingBikes(new Set(processingBikesRef.current));
                 return;
             }
             const newCollectedBikes = [...new Set([...collectedBikes, bikeNumber])];
-            const newRouteBikes = routeBikes.filter(b => b !== bikeNumber);
+            const newRouteBikes = routeBikes.filter(b => String(b) !== bikeNumber);
             setCollectedBikes(newCollectedBikes);
             setRouteBikes(newRouteBikes);
             
-            // Sincroniza em background
-            apiCall({
-                action: 'updateDriverState',
-                driverName,
-                routeBikes: newRouteBikes,
-                collectedBikes: newCollectedBikes
-            }).then(result => {
+            setIsLoading(true);
+            // Sincroniza e loga no relatório
+            try {
+                const result = await apiCall({
+                    action: 'finalizeRouteBike',
+                    driverName,
+                    bikeNumber,
+                    finalStatus: 'Recolhida',
+                    finalObservation: '', // Removido: 'Recolhida via busca/scanner' a pedido do usuário
+                    routeBikes: newRouteBikes,
+                    collectedBikes: newCollectedBikes
+                });
+
                 if (!result.success) {
-                    setError(`Falha ao sincronizar estado da bike ${bikeNumber}.`);
-                    setCollectedBikes(originalCollectedBikes);
-                    setRouteBikes(originalRouteBikes);
+                    throw new Error(result.error || 'Falha ao sincronizar estado.');
                 }
-            }).catch(() => {
-                setError(`Erro de conexão ao sincronizar bike ${bikeNumber}.`);
+                alert(`Bicicleta ${bikeNumber} recolhida com sucesso!`);
+            } catch (err: any) {
+                setError(`Erro ao recolher bike ${bikeNumber}: ${err.message}`);
                 setCollectedBikes(originalCollectedBikes);
                 setRouteBikes(originalRouteBikes);
-            }).finally(() => {
-                setProcessingBikes(prev => {
-                    const next = new Set(prev);
-                    next.delete(bikeNumber);
-                    return next;
-                });
-            });
+                setSearchedBike(originalSearchedBike);
+                setSearchTerm(originalSearchTerm);
+            } finally {
+                setIsLoading(false);
+                isUpdatingStateRef.current = false;
+                lastManualUpdateRef.current = Date.now();
+                processingBikesRef.current.delete(bikeNumber);
+                setProcessingBikes(new Set(processingBikesRef.current));
+            }
             
             return; 
         }
@@ -701,7 +710,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         try {
             // Se o status for "Não encontrada", loga diretamente no relatório e remove do roteiro.
             if (status === 'Não encontrada') {
-                const newRouteBikes = routeBikes.filter(b => b !== bikeNumber);
+                const newRouteBikes = routeBikes.filter(b => String(b) !== bikeNumber);
                 setRouteBikes(newRouteBikes);
 
                 const reportResult = await apiCall({ 
@@ -726,11 +735,10 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
             setError(err.message || `Ocorreu um erro ao processar a ação: ${status}`);
         } finally {
             setIsLoading(false);
-            setProcessingBikes(prev => {
-                const next = new Set(prev);
-                next.delete(bikeNumber);
-                return next;
-            });
+            isUpdatingStateRef.current = false;
+            lastManualUpdateRef.current = Date.now();
+            processingBikesRef.current.delete(bikeNumber);
+            setProcessingBikes(new Set(processingBikesRef.current));
         }
     };
 
@@ -833,11 +841,15 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
 
         try {
             const result = await apiCall({ action: 'search', bikeNumber: term });
-            if (result.success) {
-                setSearchedBike(result.data);
-                if (!bikeToSearch) {
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                }
+            if (result.success && result.data) {
+                // GARANTIA DE TIPO: Patrimônio deve ser sempre string
+                const sanitizedData = {
+                    ...result.data,
+                    'Patrimônio': String(result.data['Patrimônio'])
+                };
+                setSearchedBike(sanitizedData);
+                // Sempre rola para o topo para garantir que o resultado seja visto
+                window.scrollTo({ top: 0, behavior: 'smooth' });
             } else {
                 setSearchedBike(null); // Só limpa se der erro
                 setError(result.error || 'Erro desconhecido ao buscar.');
@@ -857,30 +869,29 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     
 
     const handleRecolherClick = async (bikeNumber: string) => {
-        if (processingBikes.has(bikeNumber)) return;
+        if (processingBikesRef.current.has(bikeNumber)) return;
         
         setIsLoading(true); 
-        setProcessingBikes(prev => new Set(prev).add(bikeNumber));
+        processingBikesRef.current.add(bikeNumber);
+        setProcessingBikes(new Set(processingBikesRef.current));
 
         // Apenas inicia a consulta, sem remover do roteiro
         handleSearch(bikeNumber); 
 
         setIsLoading(false);
-        setProcessingBikes(prev => {
-            const next = new Set(prev);
-            next.delete(bikeNumber);
-            return next;
-        });
+        processingBikesRef.current.delete(bikeNumber);
+        setProcessingBikes(new Set(processingBikesRef.current));
     };
 
-    const handleNaoAtendidaClick = async (bikeNumber: string, silent = false) => {
+    const handleNaoAtendidaClick = async (bikeNumberInput: string | number, silent = false) => {
+        const bikeNumber = String(bikeNumberInput);
         // Salva o estado original para rollback
         const originalRouteBikes = [...routeBikes];
         isUpdatingStateRef.current = true;
         if (!silent) setIsLoading(true);
 
         // ATUALIZAÇÃO OTIMISTA: Remove a bike da rota na UI imediatamente
-        const newRouteBikes = routeBikes.filter(b => b !== bikeNumber);
+        const newRouteBikes = routeBikes.filter(b => String(b) !== bikeNumber);
         setRouteBikes(newRouteBikes);
         if (!silent) {
             alert(`Bicicleta ${bikeNumber} registrada como "Não atendida".`);
@@ -911,6 +922,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
             if (silent) throw err; // Repassa o erro se estiver no modo silencioso
         } finally {
             isUpdatingStateRef.current = false;
+            lastManualUpdateRef.current = Date.now();
             if (!silent) setIsLoading(false);
         }
     };
@@ -951,11 +963,12 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         }
     };
 
-    const executeCollectedBikeAction = async (bikeNumber: string, status: string, observation: string) => {
-        if (processingBikes.has(bikeNumber)) return;
+    const executeCollectedBikeAction = async (bikeNumberInput: string | number, status: string, observation: string) => {
+        const bikeNumber = String(bikeNumberInput);
+        if (processingBikesRef.current.has(bikeNumber)) return;
         
         // VALIDAÇÃO CRÍTICA: Verifica se a bike ainda está na posse antes de agir
-        if (!collectedBikes.includes(bikeNumber)) {
+        if (!collectedBikes.map(String).includes(bikeNumber)) {
             alert(`Erro: A bicicleta ${bikeNumber} não está mais em sua posse.`);
             setDestinationModal(prev => ({ ...prev, isOpen: false }));
             return;
@@ -963,13 +976,14 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
 
         setDestinationModal(prev => ({ ...prev, isOpen: false }));
         isUpdatingStateRef.current = true;
-        setProcessingBikes(prev => new Set(prev).add(bikeNumber));
+        processingBikesRef.current.add(bikeNumber);
+        setProcessingBikes(new Set(processingBikesRef.current));
         
         // Salva o estado original para rollback
         const originalCollectedBikes = [...collectedBikes];
 
         // ATUALIZAÇÃO OTIMISTA: Remove a bike da lista na UI imediatamente
-        const newCollectedBikes = collectedBikes.filter(b => b !== bikeNumber);
+        const newCollectedBikes = collectedBikes.filter(b => String(b) !== bikeNumber);
         setCollectedBikes(newCollectedBikes);
 
         try {
@@ -987,7 +1001,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 finalObservation = observation; 
             }
 
-            apiCall({ 
+            const result = await apiCall({ 
                 action: 'finalizeCollectedBike', 
                 driverName, 
                 bikeNumber, 
@@ -995,35 +1009,23 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 finalObservation,
                 routeBikes, 
                 collectedBikes: newCollectedBikes 
-            }).then(result => {
-                if (result.success) {
-                    refreshAll(true);
-                } else {
-                    setError(`Falha ao registrar "${status}" para a bike ${bikeNumber}.`);
-                    setCollectedBikes(originalCollectedBikes);
-                }
-            }).catch(() => {
-                setError(`Erro de conexão ao registrar "${status}" para a bike ${bikeNumber}.`);
-                setCollectedBikes(originalCollectedBikes);
-            }).finally(() => {
-                isUpdatingStateRef.current = false;
-                setProcessingBikes(prev => {
-                    const next = new Set(prev);
-                    next.delete(bikeNumber);
-                    return next;
-                });
             });
 
+            if (result.success) {
+                alert(`Bicicleta ${bikeNumber} registrada como "${status}".`);
+                refreshAll(true);
+            } else {
+                throw new Error(result.error || `Falha ao registrar "${status}".`);
+            }
+
         } catch (err: any) {
-            console.error(err);
-            setError(`Erro ao processar: ${err.message}`);
+            setError(`Erro ao processar bike ${bikeNumber}: ${err.message}`);
             setCollectedBikes(originalCollectedBikes);
+        } finally {
             isUpdatingStateRef.current = false;
-            setProcessingBikes(prev => {
-                const next = new Set(prev);
-                next.delete(bikeNumber);
-                return next;
-            });
+            lastManualUpdateRef.current = Date.now();
+            processingBikesRef.current.delete(bikeNumber);
+            setProcessingBikes(new Set(processingBikesRef.current));
         }
     };
 
@@ -1116,9 +1118,9 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 if (d.requests) setPendingRequests(d.requests);
                 
                 // 2. Driver State
-                if (d.driverState && !isUpdatingStateRef.current) {
-                    setRouteBikes(d.driverState.routeBikes || []);
-                    setCollectedBikes(d.driverState.collectedBikes || []);
+                if (d.driverState && !isUpdatingStateRef.current && (Date.now() - lastManualUpdateRef.current > 5000)) {
+                    setRouteBikes([...new Set((d.driverState.routeBikes || []).map(b => String(b)))]);
+                    setCollectedBikes([...new Set((d.driverState.collectedBikes || []).map(b => String(b)))]);
                 }
                 
                 // 3. Bike Statuses (Conflicts)
@@ -1210,7 +1212,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         fetchStations(); // Estações mudam pouco, busca uma vez
 
         // ATUALIZAÇÃO: Intervalo aumentado de 3s para 10s para reduzir carga no servidor
-        const interval = setInterval(() => refreshAll(), 10000); 
+        const interval = setInterval(() => refreshAll(), 30000); 
 
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'visible') {
@@ -1605,14 +1607,14 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                         <div className="mt-4 pt-4 border-t border-green-200 grid grid-cols-2 gap-2">
                             <button 
                                 onClick={() => handleStatusUpdate('Recolhida')} 
-                                disabled={isLoading || isSearching}
+                                disabled={isLoading || isSearching || processingBikes.has(String(searchedBike['Patrimônio']))}
                                 className="px-3 py-1.5 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm w-full disabled:bg-gray-400"
                             >
                                 Recolhida
                             </button>
                             <button 
                                 onClick={() => handleStatusUpdate('Não encontrada')} 
-                                disabled={isLoading || isSearching}
+                                disabled={isLoading || isSearching || processingBikes.has(String(searchedBike['Patrimônio']))}
                                 className="px-3 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 text-sm w-full disabled:bg-gray-400"
                             >
                                 Não Encontrada
@@ -2063,14 +2065,14 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                                             <div className="flex gap-2 w-full">
                                                 <button 
                                                     onClick={() => handleNaoAtendidaClick(bike)}
-                                                    disabled={isLoading}
+                                                    disabled={isLoading || processingBikes.has(bike)}
                                                     className="flex-1 px-2 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 active:scale-95 transition-all disabled:bg-gray-400 text-[10px] font-bold uppercase"
                                                 >
                                                     Não Atendida
                                                 </button>
                                                 <button 
                                                     onClick={() => handleRecolherClick(bike)}
-                                                    disabled={isLoading}
+                                                    disabled={isLoading || processingBikes.has(bike)}
                                                     className="flex-1 px-2 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 active:scale-95 transition-all disabled:bg-gray-400 text-[10px] font-bold uppercase"
                                                 >
                                                     Recolher
@@ -2102,9 +2104,9 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                                             )}
                                         </div>
                                         <div className="grid grid-cols-3 gap-2 w-full max-w-[240px]">
-                                            <button onClick={() => handleCollectedBikeAction(bike, 'Enviada para Estação')} disabled={isLoading} className="px-2 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 active:scale-95 transition-all text-xs disabled:bg-gray-400">Estação</button>
-                                            <button onClick={() => handleCollectedBikeAction(bike, 'Enviada para Filial')} disabled={isLoading} className="px-2 py-1 bg-green-500 text-white rounded-md hover:bg-green-600 active:scale-95 transition-all text-xs disabled:bg-gray-400">Filial</button>
-                                            <button onClick={() => handleCollectedBikeAction(bike, 'Vandalizada')} disabled={isLoading} className="px-2 py-1 bg-red-500 text-white rounded-md hover:bg-red-600 active:scale-95 transition-all text-xs disabled:bg-gray-400">Vandalizada</button>
+                                            <button onClick={() => handleCollectedBikeAction(bike, 'Enviada para Estação')} disabled={isLoading || processingBikes.has(bike)} className="px-2 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 active:scale-95 transition-all text-xs disabled:bg-gray-400">Estação</button>
+                                            <button onClick={() => handleCollectedBikeAction(bike, 'Enviada para Filial')} disabled={isLoading || processingBikes.has(bike)} className="px-2 py-1 bg-green-500 text-white rounded-md hover:bg-green-600 active:scale-95 transition-all text-xs disabled:bg-gray-400">Filial</button>
+                                            <button onClick={() => handleCollectedBikeAction(bike, 'Vandalizada')} disabled={isLoading || processingBikes.has(bike)} className="px-2 py-1 bg-red-500 text-white rounded-md hover:bg-red-600 active:scale-95 transition-all text-xs disabled:bg-gray-400">Vandalizada</button>
                                         </div>
                                     </li>
                                 ))}
