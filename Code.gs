@@ -1680,43 +1680,69 @@ function getDriverState(driverName, providedSheet) {
 
 function finalizeRouteBike(request) {
   try {
-    const { driverName, bikeNumber, finalStatus, finalObservation, routeBikes, collectedBikes } = request;
+    const { driverName, bikeNumber, finalStatus, finalObservation } = request;
+    
+    // 1. Busca o estado atual do servidor para ser a fonte da verdade
+    const stateResult = getDriverState(driverName);
+    let routeBikes = stateResult.success ? stateResult.data.routeBikes : [];
+    let collectedBikes = stateResult.success ? stateResult.data.collectedBikes : [];
     
     const bikeResult = searchBike(bikeNumber);
     if (!bikeResult.success) throw new Error(`Bicicleta ${bikeNumber} não encontrada.`);
     const bikeDetails = bikeResult.data;
     
-    const rowData = [
-      formatDateTime(new Date()), bikeNumber, finalStatus, finalObservation, driverName,
-      bikeDetails['Status'], bikeDetails['Bateria'], bikeDetails['Trava'], bikeDetails['Localidade']
-    ];
-    logReport(rowData);
+    // 2. Atualiza as listas de forma autoritativa no servidor
+    routeBikes = routeBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
     
+    if (finalStatus === 'Recolhida') {
+      // Adiciona às recolhidas se não estiver lá
+      if (!collectedBikes.map(String).includes(String(bikeNumber))) {
+        collectedBikes.push(bikeNumber);
+      }
+    }
+    
+    // 3. SÓ LOGA NO RELATÓRIO SE NÃO FOR RECOLHIDA
+    // O usuário solicitou que a recolha não gere entrada automática no relatório
+    if (finalStatus !== 'Recolhida') {
+      const rowData = [
+        formatDateTime(new Date()), bikeNumber, finalStatus, finalObservation, driverName,
+        bikeDetails['Status'], bikeDetails['Bateria'], bikeDetails['Trava'], bikeDetails['Localidade']
+      ];
+      logReport(rowData);
+    }
+    
+    // 4. Salva o novo estado
     updateDriverState(driverName, routeBikes, collectedBikes);
     
     return { success: true };
   } catch (error) {
+    console.error("Erro em finalizeRouteBike:", error);
     return { success: false, error: error.message };
   }
 }
 
 function finalizeCollectedBike(request) {
   try {
-    const { driverName, bikeNumber, finalStatus, finalObservation, routeBikes, collectedBikes } = request;
+    const { driverName, bikeNumber, finalStatus, finalObservation } = request;
     
-    // 1. Get bike details for the report (if not provided)
-    // OTIMIZAÇÃO: Busca os detalhes da bike uma única vez
+    // 1. Busca o estado atual do servidor para ser a fonte da verdade
+    const stateResult = getDriverState(driverName);
+    let routeBikes = stateResult.success ? stateResult.data.routeBikes : [];
+    let collectedBikes = stateResult.success ? stateResult.data.collectedBikes : [];
+    
     const bikeResult = searchBike(bikeNumber);
     if (!bikeResult.success) throw new Error(`Bicicleta ${bikeNumber} não encontrada.`);
     const bikeDetails = bikeResult.data;
     
-    // 2. Log the report
+    // 2. Remove das recolhidas de forma autoritativa no servidor
+    collectedBikes = collectedBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
+    
+    // 3. Log the report (Ação final: Estação, Filial, etc)
     const rowData = [
       formatDateTime(new Date()), bikeNumber, finalStatus, finalObservation, driverName,
       bikeDetails['Status'], bikeDetails['Bateria'], bikeDetails['Trava'], bikeDetails['Localidade']
     ];
     
-    // OTIMIZAÇÃO: Chama logReport e updateDriverState de forma sequencial mas eficiente
     logReport(rowData);
     updateDriverState(driverName, routeBikes, collectedBikes);
     

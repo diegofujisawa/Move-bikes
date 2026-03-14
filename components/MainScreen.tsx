@@ -449,11 +449,12 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
     }, []);
 
     const handleAcceptRequest = async (requestId: number, bikeNumbers: string, reason: string = '') => {
+        if (isLoading) return;
         const originalPendingRequests = [...pendingRequests];
         const originalRouteBikes = [...routeBikes];
         const originalCollectedBikes = [...collectedBikes];
         
-        const bikesToAdd = (bikeNumbers || '').split(',').map(s => s.trim()).filter(Boolean);
+        const bikesToAdd = String(bikeNumbers || '').split(',').map(s => s.trim()).filter(Boolean);
         
         // Verifica se alguma bike já está no roteiro ou em posse
         const alreadyInPossession = bikesToAdd.filter(b => collectedBikes.includes(b));
@@ -465,6 +466,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
 
         const isTrailer = (reason || '').toUpperCase().includes('CARRETINHA');
 
+        isUpdatingStateRef.current = true;
         setPendingRequests(prev => prev.filter(r => r.id !== requestId));
         
         let newRouteBikes = [...routeBikes];
@@ -500,12 +502,16 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
             setError(err.message);
         } finally {
             setIsLoading(false);
+            isUpdatingStateRef.current = false;
+            lastManualUpdateRef.current = Date.now();
         }
     };
 
     const handleDeclineRequest = async (requestId: number) => {
+        if (isLoading) return;
         const originalPendingRequests = [...pendingRequests];
         
+        isUpdatingStateRef.current = true;
         // ATUALIZAÇÃO OTIMISTA: Remove da lista imediatamente
         setPendingRequests(prev => prev.filter(r => r.id !== requestId));
 
@@ -524,6 +530,8 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
             setError(err.message);
         } finally {
             setIsLoading(false);
+            isUpdatingStateRef.current = false;
+            lastManualUpdateRef.current = Date.now();
         }
     };
     
@@ -681,14 +689,12 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                     bikeNumber,
                     finalStatus: 'Recolhida',
                     finalObservation: '', // Removido: 'Recolhida via busca/scanner' a pedido do usuário
-                    routeBikes: newRouteBikes,
-                    collectedBikes: newCollectedBikes
                 });
 
                 if (!result.success) {
                     throw new Error(result.error || 'Falha ao sincronizar estado.');
                 }
-                alert(`Bicicleta ${bikeNumber} recolhida com sucesso!`);
+                // Removido alert para agilizar o processo
             } catch (err: any) {
                 setError(`Erro ao recolher bike ${bikeNumber}: ${err.message}`);
                 setCollectedBikes(originalCollectedBikes);
@@ -719,14 +725,12 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                     bikeNumber, 
                     finalStatus: 'Não encontrada', 
                     finalObservation: '',
-                    routeBikes: newRouteBikes,
-                    collectedBikes
                 });
 
                 if (!reportResult.success) {
                     throw new Error(reportResult.error || 'Falha ao registrar "Não encontrada".');
                 }
-                alert(`Bicicleta ${bikeNumber} registrada como "Não encontrada".`);
+                // Removido alert para agilizar o processo
             }
         } catch (err: any) {
             // ROLLBACK em caso de erro
@@ -893,9 +897,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
         // ATUALIZAÇÃO OTIMISTA: Remove a bike da rota na UI imediatamente
         const newRouteBikes = routeBikes.filter(b => String(b) !== bikeNumber);
         setRouteBikes(newRouteBikes);
-        if (!silent) {
-            alert(`Bicicleta ${bikeNumber} registrada como "Não atendida".`);
-        }
 
         // Tenta sincronizar com o backend em segundo plano
         try {
@@ -905,8 +906,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 bikeNumber, 
                 finalStatus: 'Não atendida', 
                 finalObservation: '',
-                routeBikes: newRouteBikes,
-                collectedBikes
             });
 
             if (!result.success) throw new Error(result.error || 'Falha ao registrar no relatório.');
@@ -1007,13 +1006,11 @@ const MainScreen: React.FC<MainScreenProps> = ({ driverName, category, plate, km
                 bikeNumber, 
                 finalStatus, 
                 finalObservation,
-                routeBikes, 
-                collectedBikes: newCollectedBikes 
             });
 
             if (result.success) {
-                alert(`Bicicleta ${bikeNumber} registrada como "${status}".`);
-                refreshAll(true);
+                // Removido alert e refreshAll para agilizar o processo
+                // O estado otimista já removeu a bike da UI
             } else {
                 throw new Error(result.error || `Falha ao registrar "${status}".`);
             }
