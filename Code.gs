@@ -20,7 +20,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '84.4-remove-divergence';
+const BACKEND_VERSION = '85.0-remove-divergence';
 
 // --- CONFIGURAÇÃO GLOBAL ---
 // IMPORTANTE: Defina SPREADSHEET_ID via:
@@ -33,11 +33,8 @@ const REQUESTS_SHEET_NAME      = 'Solicitacao';
 const REPORT_SHEET_NAME        = 'Relatorio';
 const STATE_SHEET_NAME         = 'Dados';
 const REPLENISHMENT_SHEET_NAME = 'Repor';       // era REPOR_SHEET_NAME (typo corrigido)
-const ALERTS_SHEET_NAME        = 'Alertas';
 const VANDALIZED_SHEET_NAME    = 'Vandalizadas';
-const OCORRENCIA_SHEET_NAME    = 'Ocorrencia';
 const VANDALISMO_SHEET_NAME    = 'Vandalismo';
-const NOTIFICATIONS_SHEET_NAME = 'Notificacoes';
 const DAILY_SUMMARY_SHEET_NAME = 'ResumoDiario';
 const MECHANICS_SHEET_NAME     = 'Mecanica';
 const QUEUE_SHEET_NAME         = 'FilaProcessamento';
@@ -964,13 +961,12 @@ function logReport(rowData, kmFinal, plate) {
     // Lógica de alertas/vandalizadas
     const statusLower = status.toLowerCase();
     if (statusLower === 'não encontrada' || statusLower === 'nao encontrada') {
-      updateAlertsSheet(patrimonio);
-      updateOcorrenciaSheet(rowData);
+      // Divergência identificada no relatório. Notificação será enviada pelo App.
+      return { success: true, divergence: true, patrimonio: patrimonio };
     } else if (statusLower === 'vandalizada') {
       updateVandalizedSheet(patrimonio, rowData);
       updateVandalismoSheet(rowData);
     } else {
-      resolveAlert(patrimonio, motorista || 'Sistema');
       resolveVandalized(patrimonio, motorista || 'Sistema');
     }
 
@@ -1470,10 +1466,10 @@ function finalizeRouteBike(request) {
       addToMechanics(bikeNumber);
     }
 
-    if (finalStatus !== 'Recolhida') {
+    if (finalStatus !== 'Recolhida' || true) { // Permitindo Recolhida no relatório conforme solicitação
       const rowData = [new Date(), bikeNumber, finalStatus, finalObservation, driverName,
         bikeDetails['Status'], bikeDetails['Bateria'], bikeDetails['Trava'], bikeDetails['Localidade']];
-      logReport(rowData);
+      return logReport(rowData);
     }
 
     updateDriverState(driverName, routeBikes, collectedBikes);
@@ -1497,7 +1493,11 @@ function finalizeCollectedBike(request) {
     const reportStatus = finalStatus === 'Filial' ? 'Recolhida' : finalStatus;
     const rowData = [new Date(), bikeNumber, reportStatus, finalObservation, driverName,
       bikeDetails['Status'], bikeDetails['Bateria'], bikeDetails['Trava'], bikeDetails['Localidade']];
-    logReport(rowData);
+    
+    let reportResult = { success: true };
+    if (finalStatus !== 'Carretinha') {
+      reportResult = logReport(rowData);
+    }
 
     const statusLower = finalStatus.toLowerCase();
     if (statusLower.includes('filial') || statusLower.includes('vandalizada') || statusLower.includes('recolhida')) {
@@ -1505,7 +1505,7 @@ function finalizeCollectedBike(request) {
     }
 
     updateDriverState(driverName, routeBikes, collectedBikes);
-    return { success: true };
+    return reportResult;
   } catch (e) {
     return { success: false, error: e.message };
   }
@@ -1514,51 +1514,9 @@ function finalizeCollectedBike(request) {
 // =================================================================
 // --- ALERTAS E VANDALIZADAS ---
 // =================================================================
-function updateAlertsSheet(patrimonio) {
-  const sheet = getSpreadsheet().getSheetByName(ALERTS_SHEET_NAME);
-  if (!sheet) return;
-  const data = sheet.getDataRange().getValues();
-  let foundRow = -1, currentSituacao = '';
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][COLUMN_INDICES.ALERTS.PATRIMONIO - 1].toString() === patrimonio.toString()
-        && (data[i][COLUMN_INDICES.ALERTS.SITUACAO - 1] === STATUS.PENDENTE || data[i][COLUMN_INDICES.ALERTS.SITUACAO - 1] === STATUS.LOCALIZADA)) {
-      foundRow = i + 1; currentSituacao = data[i][COLUMN_INDICES.ALERTS.SITUACAO - 1]; break;
-    }
-  }
-  const now = new Date();
-  if (foundRow === -1) {
-    const newRow = new Array(sheet.getLastColumn()).fill('');
-    newRow[COLUMN_INDICES.ALERTS.PATRIMONIO - 1] = patrimonio;
-    newRow[COLUMN_INDICES.ALERTS.CHECK1 - 1]     = now;
-    newRow[COLUMN_INDICES.ALERTS.SITUACAO - 1]   = STATUS.PENDENTE;
-    sheet.appendRow(newRow);
-  } else {
-    if (currentSituacao === STATUS.LOCALIZADA) sheet.getRange(foundRow, COLUMN_INDICES.ALERTS.SITUACAO).setValue(STATUS.PENDENTE);
-    const check1 = sheet.getRange(foundRow, COLUMN_INDICES.ALERTS.CHECK1).getValue();
-    const check2 = sheet.getRange(foundRow, COLUMN_INDICES.ALERTS.CHECK2).getValue();
-    const check3 = sheet.getRange(foundRow, COLUMN_INDICES.ALERTS.CHECK3).getValue();
-    if (!check1) sheet.getRange(foundRow, COLUMN_INDICES.ALERTS.CHECK1).setValue(now);
-    else if (!check2) sheet.getRange(foundRow, COLUMN_INDICES.ALERTS.CHECK2).setValue(now);
-    else if (!check3) {
-      sheet.getRange(foundRow, COLUMN_INDICES.ALERTS.CHECK3).setValue(now);
-      createRequest(patrimonio, 'ALERTA CRÍTICO: Bike não encontrada por 3 vezes consecutivas.', 'Verificar Alertas', 'Todos');
-    }
-  }
-}
-
 function resolveAlert(patrimonio, motorista) {
-  const sheet = getSpreadsheet().getSheetByName(ALERTS_SHEET_NAME);
-  if (!sheet) return;
-  const data = sheet.getDataRange().getValues();
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][COLUMN_INDICES.ALERTS.PATRIMONIO - 1].toString() === patrimonio.toString()
-        && data[i][COLUMN_INDICES.ALERTS.SITUACAO - 1] === STATUS.PENDENTE) {
-      const row = i + 1;
-      // Batch write — 1 chamada no lugar de 3
-      sheet.getRange(row, COLUMN_INDICES.ALERTS.SITUACAO, 1, 3).setValues([[STATUS.LOCALIZADA, motorista, new Date()]]);
-      break;
-    }
-  }
+  // Função mantida para compatibilidade se necessário, mas sem ação
+  return;
 }
 
 function getAlerts() {
@@ -1802,9 +1760,8 @@ function confirmVandalizedFound(alertId, driverName) {
 }
 
 function updateOcorrenciaSheet(rowData) {
-  const sheet = getSpreadsheet().getSheetByName(OCORRENCIA_SHEET_NAME);
-  if (!sheet) return;
-  sheet.appendRow(rowData);
+  // Função removida conforme solicitação
+  return;
 }
 
 function updateVandalismoSheet(rowData) {
@@ -1842,72 +1799,18 @@ function syncWithRequests(patrimonio, status, observacao, motorista) {
 
 
 function batchAddNotifications(notificationsMap) {
-  let sheet = getSpreadsheet().getSheetByName(NOTIFICATIONS_SHEET_NAME);
-  if (!sheet) {
-    sheet = getSpreadsheet().insertSheet(NOTIFICATIONS_SHEET_NAME);
-    sheet.appendRow(['Usuário', 'Notificações (JSON)']);
-    sheet.getRange(1, 1, 1, 2).setFontWeight('bold').setBackground('#f3f3f3');
-    sheet.setFrozenRows(1);
-  }
-  const data = sheet.getDataRange().getValues();
-  const userRows = {};
-  for (let i = 1; i < data.length; i++) userRows[data[i][0]] = i + 1;
-
-  Object.keys(notificationsMap).forEach(userName => {
-    const message = notificationsMap[userName];
-    const notification = { msg: message, time: new Date().toISOString(), id: Utilities.getUuid() };
-    const rowIndex = userRows[userName];
-    if (!rowIndex) {
-      sheet.appendRow([userName, JSON.stringify([notification])]);
-    } else {
-      let current = [];
-      try { current = JSON.parse(sheet.getRange(rowIndex, COLUMN_INDICES.NOTIFICATIONS.JSON).getValue() || '[]'); } catch (e) {}
-      const isDuplicate = current.some(n => n.msg === message && (new Date() - new Date(n.time)) < 6 * 60 * 60 * 1000);
-      if (!isDuplicate) {
-        current.unshift(notification);
-        if (current.length > 50) current = current.slice(0, 50);
-        sheet.getRange(rowIndex, COLUMN_INDICES.NOTIFICATIONS.JSON).setValue(JSON.stringify(current));
-      }
-    }
-  });
+  // Função removida conforme solicitação — notificações agora via Firebase
+  return;
 }
 
 
 function getAdminAlerts(adminName) {
-  try {
-    const sheet = getSpreadsheet().getSheetByName(NOTIFICATIONS_SHEET_NAME);
-    if (!sheet) return { success: true, alerts: [] };
-    const data = sheet.getDataRange().getValues();
-    const adminLower = (adminName || '').toString().trim().toLowerCase();
-    for (let i = 1; i < data.length; i++) {
-      if ((data[i][0] || '').toString().trim().toLowerCase() === adminLower) {
-        try { return { success: true, alerts: JSON.parse(data[i][COLUMN_INDICES.NOTIFICATIONS.JSON - 1] || '[]') }; }
-        catch (e) { return { success: true, alerts: [] }; }
-      }
-    }
-    return { success: true, alerts: [] };
-  } catch (e) {
-    return { success: false, error: e.message };
-  }
+  return { success: true, alerts: [] };
 }
 
+
 function clearAdminAlerts(adminName) {
-  try {
-    const sheet = getSpreadsheet().getSheetByName(NOTIFICATIONS_SHEET_NAME);
-    if (!sheet) return { success: true };
-    const data = sheet.getDataRange().getValues();
-    const adminLower = (adminName || '').toString().trim().toLowerCase();
-    for (let i = 1; i < data.length; i++) {
-      if ((data[i][0] || '').toString().trim().toLowerCase() === adminLower) {
-        sheet.getRange(i + 1, COLUMN_INDICES.NOTIFICATIONS.JSON).setValue('[]');
-        SpreadsheetApp.flush();
-        break;
-      }
-    }
-    return { success: true };
-  } catch (e) {
-    return { success: false, error: e.message };
-  }
+  return { success: true };
 }
 
 // =================================================================

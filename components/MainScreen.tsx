@@ -550,7 +550,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
           byDriver[driver].push({
             tsMs: ts.getTime(),
             type: data.type || 'em_posse',
-            bikeNumber: data.bikeNumber || ''
+            bikeNumber: data.bikeNumber || '',
+            observacao: data.observacao || ''
           });
         });
         // Preserva eventos anteriores — mescla com novos
@@ -928,13 +929,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // =================================================================
   // SOLICITAÇÕES
   // =================================================================
-  const handleAcceptRequest = async (requestId: string, bikeNumbers: string, reason: string = '') => {
+  const handleAcceptRequest = async (requestId: string, bikeNumbers: string, reason: string = '', title: string = '') => {
     if (isLoading) return;
     const bikesToAdd = String(bikeNumbers || '').split(',').map(s => s.trim()).filter(Boolean);
     const alreadyInPosse = bikesToAdd.filter(b => collectedBikes.includes(b));
     if (alreadyInPosse.length > 0) { alert(`Bikes já em sua posse: ${alreadyInPosse.join(', ')}`); return; }
 
-    const isTrailer = (reason || '').toUpperCase().includes('CARRETINHA');
+    const isTrailer = (reason || '').toUpperCase().includes('CARRETINHA') || (title || '').toUpperCase().includes('CARRETINHA');
     isUpdatingStateRef.current = true;
     setIsLoading(true);
 
@@ -967,13 +968,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
             status: 'Recolhida', responsavel: driverName, ultimaAtualizacao: serverTimestamp()
           }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
         });
-        // Registra no Relatório e timeline
+        // Registra apenas na timeline (Relatório removido conforme solicitação)
         bikesToAdd.forEach(id => {
-          apiCall({ action: 'logReport', rowData: [
-            new Date().toISOString(), id, 'Recolhida', 'Recebida via carretinha', driverName, '', '', '', ''
-          ]}, 1, true).catch(() => {});
           addDoc(collection(db, 'timeline_events'), {
-            driverName, bikeNumber: id, type: 'recolhida',
+            driverName, bikeNumber: id, 
+            type: 'carretinha',
+            observacao: title || 'Carretinha',
             timestamp: serverTimestamp(),
             date: localDateStr()
           }).catch(() => {});
@@ -2401,7 +2401,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     {renderLocationWithMap(req.location)}
                   </div>
                   <div className="flex flex-col gap-4 items-end pt-1">
-                    <button onClick={() => handleAcceptRequest(req.id, req.bikeNumber, req.reason)} disabled={isLoading} className="text-green-600 hover:text-green-700 text-sm font-bold disabled:text-gray-400">Aceitar</button>
+                    <button onClick={() => handleAcceptRequest(req.id, req.bikeNumber, req.reason, req.title)} disabled={isLoading} className="text-green-600 hover:text-green-700 text-sm font-bold disabled:text-gray-400">Aceitar</button>
                     <button onClick={() => handleDeclineRequest(req.id)} disabled={isLoading} className="text-red-600 hover:text-red-700 text-sm font-bold disabled:text-gray-400">Recusar</button>
                   </div>
                 </li>
@@ -2742,6 +2742,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               filial:        { bg: 'bg-blue-500',    label: 'Filial' },
                               nao_atendida:  { bg: 'bg-yellow-500',  label: 'Não atend.' },
                               nao_encontrada:{ bg: 'bg-red-500',     label: 'Não enc.' },
+                              carretinha:    { bg: 'bg-purple-600',  label: 'Carretinha' },
                             };
 
                             return (
@@ -2764,7 +2765,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                     return (
                                       <div key={ci} className="absolute -translate-x-1/2 top-0.5 flex flex-col items-center"
                                         style={{left: `${pos}%`}}
-                                        title={`${cfg.label}${cl.type === 'em_posse' && cl.bikes.length > 0 ? ` Bike ${cl.bikes.join(', ')}` : isMulti ? ` (${cl.count} bikes)` : ''} — ${fmtTime(cl.tsMs)}`}
+                                        title={`${cl.type === 'carretinha' && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}${cl.type === 'em_posse' && cl.bikes.length > 0 ? ` Bike ${cl.bikes.join(', ')}` : isMulti ? ` (${cl.count} bikes)` : ''} — ${fmtTime(cl.tsMs)}`}
                                       >
                                         <div className={`rounded-full border-2 border-white shadow-sm flex items-center justify-center ${isMulti ? 'w-4 h-4' : 'w-2.5 h-2.5'} ${cfg.bg}`}>
                                           {isMulti && <span className="text-[7px] font-black text-white leading-none">{cl.count}</span>}
@@ -3348,6 +3349,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           filial:         { bg: 'bg-blue-500',   label: 'Filial' },
           nao_atendida:   { bg: 'bg-yellow-500', label: 'Não atend.' },
           nao_encontrada: { bg: 'bg-red-500',    label: 'Não enc.' },
+          carretinha:     { bg: 'bg-purple-600', label: 'Carretinha' },
         };
         // Marca de hora a cada 30min
         const hourMarks: Array<{ms: number, label: string}> = [];
@@ -3405,7 +3407,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       <div className={`w-2.5 h-2.5 rounded-full mt-1 flex-shrink-0 ${cfg.bg}`}/>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xs font-black text-gray-700">{cfg.label}</span>
+                          <span className="text-xs font-black text-gray-700">
+                            {cl.type === 'carretinha' && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}
+                          </span>
                           {cl.count > 1 && <span className="text-[9px] bg-gray-200 text-gray-600 px-1.5 rounded-full font-bold">{cl.count} bikes</span>}
                         </div>
                         {cl.bikes && cl.bikes.length > 0 && (
