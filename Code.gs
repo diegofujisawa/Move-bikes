@@ -1313,10 +1313,7 @@ function getDriverState(driverName, providedSheet) {
 }
 
 function updateDriverState(driverName, routeBikes, collectedBikes) {
-  const lock = LockService.getScriptLock();
   try {
-    if (!lock.tryLock(15000)) throw new Error('Não foi possível obter o lock. Tente novamente.');
-
     const sheet = getSpreadsheet().getSheetByName(STATE_SHEET_NAME);
     if (!sheet) throw new Error(`Planilha "${STATE_SHEET_NAME}" não encontrada.`);
 
@@ -1390,8 +1387,6 @@ function updateDriverState(driverName, routeBikes, collectedBikes) {
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
-  } finally {
-    lock.releaseLock();
   }
 }
 
@@ -1455,9 +1450,7 @@ function getAllPatrimonioNumbers() {
 // --- FINALIZAÇÃO DE BIKES ---
 // =================================================================
 function finalizeRouteBike(request) {
-  const lock = LockService.getScriptLock();
   try {
-    if (!lock.tryLock(15000)) throw new Error('Lock timeout. Tente novamente.');
     const { driverName, bikeNumber, finalStatus, finalObservation } = request;
     const stateResult = getDriverState(driverName);
     let routeBikes    = stateResult.success ? stateResult.data.routeBikes : [];
@@ -1487,15 +1480,11 @@ function finalizeRouteBike(request) {
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
-  } finally {
-    lock.releaseLock();
   }
 }
 
 function finalizeCollectedBike(request) {
-  const lock = LockService.getScriptLock();
   try {
-    if (!lock.tryLock(15000)) throw new Error('Lock timeout. Tente novamente.');
     const { driverName, bikeNumber, finalStatus, finalObservation } = request;
     const stateResult  = getDriverState(driverName);
     let routeBikes     = stateResult.success ? stateResult.data.routeBikes : [];
@@ -1519,8 +1508,6 @@ function finalizeCollectedBike(request) {
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
-  } finally {
-    lock.releaseLock();
   }
 }
 

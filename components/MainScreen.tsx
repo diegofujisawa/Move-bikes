@@ -16,7 +16,7 @@ import { auth, db } from '../firebase';
 import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import {
   collection, onSnapshot, doc, updateDoc, addDoc,
-  serverTimestamp, setDoc, deleteDoc, getDocs
+  serverTimestamp, setDoc
 } from 'firebase/firestore';
 import ScheduleModal from './ScheduleModal';
 import ReporModal from './ReporModal';
@@ -126,13 +126,13 @@ const AdminAlerts: React.FC<{adminName: string, isOpen: boolean, onClose: () => 
     if (!adminName) return;
     setAdmLoading(true);
     try { const r = await apiCall({ action: 'getAdminAlerts', adminName }); if (r.success) setAdmAlerts(r.alerts || []); }
-    catch(e) {} finally { setAdmLoading(false); }
+    catch {} finally { setAdmLoading(false); }
   };
   const clearAdmAlerts = async () => {
     if (!confirm('Confirmar leitura de todos os alertas?')) return;
     setAdmLoading(true);
     try { const r = await apiCall({ action: 'clearAdminAlerts', adminName }); if (r.success) setAdmAlerts([]); }
-    catch(e) {} finally { setAdmLoading(false); }
+    catch {} finally { setAdmLoading(false); }
   };
   React.useEffect(() => {
     if (isOpen) { fetchAdmAlerts(); const t = setInterval(fetchAdmAlerts, 10000); return () => clearInterval(t); }
@@ -233,37 +233,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isBikeSearchLoading, setIsBikeSearchLoading] = useState(false);
   const [alerts, setAlerts] = useState<any[]>([]);
   const [isAlertsLoading, setIsAlertsLoading] = useState(false);
-  const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
-  const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
-  const [changeStatusData, setChangeStatusData] = useState<{ vandalizadas: any[], filial: any[] }>({ vandalizadas: [], filial: [] });
-  const [statusTimeRange, setStatusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
-  const [alertCount, setAlertCount] = useState(0);
-  const [hasNewAlerts, setHasNewAlerts] = useState(false);
-
-  // --- Route Generation ---
-  const [isRouteConfigOpen, setIsRouteConfigOpen] = useState(false);
-  const [routeConfig, setRouteConfig] = useState({
-    locationSource: 'gps' as 'gps' | 'zone',
-    selectedZone: 'central' as 'norte' | 'leste' | 'sul' | 'oeste' | 'central',
-    filters: {
-      lowBattery: true,
-      openLock: true,
-      outOfStation: true,
-      offline: false,
-      wrongStatus: true
-    }
-  });
-
-  const ZONES = useMemo(() => ({
-    norte:   { lat: -23.4462, lng: -46.6333, label: 'ZONA NORTE' },
-    leste:   { lat: -23.5433, lng: -46.5333, label: 'ZONA LESTE' },
-    sul:     { lat: -23.6433, lng: -46.6333, label: 'ZONA SUL' },
-    oeste:   { lat: -23.5433, lng: -46.7333, label: 'ZONA OESTE' },
-    central: { lat: -23.5433, lng: -46.6333, label: 'ZONA CENTRAL' }
-  }), []);
-  const [lastViewedAlertCount, setLastViewedAlertCount] = useState<number>(() => {
-    try { return parseInt(localStorage.getItem('lastViewedAlertCount') || '0', 10); } catch { return 0; }
-  });
   const [editingDriver, setEditingDriver] = useState<any>(null);
 
   // --- Dados auxiliares ---
@@ -315,7 +284,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // =================================================================
   const isUpdatingStateRef = useRef(false);
   const lastDriverActionAt = useRef<number>(0);
-  const lastLocationUpdateRef = useRef<number>(0);
   const lastLocationRef = useRef<{ lat: number, lng: number } | null>(null);
 
   const normalizedCategory = category.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -333,45 +301,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const markDriverAction = () => {
     lastDriverActionAt.current = Date.now();
   };
-
-  /**
-   * Sincroniza requests do Sheets para o Firebase.
-   * Sheets é a fonte de verdade para requests — se foi deletado/finalizado
-   * na planilha, remove do Firebase para o listener parar de exibir.
-   */
-  const syncRequestsToFirebase = useCallback(async (sheetsRequests: any[]) => {
-    try {
-      const snapshot = await getDocs(collection(db, 'requests'));
-
-      // IDs que ainda existem no Sheets como pendentes (apenas Firestore IDs)
-      const activeSheetsIds = new Set(
-        sheetsRequests
-          .filter(r => {
-            const status = (r.status || r.situacao || '').toString().toLowerCase().trim();
-            return !status || status === 'pendente';
-          })
-          .map(r => String(r.id))
-          .filter(id => id.length > 10 && isNaN(Number(id))) // só IDs do Firestore
-      );
-
-      // Deleta do Firebase qualquer request que não está mais pendente no Sheets
-      const deletePromises: Promise<void>[] = [];
-      snapshot.docs.forEach(docSnap => {
-        const data = docSnap.data();
-        const status = (data.status || '').toString().toLowerCase();
-        // Se está pendente no Firebase mas não está mais no Sheets como pendente
-        if (status === 'pendente' && !activeSheetsIds.has(docSnap.id)) {
-          deletePromises.push(deleteDoc(doc(db, 'requests', docSnap.id)));
-        }
-      });
-
-      if (deletePromises.length > 0) {
-        await Promise.all(deletePromises);
-      }
-    } catch (e) {
-      console.warn('[Sync] syncRequestsToFirebase falhou:', e);
-    }
-  }, []);
 
   /**
    * Verifica se o sync do Sheets pode sobrescrever o estado local.
@@ -829,7 +758,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           driverName, bikeNumber, status: 'Não encontrada', timestamp: serverTimestamp(), observation: ''
         }).catch(err => console.warn('[Firebase] reports write:', err.code));
 
-        apiCall({
+        await apiCall({
           action: 'finalizeRouteBike', driverName, bikeNumber,
           finalStatus: 'Não encontrada', finalObservation: ''
         }, 1, true).catch(e => console.warn('[Sheets] finalizeRouteBike:', e));
@@ -872,7 +801,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         driverName, bikeNumber, status: 'Não atendida', timestamp: serverTimestamp(), observation: ''
       }).catch(e => console.warn('[Firebase] reports write:', e.code));
 
-      apiCall({
+      await apiCall({
         action: 'finalizeRouteBike', driverName, bikeNumber,
         finalStatus: 'Não atendida', finalObservation: ''
       }, 1, true).catch(e => console.warn('[Sheets] finalizeRouteBike:', e));
@@ -930,7 +859,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         observation, timestamp: serverTimestamp()
       }).catch(e => console.warn('[Firebase] reports write:', e.code));
 
-      apiCall({
+      await apiCall({
         action: 'finalizeCollectedBike', driverName, bikeNumber,
         finalStatus, finalObservation: observation
       }, 1, true).catch(e => console.warn('[Sheets] finalizeCollectedBike:', e));
@@ -1954,7 +1883,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             if (document.visibilityState === 'visible') requestWakeLock();
           });
         }
-      } catch (e) {} // silencioso — nem todos os browsers suportam
+      } catch {} // silencioso — nem todos os browsers suportam
     };
 
     // Ao voltar ao foco: reaquire wake lock, reinicia watch e força envio imediato
