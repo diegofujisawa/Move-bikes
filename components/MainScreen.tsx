@@ -195,7 +195,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [driverLocations, setDriverLocations] = useState<DriverLocation[]>([]);
   const [bikeConflicts, setBikeConflicts] = useState<Record<string, any>>({});
   const [currentDriverLocation, setCurrentDriverLocation] = useState<{ lat: number, lng: number } | null>(null);
-  const [routeDistances, setRouteDistances] = useState<Record<string, { distance: string, duration: string, value: number }>>({});
+  const [routeDistances, setRouteDistances] = useState<Record<string, { distance: string, duration: string, value: number, isRoad?: boolean }>>({});
 
   // --- Modais ---
   const [isRequestModalOpen, setRequestModalOpen] = useState(false);
@@ -210,6 +210,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isReporModalOpen, setIsReporModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [isEditDriverModalOpen, setIsEditDriverModalOpen] = useState(false);
+  const [isNotFoundConfirmOpen, setIsNotFoundConfirmOpen] = useState(false);
   const [isMechanicRepairModalOpen, setIsMechanicRepairModalOpen] = useState(false);
   const [isMechanicSelectionModalOpen, setIsMechanicSelectionModalOpen] = useState(false);
   const [isTrailerSelectionModalOpen, setIsTrailerSelectionModalOpen] = useState(false);
@@ -302,6 +303,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // --- Refs ---
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const searchCacheRef = useRef<Record<string, BicycleData>>({});
+  const searchResultRef = useRef<HTMLDivElement>(null);
   const processingBikesRef = useRef<Set<string>>(new Set());
   // Ref para refreshAll — evita dependência circular com persistDriverState
   const refreshAllRef = useRef<((force?: boolean) => Promise<void>) | null>(null);
@@ -431,6 +433,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       Notification.requestPermission();
     }
   }, []);
+
+  useEffect(() => {
+    if (searchedBike && searchResultRef.current) {
+      searchResultRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [searchedBike]);
 
   const showNotification = (title: string, body: string) => {
     if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
@@ -685,13 +693,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // MEMOS
   // =================================================================
   const sortedRouteBikes = useMemo(() => {
-    // Se já temos distâncias calculadas por carro, a ordem de routeBikes já está otimizada
-    // pelo buildOptimizedRoute (Nearest Neighbor). Só ordena por Haversine se não houver
-    // roteamento disponível ainda.
+    // Se já temos distâncias calculadas por carro para TODAS as bikes, a ordem de routeBikes 
+    // já está otimizada pelo buildOptimizedRoute (Nearest Neighbor).
+    // Caso contrário, ordena por Haversine para garantir que a mais próxima esteja no topo.
     if (!currentDriverLocation || !routeBikes.length) return routeBikes;
-    const hasRoadDistances = routeBikes.some(id => routeDistances[id]);
-    if (hasRoadDistances) return routeBikes; // ordem já otimizada pelo Nearest Neighbor
-    // Fallback: Haversine enquanto roteamento não carregou
+    
+    const isOptimized = routeBikes.length > 0 && routeBikes.every(id => routeDistances[id]?.isRoad);
+    if (isOptimized) return routeBikes;
+
+    // Fallback dinâmico: Haversine enquanto roteamento por estrada não carregou ou se bikes se moveram
     return [...routeBikes].sort((a, b) => {
       const dA = routeBikesDetails[a], dB = routeBikesDetails[b];
       if (!dA || !dB) return 0;
@@ -1777,12 +1787,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     if (bikesWithCoords.length === 0) return;
 
+    console.log(`[Routing] Otimizando rota para ${bikesWithCoords.length} bikes...`);
+
     // Nearest Neighbor partindo da posição do motorista
     let currentLat = currentDriverLocation.lat;
     let currentLng = currentDriverLocation.lng;
     const remaining = [...bikesWithCoords];
     const ordered: string[] = [];
-    const newDistances: Record<string, { distance: string, duration: string, value: number }> = {};
+    const newDistances: Record<string, { distance: string, duration: string, value: number, isRoad: boolean }> = {};
 
     while (remaining.length > 0) {
       // Calcula distância de carro de onde estou para cada bike restante
@@ -1806,7 +1818,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
       newDistances[nearest.bike.id] = {
         distance: distKm < 1 ? `${nearest.distanceM.toFixed(0)}m` : `${distKm.toFixed(1)}km`,
         duration: `~${mins} min`,
-        value: nearest.distanceM
+        value: nearest.distanceM,
+        isRoad: true
       };
 
       // Avança para a posição dessa bike
@@ -1817,19 +1830,30 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     // Bikes sem coordenadas ficam no final
     const withoutCoords = routeBikes.filter(id => !bikesWithCoords.find(b => b.id === id));
-    setRouteDistances(newDistances);
+    setRouteDistances(prev => ({ ...prev, ...newDistances }));
     // Reordena routeBikes na ordem otimizada
     setRouteBikes([...ordered, ...withoutCoords]);
+    console.log('[Routing] Rota otimizada concluída.');
   }, [currentDriverLocation, routeBikes, routeBikesDetails, getRoadDistance]);
+
+  // Hash de coordenadas para reagir quando as bikes se movem
+  const bikesHash = useMemo(() => {
+    return routeBikes.map(id => {
+      const d = routeBikesDetails[id];
+      return d ? `${d.currentLat},${d.currentLng}` : '';
+    }).join('|');
+  }, [routeBikes, routeBikesDetails]);
 
   // Dispara roteamento ao mudar posição ou bikes — com debounce de 3s
   useEffect(() => {
     if (!currentDriverLocation || !routeBikes.length) return;
+    
     const timer = setTimeout(() => {
+      if (bikesHash) console.log('[Routing] Iniciando otimização por mudança de posição/bikes');
       buildOptimizedRoute();
     }, 3000);
     return () => clearTimeout(timer);
-  }, [currentDriverLocation?.lat, currentDriverLocation?.lng, routeBikes.length]);
+  }, [currentDriverLocation?.lat, currentDriverLocation?.lng, routeBikes.length, bikesHash]);
 
   // Distâncias Haversine — mantido como display inicial antes do roteamento carregar
   useEffect(() => {
@@ -1839,7 +1863,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const d = routeBikesDetails[id];
       if (d?.currentLat && d?.currentLng && !routeDistances[id]) {
         const km = calculateDistance(currentDriverLocation.lat, currentDriverLocation.lng, d.currentLat, d.currentLng);
-        dists[id] = { distance: km < 1 ? `${(km*1000).toFixed(0)}m` : `${km.toFixed(1)}km`, duration: `~${Math.round(km*3)} min`, value: km*1000 };
+        dists[id] = { 
+          distance: km < 1 ? `${(km*1000).toFixed(0)}m` : `${km.toFixed(1)}km`, 
+          duration: `~${Math.round(km*3)} min`, 
+          value: km*1000,
+          isRoad: false 
+        };
       }
     });
     if (Object.keys(dists).length > 0) setRouteDistances(prev => ({ ...prev, ...dists }));
@@ -2270,7 +2299,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         {/* RESULTADO DA BUSCA */}
         {!isAdm && searchedBike && (
-          <div className="p-4 border rounded-lg bg-green-50 animate-fade-in-down relative mb-4">
+          <div ref={searchResultRef} className="p-4 border rounded-lg bg-green-50 animate-fade-in-down relative mb-4">
             <button onClick={() => { setSearchedBike(null); setSearchTerm(''); }} className="absolute top-2 right-2 p-1 text-green-700 hover:bg-green-100 rounded-full"><XIcon className="w-5 h-5"/></button>
             <h3 className="text-lg font-semibold text-green-800 mb-3">Resultado da Consulta</h3>
             {collectedBikes.includes(String(searchedBike['Patrimônio'])) && (
@@ -2279,25 +2308,36 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
             )}
             <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-              {[
-                { label: 'Status', value: searchedBike['Status'] },
-                { label: 'Bateria', value: `${formatBattery(searchedBike['Bateria'])}%` },
-                { label: 'Localidade', value: searchedBike['Localidade'] },
-                { label: 'Trava', value: searchedBike['Trava'] },
-                { label: 'Usuário', value: searchedBike['Usuário'] },
-                { label: 'Carregamento', value: searchedBike['Carregamento'] },
-              ].map((item, i) => (
-                <div key={`bike-info-${item.label}-${i}`}>
-                  <p className="font-semibold text-gray-500 text-xs uppercase">{item.label}</p>
-                  <p className="text-gray-800 font-medium">{item.value}</p>
-                </div>
-              ))}
+              <div>
+                <p className="font-semibold text-gray-500 text-xs uppercase">Status</p>
+                <p className="text-gray-800 font-medium">{searchedBike['Status']}</p>
+              </div>
               <div>
                 <p className="font-semibold text-gray-500 text-xs uppercase">Coordenadas</p>
                 <a href={`https://www.google.com/maps/search/?api=1&query=${formatCoordinate(searchedBike['Latitude'])},${formatCoordinate(searchedBike['Longitude'])}`}
                   target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium truncate block">
                   {`${formatCoordinate(searchedBike['Latitude'])}, ${formatCoordinate(searchedBike['Longitude'])}`}
                 </a>
+              </div>
+              <div>
+                <p className="font-semibold text-gray-500 text-xs uppercase">Localidade</p>
+                <p className="text-gray-800 font-medium">{searchedBike['Localidade']}</p>
+              </div>
+              <div>
+                <p className="font-semibold text-gray-500 text-xs uppercase">Trava</p>
+                <p className="text-gray-800 font-medium">{searchedBike['Trava']}</p>
+              </div>
+              <div>
+                <p className="font-semibold text-gray-500 text-xs uppercase">Usuário</p>
+                <p className="text-gray-800 font-medium">{searchedBike['Usuário']}</p>
+              </div>
+              <div>
+                <p className="font-semibold text-gray-500 text-xs uppercase">Carregamento</p>
+                <p className="text-gray-800 font-medium">{searchedBike['Carregamento']}</p>
+              </div>
+              <div>
+                <p className="font-semibold text-gray-500 text-xs uppercase">Bateria</p>
+                <p className="text-gray-800 font-medium">{formatBattery(searchedBike['Bateria'])}%</p>
               </div>
               <div>
                 <p className="font-semibold text-gray-500 text-xs uppercase">Última Info</p>
@@ -2311,7 +2351,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 <>
                   <button onClick={() => handleStatusUpdate('Recolhida')} disabled={isLoading || processingBikes.has(String(searchedBike['Patrimônio']))}
                     className="px-3 py-1.5 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm disabled:bg-gray-400">Recolhida</button>
-                  <button onClick={() => handleStatusUpdate('Não encontrada')} disabled={isLoading || processingBikes.has(String(searchedBike['Patrimônio']))}
+                  <button onClick={() => setIsNotFoundConfirmOpen(true)} disabled={isLoading || processingBikes.has(String(searchedBike['Patrimônio']))}
                     className="px-3 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 text-sm disabled:bg-gray-400">Não Encontrada</button>
                 </>
               )}
@@ -3414,6 +3454,41 @@ const MainScreen: React.FC<MainScreenProps> = ({
         onConfirm={obs => executeCollectedBikeAction(destinationModal.bikeNumber, destinationModal.type === 'Estação' ? 'Enviada para Estação' : destinationModal.type === 'Filial' ? 'Enviada para Filial' : 'Vandalizada', obs)}
         type={destinationModal.type} bikeNumber={destinationModal.bikeNumber} stationName={destinationModal.stationName} isLoading={isLoading} onRecalculate={recalculateStation}/>
       <HistoryModal isOpen={isHistoryModalOpen} onClose={() => setIsHistoryModalOpen(false)} history={requestsHistory} isLoading={isHistoryLoading} driverName={driverName}/>
+      
+      {/* Modal de Confirmação "Não Encontrada" */}
+      {isNotFoundConfirmOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
+                <AlertCircle size={32} className="text-red-600" />
+              </div>
+              <h2 className="text-xl font-black text-gray-800 uppercase mb-2">Confirmar Ação</h2>
+              <p className="text-sm text-gray-500 mb-6">
+                Deseja realmente marcar a bicicleta <span className="font-bold text-gray-800">{searchedBike?.['Patrimônio']}</span> como <span className="font-bold text-red-600 uppercase">Não Encontrada</span>?
+              </p>
+              <div className="grid grid-cols-2 gap-3 w-full">
+                <button
+                  onClick={() => setIsNotFoundConfirmOpen(false)}
+                  className="py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => {
+                    setIsNotFoundConfirmOpen(false);
+                    handleStatusUpdate('Não encontrada');
+                  }}
+                  className="py-3 bg-red-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-red-200 hover:bg-red-700 active:scale-95 transition-all"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <ScheduleModal isOpen={isScheduleModalOpen} onClose={() => setIsScheduleModalOpen(false)} schedule={userSchedule} driverName={driverName} isLoading={isScheduleLoading}/>
       <VehicleSwitchModal isOpen={isVehicleModalOpen} onClose={() => setIsVehicleModalOpen(false)} onSwitch={(p, km) => onUpdateUser({ plate: p, kmInicial: km })} driverName={driverName}/>
       <AdminAlerts isOpen={isAdminAlertsOpen} onClose={() => setIsAdminAlertsOpen(false)} adminName={driverName}/>
