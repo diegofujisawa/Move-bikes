@@ -757,11 +757,14 @@ function updateLocation(driverName, latitude, longitude) {
     if (!rowIndex) {
       const lastRow = sheet.getLastRow();
       if (lastRow < 2) return { success: false, error: 'Nenhum motorista cadastrado.' };
-      const foundCell = sheet.getRange(2, COLUMN_INDICES.ACCESS.USUARIO, lastRow - 1, 1)
-        .createTextFinder(String(driverName).trim()).matchEntireCell(true).findNext();
-      if (foundCell) {
-        rowIndex = foundCell.getRow();
-        cache.put(cacheKey, rowIndex.toString(), 3600);
+      const data = sheet.getRange(2, COLUMN_INDICES.ACCESS.USUARIO, lastRow - 1, 1).getValues();
+      const normTarget = normalizeName(driverName);
+      for (let i = 0; i < data.length; i++) {
+        if (normalizeName(data[i][0]) === normTarget) {
+          rowIndex = i + 2;
+          cache.put(cacheKey, rowIndex.toString(), 3600);
+          break;
+        }
       }
     }
 
@@ -1280,24 +1283,31 @@ function getMotoristas(providedData) {
 // =================================================================
 // --- ESTADO DO MOTORISTA ---
 // =================================================================
+function normalizeName(name) {
+  if (!name) return '';
+  return String(name).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
 function getDriverState(driverName, providedSheet) {
   const sheet = providedSheet || getSpreadsheet().getSheetByName(STATE_SHEET_NAME);
   if (!sheet) return { success: true, data: { routeBikes: [], collectedBikes: [] } };
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return { success: true, data: { routeBikes: [], collectedBikes: [] } };
 
-  const foundCell = sheet.getRange(2, COLUMN_INDICES.STATE.MOTORISTA, lastRow - 1, 1)
-    .createTextFinder(String(driverName).trim()).matchEntireCell(true).findNext();
+  const normTarget = normalizeName(driverName);
+  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  const driverColIdx = COLUMN_INDICES.STATE.MOTORISTA - 1;
 
-  if (foundCell) {
-    const rowData = sheet.getRange(foundCell.getRow(), 1, 1, sheet.getLastColumn()).getValues()[0];
-    return {
-      success: true,
-      data: {
-        routeBikes:    (rowData[COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean),
-        collectedBikes:(rowData[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean)
-      }
-    };
+  for (let i = 0; i < data.length; i++) {
+    if (normalizeName(data[i][driverColIdx]) === normTarget) {
+      return {
+        success: true,
+        data: {
+          routeBikes:    (data[i][COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean),
+          collectedBikes:(data[i][COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean)
+        }
+      };
+    }
   }
   return { success: true, data: { routeBikes: [], collectedBikes: [] } };
 }
@@ -1321,6 +1331,8 @@ function updateDriverState(driverName, routeBikes, collectedBikes) {
       ...(Array.isArray(collectedBikes) ? collectedBikes.map(b => String(b).trim()).filter(Boolean) : [])
     ])];
 
+    const normTarget = normalizeName(driverName);
+
     if (lastRow < 2) {
       const newRow = new Array(lastCol).fill('');
       newRow[COLUMN_INDICES.STATE.MOTORISTA - 1] = driverName;
@@ -1339,8 +1351,8 @@ function updateDriverState(driverName, routeBikes, collectedBikes) {
     let driverFound = false, changed = false;
 
     for (let i = 0; i < dataRows.length; i++) {
-      const currentDriver = String(dataRows[i][driverColIdx]).trim();
-      if (currentDriver.toLowerCase() === String(driverName).trim().toLowerCase()) {
+      const currentNorm = normalizeName(dataRows[i][driverColIdx]);
+      if (currentNorm === normTarget) {
         if (dataRows[i][routeColIdx] !== routeStr || dataRows[i][collectedColIdx] !== collectedStr) {
           dataRows[i][routeColIdx]     = routeStr;
           dataRows[i][collectedColIdx] = collectedStr;

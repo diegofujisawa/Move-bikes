@@ -13,11 +13,10 @@ import {
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
-import { waitForAuth } from '../firebase';
 import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import {
   collection, onSnapshot, doc, updateDoc, addDoc,
-  serverTimestamp, getDoc, setDoc, deleteDoc, getDocs
+  serverTimestamp, setDoc, deleteDoc, getDocs
 } from 'firebase/firestore';
 import ScheduleModal from './ScheduleModal';
 import ReporModal from './ReporModal';
@@ -409,7 +408,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     });
 
     // Espelha no Firebase silenciosamente — flag sheetsSync=true evita loop
-    setDoc(doc(db, 'users', driverName), {
+    setDoc(doc(db, 'users', normalizeName(driverName)), {
       routeBikes: finalRoute,
       collectedBikes: finalCollected,
       lastUpdate: serverTimestamp(),
@@ -421,6 +420,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
    * Grava o estado do motorista no Firebase e envia para Sheets em paralelo.
    * Após Sheets confirmar, dispara sync imediato via ref (sem dependência circular).
    */
+  const normalizeName = (name: string) => {
+    if (!name) return '';
+    return name.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  };
+
   const persistDriverState = useCallback(async (
     newRoute: string[],
     newCollected: string[]
@@ -429,7 +433,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const dedupCollected = [...new Set(newCollected.map(String))];
 
     // 1. Firebase — não-bloqueante (permissões podem variar)
-    setDoc(doc(db, 'users', driverName), {
+    setDoc(doc(db, 'users', normalizeName(driverName)), {
       routeBikes: dedupRoute,
       collectedBikes: dedupCollected,
       lastUpdate: serverTimestamp(),
@@ -490,7 +494,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }, err => console.error('Listener requests:', err));
 
     // Estado do motorista
-    const unsubUser = onSnapshot(doc(db, 'users', driverName), (snap) => {
+    const unsubUser = onSnapshot(doc(db, 'users', normalizeName(driverName)), (snap) => {
       if (!snap.exists()) return;
       const data = snap.data();
       if (data.sheetsSync === true) return;
@@ -1387,7 +1391,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     try {
       // Firebase não-bloqueante
-      setDoc(doc(db, 'users', targetDriver), { routeBikes: route, collectedBikes: collected, lastUpdate: serverTimestamp(), sheetsSync: false }, { merge: true }).catch(e => console.warn('[Firebase] users write:', e.code));
+      setDoc(doc(db, 'users', normalizeName(targetDriver)), { routeBikes: route, collectedBikes: collected, lastUpdate: serverTimestamp(), sheetsSync: false }, { merge: true }).catch(e => console.warn('[Firebase] users write:', e.code));
       route.forEach(id => setDoc(doc(db, 'bikes', id), { status: 'Em Rota', responsavel: targetDriver, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {}));
       collected.forEach(id => setDoc(doc(db, 'bikes', id), { status: 'Recolhida', responsavel: targetDriver, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {}));
       // Sheets — fonte de verdade

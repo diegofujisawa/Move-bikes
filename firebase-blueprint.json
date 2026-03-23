@@ -137,9 +137,9 @@
       "schema": "Bicycle",
       "description": "Collection of all bicycles."
     },
-    "/users/{uid}": {
+    "/users/{driverId}": {
       "schema": "User",
-      "description": "Collection of all users and their states."
+      "description": "Collection of all users and their states. The driverId is the normalized login name."
     },
     "/requests/{id}": {
       "schema": "PickupRequest",

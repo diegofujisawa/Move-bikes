@@ -4,6 +4,8 @@ import MainScreen from './components/MainScreen';
 import AdminMap from './components/AdminMap'; // Importa o novo componente de mapa
 import { User } from './types';
 import { apiCall } from './api';
+import { auth } from './firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(() => {
@@ -20,6 +22,16 @@ const App: React.FC = () => {
   });
   // Novo estado para controlar a visibilidade do mapa em tempo real
   const [isMapVisible, setIsMapVisible] = useState(false);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        setIsAuthReady(true);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     if (user) {
@@ -69,6 +81,11 @@ const App: React.FC = () => {
         <div className="w-full max-w-md mx-auto">
           {!user ? (
             <LoginScreen onLogin={handleLogin} />
+          ) : !isAuthReady ? (
+            <div className="flex flex-col items-center justify-center p-8 bg-white rounded-2xl shadow-sm border border-gray-100">
+              <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+              <p className="text-gray-500 font-medium">Conectando ao Firebase...</p>
+            </div>
           ) : (
             <MainScreen 
               driverName={user.name} 

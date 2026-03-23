@@ -42,32 +42,27 @@ service cloud.firestore {
 
     match /bikes/{patrimonio} {
       allow read: if isAuthenticated();
-      allow create, update: if isUserAdmin() || (isAuthenticated() && isValidBicycle(request.resource.data));
-      allow delete: if isUserAdmin();
+      allow write: if isAuthenticated();
     }
 
     match /users/{uid} {
       allow read: if isAuthenticated();
-      allow create, update: if isUserAdmin() || (isAuthenticated() && request.auth.uid == uid && isValidUser(request.resource.data));
-      allow delete: if isUserAdmin();
+      allow write: if isAuthenticated();
     }
 
     match /requests/{id} {
       allow read: if isAuthenticated();
-      allow create, update: if isUserAdmin() || (isAuthenticated() && isValidRequest(request.resource.data));
-      allow delete: if isUserAdmin();
+      allow write: if isAuthenticated();
     }
 
     match /reports/{id} {
       allow read: if isAuthenticated();
-      allow create: if isUserAdmin() || (isAuthenticated() && isValidReport(request.resource.data));
-      allow update, delete: if isUserAdmin();
+      allow write: if isAuthenticated();
     }
 
     match /alerts/{id} {
       allow read: if isAuthenticated();
-      allow create, update: if isUserAdmin() || (isAuthenticated() && isValidAlert(request.resource.data));
-      allow delete: if isUserAdmin();
+      allow write: if isAuthenticated();
     }
 
     match /locations/{id} {
