@@ -233,6 +233,42 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isBikeSearchLoading, setIsBikeSearchLoading] = useState(false);
   const [alerts, setAlerts] = useState<any[]>([]);
   const [isAlertsLoading, setIsAlertsLoading] = useState(false);
+  const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
+  const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
+  const [changeStatusData, setChangeStatusData] = useState<{ vandalizadas: any[], filial: any[] }>({ vandalizadas: [], filial: [] });
+  const [statusTimeRange, setStatusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
+  const [alertCount, setAlertCount] = useState(0);
+  const [hasNewAlerts, setHasNewAlerts] = useState(false);
+
+  // --- Route Generation ---
+  const [isRouteConfigOpen, setIsRouteConfigOpen] = useState(false);
+  const [routeConfig, setRouteConfig] = useState({
+    locationSource: 'gps' as 'gps' | 'zone',
+    selectedZone: 'central' as 'norte' | 'leste' | 'sul' | 'oeste' | 'central',
+    filters: {
+      lowBattery: true,
+      openLock: true,
+      outOfStation: true,
+      offline: false,
+      wrongStatus: true
+    }
+  });
+
+  const ZONES = useMemo(() => ({
+    norte:   { lat: -23.4462, lng: -46.6333, label: 'ZONA NORTE' },
+    leste:   { lat: -23.5433, lng: -46.5333, label: 'ZONA LESTE' },
+    sul:     { lat: -23.6433, lng: -46.6333, label: 'ZONA SUL' },
+    oeste:   { lat: -23.5433, lng: -46.7333, label: 'ZONA OESTE' },
+    central: { lat: -23.5433, lng: -46.6333, label: 'ZONA CENTRAL' }
+  }), []);
+
+  const lastViewedAlertCountRef = useRef<number>(0);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('lastViewedAlertCount');
+      if (saved) lastViewedAlertCountRef.current = parseInt(saved, 10);
+    } catch {}
+  }, []);
   const [editingDriver, setEditingDriver] = useState<any>(null);
 
   // --- Dados auxiliares ---
@@ -1601,10 +1637,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
           const n = d.adminAlerts.length;
           setAlertCount(n);
           // Só mostra badge se há alertas novos além do que já foi visto
-          setLastViewedAlertCount(prev => {
-            if (n > prev) setHasNewAlerts(true);
-            return prev; // não altera lastViewed — só muda ao clicar no botão
-          });
+          if (n > lastViewedAlertCountRef.current) {
+            setHasNewAlerts(true);
+          }
         }
       }
     };
@@ -2066,7 +2101,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             <button onClick={() => {
               setIsAdminAlertsOpen(true);
               setHasNewAlerts(false);
-              setLastViewedAlertCount(alertCount);
+              lastViewedAlertCountRef.current = alertCount;
               try { localStorage.setItem('lastViewedAlertCount', String(alertCount)); } catch {}
             }} disabled={isLoading} title="Alertas"
               className={`p-1.5 sm:p-2 rounded-full relative disabled:opacity-50 ${hasNewAlerts && alertCount > 0 ? 'text-red-600 bg-red-50 animate-pulse' : 'text-gray-500 hover:bg-gray-100 hover:text-red-600'}`}>
