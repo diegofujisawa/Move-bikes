@@ -9,7 +9,7 @@ import {
 import { 
   Settings, Battery, Lock, Map as MapIconLucide, 
   WifiOff, AlertCircle, RefreshCw, ChevronUp, ChevronDown, ChevronLeft, 
-  ChevronRight, Circle, Play, Locate, Map
+  ChevronRight, Circle, Play, Locate, Map, Wrench, Loader2
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
@@ -287,6 +287,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [searchedBike, setSearchedBike] = useState<BicycleData | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [activeMechanicCategory, setActiveMechanicCategory] = useState<string | null>(null);
+  const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
   const [mechanicSummaryPeriod, setMechanicSummaryPeriod] = useState<'diario'|'semanal'|'mensal'>('diario');
   const [clickedBikesForStatus, setClickedBikesForStatus] = useState<Set<string>>(() => {
     try {
@@ -294,6 +295,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
       return saved ? new Set(JSON.parse(saved)) : new Set();
     } catch { return new Set(); }
   });
+  const [bikeFoundModal, setBikeFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
+  const [mechanicNotFoundModal, setMechanicNotFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
+  const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
+  const [manualMechanicModal, setManualMechanicModal] = useState<{ isOpen: boolean; bikePat: string; targetStatus: string }>({ isOpen: false, bikePat: '', targetStatus: '' });
+  const [manualMechanicName, setManualMechanicName] = useState('');
+  const [isVandalizedConfirmOpen, setIsVandalizedConfirmOpen] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
+  const [isZerarListaConfirmOpen, setIsZerarListaConfirmOpen] = useState(false);
   const [formattedBikesForCopy, setFormattedBikesForCopy] = useState<string>(() => {
     try {
       return localStorage.getItem(`status_copy_${driverName}`) || '';
@@ -1077,9 +1085,48 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally { setIsLoading(false); }
   };
 
+  const mechanicsNames = useMemo(() => {
+    return Array.from(new Set(mechanicsList.filter(b => b.mecanico).map(b => b.mecanico))).sort();
+  }, [mechanicsList]);
+
   // =================================================================
   // BUSCA
   // =================================================================
+  const handleManualInsert = (bikePat: string, targetStatus: string) => {
+    if (targetStatus === 'Em Manutenção') {
+      setManualMechanicModal({ isOpen: true, bikePat, targetStatus });
+      return;
+    }
+    processManualInsert(bikePat, '', targetStatus);
+  };
+
+  const processManualInsert = async (bikePat: string, mechanicName: string, targetStatus: string) => {
+    setIsBikeSearchLoading(true);
+    try {
+      const res = await apiCall({
+        action: 'insertBikeMechanics',
+        bikeNumber: bikePat,
+        mechanicName,
+        targetStatus
+      });
+      
+      if (res.success) {
+        setAlert({ type: 'success', message: `Bike ${bikePat} inserida em ${targetStatus}.` });
+        fetchMechanicsData();
+        setBikeSearchTerm('');
+        setBikeSearchResult([]);
+      } else {
+        setAlert({ type: 'error', message: res.error || 'Erro ao inserir bike.' });
+      }
+    } catch {
+      setAlert({ type: 'error', message: 'Erro de conexão.' });
+    } finally {
+      setIsBikeSearchLoading(false);
+      setManualMechanicModal({ isOpen: false, bikePat: '', targetStatus: '' });
+      setManualMechanicName('');
+    }
+  };
+
   const handleBikeMovementSearch = async () => {
     if (!bikeSearchTerm.trim()) return;
     setIsBikeSearchLoading(true);
@@ -1122,7 +1169,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
         window.scrollTo({ top: 0, behavior: 'smooth' });
       } else {
         setSearchedBike(null);
-        setError(result.error || 'Bike não encontrada.');
+        const errorMsg = result.error || 'Bicicleta não encontrada.';
+        setError(errorMsg);
+        setAlert({ type: 'error', message: errorMsg });
       }
     } catch (err: any) {
       setSearchedBike(null);
@@ -1192,7 +1241,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicSelectionModalOpen(true);
   };
 
-  const handleAlterarStatus = (bikeId: string) => {
+  const handleAlterarStatus = async (bikeId: string) => {
     setClickedBikesForStatus(prev => {
       const next = new Set(prev);
       next.add(bikeId);
@@ -1206,17 +1255,113 @@ const MainScreen: React.FC<MainScreenProps> = ({
       try { localStorage.setItem(`status_copy_${driverName}`, next); } catch {}
       return next;
     });
-  };
 
-  const handleNotFoundMechanic = async (bikeId: string) => {
-    if (!window.confirm(`Confirmar que a bicicleta ${bikeId} não foi encontrada?`)) return;
-    setIsLoading(true);
+    // Move para Aguardando Manutenção no backend
     try {
-      await apiCall({ action: 'declineMechanicsReceipt', bikeNumber: bikeId, mechanicName: driverName }, 1, true);
-      alert('Bicicleta marcada como não encontrada.');
+      await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true);
       refreshAll(true);
     } catch (err: any) {
-      alert('Erro ao processar: ' + err.message);
+      console.error('Erro ao mover para Aguardando Manutenção:', err);
+    }
+  };
+
+  const handleMarkAsNotFound = async (bikeId: string) => {
+    setIsLoading(true);
+    try {
+      await apiCall({ action: 'markAsNotFound', bikeNumber: bikeId, mechanicName: driverName }, 1, true);
+      refreshAll(true);
+    } catch (err: any) {
+      console.error('Erro ao processar:', err);
+    } finally {
+      setIsLoading(false);
+      setMechanicNotFoundModal(null);
+    }
+  };
+
+  const handleZerarListaStatus = () => {
+    const currentBikes = mechanicsList
+      .filter(b => ['Alterar Status', 'Recolhida', 'Enviada para Filial', 'Vandalizada'].includes(b.status))
+      .map(b => b.patrimonio);
+    
+    setClickedBikesForStatus(prev => {
+      const next = new Set(prev);
+      currentBikes.forEach(id => next.add(id));
+      try { localStorage.setItem(`status_clicked_${driverName}`, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+    setFormattedBikesForCopy('');
+    try { localStorage.removeItem(`status_copy_${driverName}`); } catch {}
+    setIsZerarListaConfirmOpen(false);
+  };
+
+  const handleSendToTechnical = async (bikePat: string) => {
+    setIsLoading(true);
+    try {
+      setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
+      await updateDoc(doc(db, 'bikes', bikePat), { 
+        status: 'Técnica', 
+        responsavel: driverName, 
+        ultimaAtualizacao: serverTimestamp() 
+      });
+      await addDoc(collection(db, 'reports'), { 
+        bikeNumber: bikePat, 
+        status: 'Técnica', 
+        driverName, 
+        timestamp: serverTimestamp(), 
+        type: 'Técnica' 
+      });
+      await apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: driverName }, 1, true);
+      refreshAll(true);
+    } catch (err: any) {
+      console.error('Erro ao enviar para técnica:', err);
+    } finally {
+      setIsLoading(false);
+      setIsTechnicalConfirmOpen(null);
+    }
+  };
+
+  const handleMarkAsVandalizedNoRecovery = async (bikePat: string) => {
+    setIsLoading(true);
+    try {
+      setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
+      const treatment = 'Vandalizada sem recuperação';
+      await updateDoc(doc(db, 'bikes', bikePat), { 
+        status: 'Vandalizada', 
+        responsavel: null, 
+        observacao: treatment, 
+        ultimaAtualizacao: serverTimestamp() 
+      });
+      await addDoc(collection(db, 'reports'), { 
+        bikeNumber: bikePat, 
+        status: 'Vandalizada', 
+        driverName, 
+        treatment, 
+        timestamp: serverTimestamp(), 
+        type: 'Vandalizada' 
+      });
+      await apiCall({ action: 'markAsVandalizedNoRecovery', bikeNumber: bikePat, mechanicName: driverName, treatment }, 1, true);
+      refreshAll(true);
+    } catch (err: any) {
+      console.error('Erro ao marcar como vandalizada:', err);
+    } finally {
+      setIsLoading(false);
+      setIsVandalizedConfirmOpen(null);
+    }
+  };
+
+  const handleBikeFoundSim = async (bikePat: string) => {
+    setBikeFoundModal(null);
+    await handleAlterarStatus(bikePat);
+  };
+
+  const handleBikeFoundNao = async (bikePat: string) => {
+    setBikeFoundModal(null);
+    setIsLoading(true);
+    try {
+      await apiCall({ action: 'deleteMechanicsBike', bikeNumber: bikePat }, 1, true);
+      refreshAll(true);
+    } catch (err: any) {
+      console.error('Erro ao excluir bike:', err);
     } finally {
       setIsLoading(false);
     }
@@ -1325,41 +1470,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       alert('Erro: ' + err.message);
       refreshAll(true);
     } finally { setIsLoading(false); }
-  };
-
-  const handleInsertBike = async (bikeNumber: string, targetStatus: string) => {
-    if (processingBikesRef.current.has(bikeNumber)) return;
-    processingBikesRef.current.add(bikeNumber);
-    setProcessingBikes(new Set(processingBikesRef.current));
-    setIsLoading(true);
-
-    try {
-      // Firebase não-bloqueante
-      setDoc(doc(db, 'bikes', bikeNumber), {
-        status: targetStatus, responsavel: driverName, ultimaAtualizacao: serverTimestamp()
-      }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
-
-      addDoc(collection(db, 'reports'), {
-        driverName, bikeNumber, status: targetStatus,
-        timestamp: serverTimestamp(),
-        observation: `Inserida em ${targetStatus} via consulta`
-      }).catch(e => console.warn('[Firebase] reports write:', e.code));
-
-      // Sheets — fonte de verdade
-      await apiCall({ action: 'insertBikeMechanics', driverName, bikeNumber, targetStatus }, 1, true);
-
-      setSuccessMessage(`Bicicleta ${bikeNumber} inserida em ${targetStatus}!`);
-      setSearchedBike(null);
-      setSearchTerm('');
-      refreshAll(true);
-    } catch (err: any) {
-      console.error('Erro ao inserir bike:', err);
-      setError('Erro ao inserir bike: ' + err.message);
-    } finally {
-      setIsLoading(false);
-      processingBikesRef.current.delete(bikeNumber);
-      setProcessingBikes(new Set(processingBikesRef.current));
-    }
   };
 
   const handleUpdateDriverState = async (targetDriver: string, route: string[], collected: string[]) => {
@@ -2090,15 +2200,42 @@ const MainScreen: React.FC<MainScreenProps> = ({
               Copiar
             </button>
             <button 
-              onClick={() => {
-                setFormattedBikesForCopy('');
-                setClickedBikesForStatus(new Set());
-                try { localStorage.removeItem(`status_clicked_${driverName}`); localStorage.removeItem(`status_copy_${driverName}`); } catch {}
-              }}
-              className="px-3 py-1 bg-gray-200 text-gray-600 text-[10px] font-bold rounded hover:bg-gray-300"
+              onClick={() => setIsZerarListaConfirmOpen(true)}
+              className="px-3 py-1 bg-red-100 text-red-600 text-[10px] font-bold rounded hover:bg-red-200"
             >
-              Limpar
+              Zerar Lista
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação "Zerar Lista" */}
+      {isZerarListaConfirmOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
+                <AlertCircle size={32} className="text-red-600" />
+              </div>
+              <h2 className="text-xl font-black text-gray-800 uppercase mb-2">Zerar Lista Local?</h2>
+              <p className="text-sm text-gray-500 mb-6">
+                Isso irá ocultar todas as bikes atuais desta lista e limpar o campo de cópia. Novas bikes registradas aparecerão normalmente.
+              </p>
+              <div className="grid grid-cols-2 gap-3 w-full">
+                <button
+                  onClick={() => setIsZerarListaConfirmOpen(false)}
+                  className="py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleZerarListaStatus}
+                  className="py-3 bg-red-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-red-200 hover:bg-red-700 active:scale-95 transition-all"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -2357,14 +2494,32 @@ const MainScreen: React.FC<MainScreenProps> = ({
               )}
               
               {isMecanica && (
-                <>
-                  <button onClick={() => handleInsertBike(String(searchedBike['Patrimônio']), 'Aguardando Confirmação')} disabled={isLoading || processingBikes.has(String(searchedBike['Patrimônio']))}
-                    className="px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-[10px] font-bold disabled:bg-gray-400">Inserir Filial</button>
-                  <button onClick={() => handleInsertBike(String(searchedBike['Patrimônio']), 'Em Manutenção')} disabled={isLoading || processingBikes.has(String(searchedBike['Patrimônio']))}
-                    className="px-3 py-1.5 bg-orange-600 text-white rounded-md hover:bg-orange-700 text-[10px] font-bold disabled:bg-gray-400">Inserir Mecânica</button>
-                  <button onClick={() => handleInsertBike(String(searchedBike['Patrimônio']), 'Reserva')} disabled={isLoading || processingBikes.has(String(searchedBike['Patrimônio']))}
-                    className="col-span-2 px-3 py-1.5 bg-green-600 text-white rounded-md hover:bg-green-700 text-[10px] font-bold disabled:bg-gray-400">Inserir Reserva</button>
-                </>
+                <div className="col-span-2 grid grid-cols-2 gap-2 mt-2">
+                  <button 
+                    onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Alterar Status')}
+                    className="px-3 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-[10px] font-black uppercase shadow-sm transition-colors"
+                  >
+                    Alterar Status
+                  </button>
+                  <button 
+                    onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Aguardando Manutenção')}
+                    className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-[10px] font-black uppercase shadow-sm transition-colors"
+                  >
+                    Aguardando Manutenção
+                  </button>
+                  <button 
+                    onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Em Manutenção')}
+                    className="px-3 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 text-[10px] font-black uppercase shadow-sm transition-colors"
+                  >
+                    Manutenção
+                  </button>
+                  <button 
+                    onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Reserva')}
+                    className="px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-[10px] font-black uppercase shadow-sm transition-colors"
+                  >
+                    Reserva
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -2413,40 +2568,52 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         {/* ÍCONES DE ATALHO MECÂNICA */}
         {isMecanica && (
-          <div className="grid grid-cols-3 gap-3 mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-6">
             <button 
-              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Filial' ? null : 'Filial')}
-              className={`flex flex-col items-center justify-center p-3 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Filial' ? 'bg-blue-600 border-blue-700 text-white' : 'bg-blue-50 border-blue-100 hover:bg-blue-100'}`}
+              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Alterar status' ? null : 'Alterar status')}
+              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Alterar status' ? 'bg-purple-600 border-purple-700 text-white' : 'bg-purple-50 border-purple-100 hover:bg-purple-100'}`}
             >
-              <div className={`p-2 rounded-full mb-2 ${activeMechanicCategory === 'Filial' ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
-                <CarIcon className="w-5 h-5" />
+              <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Alterar status' ? 'bg-white text-purple-600' : 'bg-purple-600 text-white'}`}>
+                <PlusPlusIcon className="w-4 h-4" />
               </div>
-              <span className={`text-[9px] font-bold text-center leading-tight h-6 flex items-center ${activeMechanicCategory === 'Filial' ? 'text-white' : 'text-blue-800'}`}>Filial, aguardando confirmação</span>
-              <span className={`mt-1 text-xs font-black ${activeMechanicCategory === 'Filial' ? 'text-white' : 'text-blue-600'}`}>
-                {mechanicsList.filter(b => b.status === 'Aguardando Confirmação').length}
+              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Alterar status' ? 'text-white' : 'text-purple-800'}`}>Alterar status</span>
+              <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Alterar status' ? 'text-white' : 'text-purple-600'}`}>
+                {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length}
+              </span>
+            </button>
+            <button 
+              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Aguardando manutenção' ? null : 'Aguardando manutenção')}
+              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Aguardando manutenção' ? 'bg-blue-600 border-blue-700 text-white' : 'bg-blue-50 border-blue-100 hover:bg-blue-100'}`}
+            >
+              <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Aguardando manutenção' ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
+                <CarIcon className="w-4 h-4" />
+              </div>
+              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Aguardando manutenção' ? 'text-white' : 'text-blue-800'}`}>Aguardando manutenção</span>
+              <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Aguardando manutenção' ? 'text-white' : 'text-blue-600'}`}>
+                {mechanicsList.filter(b => b.status === 'Aguardando Manutenção').length}
               </span>
             </button>
             <button 
               onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Manutenção' ? null : 'Manutenção')}
-              className={`flex flex-col items-center justify-center p-3 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Manutenção' ? 'bg-orange-600 border-orange-700 text-white' : 'bg-orange-50 border-orange-100 hover:bg-orange-100'}`}
+              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Manutenção' ? 'bg-orange-600 border-orange-700 text-white' : 'bg-orange-50 border-orange-100 hover:bg-orange-100'}`}
             >
-              <div className={`p-2 rounded-full mb-2 ${activeMechanicCategory === 'Manutenção' ? 'bg-white text-orange-600' : 'bg-orange-600 text-white'}`}>
-                <BicycleIcon className="w-5 h-5" />
+              <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Manutenção' ? 'bg-white text-orange-600' : 'bg-orange-600 text-white'}`}>
+                <BicycleIcon className="w-4 h-4" />
               </div>
-              <span className={`text-[9px] font-bold text-center leading-tight h-6 flex items-center ${activeMechanicCategory === 'Manutenção' ? 'text-white' : 'text-orange-800'}`}>Em manutenção</span>
-              <span className={`mt-1 text-xs font-black ${activeMechanicCategory === 'Manutenção' ? 'text-white' : 'text-orange-600'}`}>
+              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Manutenção' ? 'text-white' : 'text-orange-800'}`}>Em manutenção</span>
+              <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Manutenção' ? 'text-white' : 'text-orange-600'}`}>
                 {mechanicsList.filter(b => b.status === 'Em Manutenção').length}
               </span>
             </button>
             <button 
               onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Reserva' ? null : 'Reserva')}
-              className={`flex flex-col items-center justify-center p-3 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Reserva' ? 'bg-green-600 border-green-700 text-white' : 'bg-green-50 border-green-100 hover:bg-green-100'}`}
+              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Reserva' ? 'bg-green-600 border-green-700 text-white' : 'bg-green-50 border-green-100 hover:bg-green-100'}`}
             >
-              <div className={`p-2 rounded-full mb-2 ${activeMechanicCategory === 'Reserva' ? 'bg-white text-green-600' : 'bg-green-600 text-white'}`}>
-                <TrailerIcon className="w-5 h-5" />
+              <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Reserva' ? 'bg-white text-green-600' : 'bg-green-600 text-white'}`}>
+                <TrailerIcon className="w-4 h-4" />
               </div>
-              <span className={`text-[9px] font-bold text-center leading-tight h-6 flex items-center ${activeMechanicCategory === 'Reserva' ? 'text-white' : 'text-green-800'}`}>Reserva</span>
-              <span className={`mt-1 text-xs font-black ${activeMechanicCategory === 'Reserva' ? 'text-white' : 'text-green-600'}`}>
+              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Reserva' ? 'text-white' : 'text-green-800'}`}>Reserva</span>
+              <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Reserva' ? 'text-white' : 'text-green-600'}`}>
                 {mechanicsList.filter(b => b.status === 'Reserva').length}
               </span>
             </button>
@@ -2456,41 +2623,80 @@ const MainScreen: React.FC<MainScreenProps> = ({
         {/* MECÂNICA */}
         {isMecanica && activeMechanicCategory && (
           <div className="mt-6 space-y-6">
-            {activeMechanicCategory === 'Filial' && (
-              <div id="section-filial" className="p-4 border rounded-lg bg-blue-50 shadow-sm scroll-mt-4">
-                <h2 className="text-lg font-bold text-blue-800 mb-3 flex items-center gap-2"><CarIcon className="w-5 h-5"/>Filial - Aguardando Confirmação</h2>
-                {mechanicsList.filter(b => b.status === 'Aguardando Confirmação').length > 0 ? (
+            {activeMechanicCategory === 'Alterar status' && (
+              <div id="section-alterar-status" className="p-4 border rounded-lg bg-purple-50 shadow-sm scroll-mt-4">
+                <h2 className="text-lg font-bold text-purple-800 mb-3 flex items-center gap-2"><PlusPlusIcon className="w-5 h-5"/>Alterar Status</h2>
+                {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length > 0 ? (
                   <div className="space-y-2">
-                    {mechanicsList.filter(b => b.status === 'Aguardando Confirmação').map((bike, i) => (
-                      <div key={`mec-filial-${bike.patrimonio}-${i}`} className="flex justify-between items-center p-3 bg-white border rounded-md shadow-sm">
+                    {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').map((bike, i) => {
+                      const isNotFound = bike.status === 'Não encontrada';
+                      return (
+                        <div key={`mec-alterar-${bike.patrimonio}-${i}`} 
+                          className={`flex justify-between items-center p-3 bg-white border rounded-md shadow-sm ${isNotFound ? 'border-red-400 ring-1 ring-red-400' : ''}`}
+                        >
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className={`font-bold ${isNotFound ? 'text-red-600' : 'text-gray-700'}`}>Bike: {bike.patrimonio}</span>
+                              {isNotFound && (
+                                <span className="px-1.5 py-0.5 bg-red-100 text-red-700 text-[8px] font-black rounded border border-red-200 animate-pulse">
+                                  PENDENTE / NÃO ENCONTRADA
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+                              {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {bike.bateria}%</p>}
+                              {bike.carregamento === 'Carregando' && <p className="text-[10px] text-green-600 font-bold">⚡ Carregando</p>}
+                              {bike.carregamento === 'Não carregando' && <p className="text-[10px] text-red-500 font-bold">🔌 Não carregando</p>}
+                            </div>
+                            {bike.motorista && <p className="text-[10px] text-blue-700 font-semibold">Motorista: {bike.motorista}</p>}
+                            {bike.observacao && <p className="text-[10px] text-orange-600">Motivo: {bike.observacao}</p>}
+                            {isNotFound && <p className="text-[10px] text-red-500 italic mt-1">Aguardando localização...</p>}
+                          </div>
+                          <div className="flex flex-col gap-2 min-w-[100px]">
+                            {!isNotFound ? (
+                              <>
+                                {!clickedBikesForStatus.has(bike.patrimonio) && (
+                                  <button onClick={() => handleAlterarStatus(bike.patrimonio)} className="w-full px-3 py-1.5 bg-purple-600 text-white text-xs font-bold rounded hover:bg-purple-700 active:scale-95">Alterar status</button>
+                                )}
+                                <button onClick={() => setMechanicNotFoundModal({ isOpen: true, bikePat: bike.patrimonio })} className="w-full px-3 py-1.5 bg-red-500 text-white text-xs font-bold rounded hover:bg-red-600 active:scale-95">Não encontrada</button>
+                              </>
+                            ) : (
+                              <button 
+                                onClick={() => setBikeFoundModal({ isOpen: true, bikePat: bike.patrimonio })} 
+                                className="w-full px-3 py-2 bg-green-600 text-white text-[10px] font-black uppercase rounded shadow-md hover:bg-green-700 active:scale-95 transition-all"
+                              >
+                                Bike Localizada
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : <p className="text-sm text-gray-500 italic">Nenhuma bike.</p>}
+              </div>
+            )}
+
+            {activeMechanicCategory === 'Aguardando manutenção' && (
+              <div id="section-aguardando-manutencao" className="p-4 border rounded-lg bg-blue-50 shadow-sm scroll-mt-4">
+                <h2 className="text-lg font-bold text-blue-800 mb-3 flex items-center gap-2"><CarIcon className="w-5 h-5"/>Aguardando Manutenção</h2>
+                {mechanicsList.filter(b => b.status === 'Aguardando Manutenção').length > 0 ? (
+                  <div className="space-y-2">
+                    {mechanicsList.filter(b => b.status === 'Aguardando Manutenção').map((bike, i) => (
+                      <div key={`mec-aguardando-${bike.patrimonio}-${i}`} className="flex justify-between items-center p-3 bg-white border rounded-md shadow-sm">
                         <div>
                           <div className="flex items-center gap-2">
                             <span className="font-bold text-gray-700">Bike: {bike.patrimonio}</span>
-                            {bike.manual && (
-                              <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 text-[8px] font-black uppercase rounded border border-purple-200">Manual</span>
-                            )}
                           </div>
                           <div className="flex flex-wrap gap-x-2 gap-y-0.5">
                             {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {bike.bateria}%</p>}
-                            {bike.carregamento === 'Carregando' && (
-                              <p className="text-[10px] text-green-600 font-bold">⚡ Carregando</p>
-                            )}
-                            {bike.carregamento === 'Não carregando' && (
-                              <p className="text-[10px] text-red-500 font-bold">🔌 Não carregando</p>
-                            )}
                           </div>
                           {bike.motorista && <p className="text-[10px] text-blue-700 font-semibold">Motorista: {bike.motorista}</p>}
                           {bike.observacao && <p className="text-[10px] text-orange-600">Motivo: {bike.observacao}</p>}
-                          {bike.mecanico && <p className="text-[10px] font-bold text-blue-600">Mecânico: {bike.mecanico}</p>}
-                          {bike.tratativa && <p className="text-[10px] text-gray-500 italic">Obs: {bike.tratativa}</p>}
                         </div>
                         <div className="flex flex-col gap-2 min-w-[140px]">
-                          {!clickedBikesForStatus.has(bike.patrimonio) && (
-                            <button onClick={() => handleAlterarStatus(bike.patrimonio)} className="w-full px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded hover:bg-blue-700 active:scale-95">Status</button>
-                          )}
                           <div className="flex gap-2">
                             <button onClick={() => handleConfirmMechanicsReceipt(bike.patrimonio)} className="flex-1 px-3 py-1.5 bg-orange-500 text-white text-xs font-bold rounded hover:bg-orange-600 active:scale-95">Manutenção</button>
-                            <button onClick={() => handleNotFoundMechanic(bike.patrimonio)} className="flex-1 px-3 py-1.5 bg-red-500 text-white text-xs font-bold rounded hover:bg-red-600 active:scale-95">Não encontrada</button>
                           </div>
                         </div>
                       </div>
@@ -2502,28 +2708,60 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
             {activeMechanicCategory === 'Manutenção' && (
               <div id="section-manutencao" className="p-4 border rounded-lg bg-orange-50 shadow-sm scroll-mt-4">
-                <h2 className="text-lg font-bold text-orange-800 mb-3 flex items-center gap-2"><BicycleIcon className="w-5 h-5"/>Mecânica - Em Manutenção</h2>
-                {mechanicsList.filter(b => b.status === 'Em Manutenção').length > 0 ? (
-                  <div className="space-y-2">
-                    {mechanicsList.filter(b => b.status === 'Em Manutenção').map((bike, i) => (
-                      <div key={`mec-manut-${bike.patrimonio}-${i}`} className="flex justify-between items-center p-3 bg-white border rounded-md shadow-sm">
-                        <div>
-                          <span className="font-bold text-gray-700">Bike: {bike.patrimonio}</span>
-                          <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                            {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {bike.bateria}%</p>}
-                            {bike.carregamento === 'Carregando' && <p className="text-[10px] text-green-600 font-bold">⚡ Carregando</p>}
-                            {bike.carregamento === 'Não carregando' && <p className="text-[10px] text-red-500 font-bold">🔌 Não carregando</p>}
-                          </div>
-                          {bike.mecanico && <p className="text-[10px] font-bold text-blue-600">Mecânico: {bike.mecanico}</p>}
-                          {bike.motorista && <p className="text-[10px] text-blue-700 font-semibold">Motorista: {bike.motorista}</p>}
-                          {bike.observacao && <p className="text-[10px] text-orange-600">Motivo: {bike.observacao}</p>}
-                          {bike.tratativa && bike.tratativa !== 'MANUAL' && <p className="text-[10px] text-gray-500 italic">Obs: {bike.tratativa}</p>}
-                        </div>
-                        <button onClick={() => { setSelectedMechanicBike(bike); setIsMechanicRepairModalOpen(true); }} className="px-3 py-1 bg-orange-600 text-white text-xs font-bold rounded hover:bg-orange-700 active:scale-95">Finalizar Reparo</button>
-                      </div>
-                    ))}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                  <h2 className="text-lg font-bold text-orange-800 flex items-center gap-2"><BicycleIcon className="w-5 h-5"/>Mecânica - Em Manutenção</h2>
+                  
+                  {/* Filtro por Mecânico */}
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="mechanic-filter" className="text-xs font-bold text-gray-600">Filtrar:</label>
+                    <select 
+                      id="mechanic-filter"
+                      value={selectedMechanicFilter}
+                      onChange={(e) => setSelectedMechanicFilter(e.target.value)}
+                      className="text-xs p-1 border rounded bg-white font-semibold text-gray-700 focus:ring-1 focus:ring-orange-500 outline-none"
+                    >
+                      <option value="Todos">Todos os Mecânicos</option>
+                      {Array.from(new Set(mechanicsList.filter(b => b.status === 'Em Manutenção' && b.mecanico).map(b => b.mecanico))).sort().map(name => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
                   </div>
-                ) : <p className="text-sm text-gray-500 italic">Nenhuma bike.</p>}
+                </div>
+
+                {(() => {
+                  const filteredBikes = mechanicsList.filter(b => 
+                    b.status === 'Em Manutenção' && 
+                    (selectedMechanicFilter === 'Todos' || b.mecanico === selectedMechanicFilter)
+                  );
+                  
+                  return filteredBikes.length > 0 ? (
+                    <div className="space-y-2">
+                      {filteredBikes.map((bike, i) => (
+                        <div key={`mec-manut-${bike.patrimonio}-${i}`} className="flex justify-between items-center p-3 bg-white border rounded-md shadow-sm">
+                          <div>
+                            <span className="font-bold text-gray-700">Bike: {bike.patrimonio}</span>
+                            <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+                              {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {bike.bateria}%</p>}
+                              {bike.carregamento === 'Carregando' && <p className="text-[10px] text-green-600 font-bold">⚡ Carregando</p>}
+                              {bike.carregamento === 'Não carregando' && <p className="text-[10px] text-red-500 font-bold">🔌 Não carregando</p>}
+                            </div>
+                            {bike.mecanico && <p className="text-[10px] font-bold text-blue-600">Mecânico: {bike.mecanico}</p>}
+                            {bike.motorista && <p className="text-[10px] text-blue-700 font-semibold">Motorista: {bike.motorista}</p>}
+                            {bike.observacao && <p className="text-[10px] text-orange-600">Motivo: {bike.observacao}</p>}
+                            {bike.tratativa && bike.tratativa !== 'MANUAL' && <p className="text-[10px] text-gray-500 italic">Obs: {bike.tratativa}</p>}
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            <button onClick={() => { setSelectedMechanicBike(bike); setIsMechanicRepairModalOpen(true); }} className="px-3 py-1.5 bg-orange-600 text-white text-xs font-bold rounded hover:bg-orange-700 active:scale-95">Finalizar Reparo</button>
+                            <div className="flex gap-2">
+                              <button onClick={() => setIsTechnicalConfirmOpen({ isOpen: true, bikePat: bike.patrimonio })} className="flex-1 px-2 py-1 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700 active:scale-95">Técnica</button>
+                              <button onClick={() => setIsVandalizedConfirmOpen({ isOpen: true, bikePat: bike.patrimonio })} className="flex-1 px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded hover:bg-red-700 active:scale-95">Vandalizada</button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <p className="text-sm text-gray-500 italic">Nenhuma bike encontrada para este filtro.</p>;
+                })()}
               </div>
             )}
 
@@ -3095,6 +3333,36 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             {record.localidade && (
                               <p className="text-[10px] text-gray-400 mt-0.5">📍 {record.localidade}</p>
                             )}
+
+                            {/* Botões de Ação Manual (Apenas Perfil Mecânica) */}
+                            {user?.category?.toUpperCase()?.includes('MECANICA') && (
+                              <div className="mt-3 pt-2 border-t border-dashed flex flex-wrap gap-2">
+                                <button 
+                                  onClick={() => handleManualInsert(record.patrimonio, 'Alterar Status')}
+                                  className="px-2 py-1 bg-purple-100 text-purple-700 text-[9px] font-black uppercase rounded border border-purple-200 hover:bg-purple-200 transition-colors"
+                                >
+                                  Alterar status
+                                </button>
+                                <button 
+                                  onClick={() => handleManualInsert(record.patrimonio, 'Aguardando Manutenção')}
+                                  className="px-2 py-1 bg-blue-100 text-blue-700 text-[9px] font-black uppercase rounded border border-blue-200 hover:bg-blue-200 transition-colors"
+                                >
+                                  Aguardando manutenção
+                                </button>
+                                <button 
+                                  onClick={() => handleManualInsert(record.patrimonio, 'Em Manutenção')}
+                                  className="px-2 py-1 bg-orange-100 text-orange-700 text-[9px] font-black uppercase rounded border border-orange-200 hover:bg-orange-200 transition-colors"
+                                >
+                                  Manutenção
+                                </button>
+                                <button 
+                                  onClick={() => handleManualInsert(record.patrimonio, 'Reserva')}
+                                  className="px-2 py-1 bg-green-100 text-green-700 text-[9px] font-black uppercase rounded border border-green-200 hover:bg-green-200 transition-colors"
+                                >
+                                  Reserva
+                                </button>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -3459,6 +3727,68 @@ const MainScreen: React.FC<MainScreenProps> = ({
         type={destinationModal.type} bikeNumber={destinationModal.bikeNumber} stationName={destinationModal.stationName} isLoading={isLoading} onRecalculate={recalculateStation}/>
       <HistoryModal isOpen={isHistoryModalOpen} onClose={() => setIsHistoryModalOpen(false)} history={requestsHistory} isLoading={isHistoryLoading} driverName={driverName}/>
       
+      {/* Modal de Seleção de Mecânico para Inserção Manual */}
+      {manualMechanicModal.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="bg-orange-600 p-4 text-white">
+              <h3 className="text-lg font-bold flex items-center gap-2">
+                <Wrench className="w-5 h-5" />
+                Associar Mecânico
+              </h3>
+              <p className="text-xs opacity-90 mt-1">Selecione o mecânico para a bike {manualMechanicModal.bikePat}</p>
+            </div>
+            
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Mecânicos Recentes</label>
+                <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1 custom-scrollbar">
+                  {mechanicsNames.map(name => (
+                    <button
+                      key={name}
+                      onClick={() => setManualMechanicName(name)}
+                      className={`p-2 text-[10px] font-bold rounded border transition-all ${manualMechanicName === name ? 'bg-orange-100 border-orange-500 text-orange-700' : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-gray-300'}`}
+                    >
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Ou digite um novo nome</label>
+                <input
+                  type="text"
+                  value={manualMechanicName}
+                  onChange={e => setManualMechanicName(e.target.value.toUpperCase())}
+                  placeholder="NOME DO MECÂNICO"
+                  className="w-full p-2.5 border border-gray-300 rounded-lg text-sm font-bold focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none uppercase"
+                />
+              </div>
+            </div>
+            
+            <div className="p-4 bg-gray-50 flex gap-3">
+              <button
+                onClick={() => {
+                  setManualMechanicModal({ isOpen: false, bikePat: '', targetStatus: '' });
+                  setManualMechanicName('');
+                }}
+                className="flex-1 px-4 py-2.5 bg-white border border-gray-300 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => processManualInsert(manualMechanicModal.bikePat, manualMechanicName, manualMechanicModal.targetStatus)}
+                disabled={!manualMechanicName.trim() || isBikeSearchLoading}
+                className="flex-1 px-4 py-2.5 bg-orange-600 text-white text-xs font-bold rounded-lg hover:bg-orange-700 disabled:bg-gray-300 transition-colors flex items-center justify-center gap-2"
+              >
+                {isBikeSearchLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* Modal de Confirmação "Não Encontrada" */}
       {isNotFoundConfirmOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
@@ -3484,6 +3814,138 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     handleStatusUpdate('Não encontrada');
                   }}
                   className="py-3 bg-red-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-red-200 hover:bg-red-700 active:scale-95 transition-all"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação "Bike Localizada" */}
+      {bikeFoundModal?.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-4">
+                <CheckCircleIcon size={32} className="text-green-600" />
+              </div>
+              <h2 className="text-xl font-black text-gray-800 uppercase mb-2">Bike Localizada?</h2>
+              <p className="text-sm text-gray-500 mb-6">
+                A bicicleta <span className="font-bold text-gray-800">{bikeFoundModal.bikePat}</span> foi localizada?
+              </p>
+              <div className="grid grid-cols-2 gap-3 w-full">
+                <button
+                  onClick={() => handleBikeFoundNao(bikeFoundModal.bikePat)}
+                  disabled={isLoading}
+                  className="py-3 bg-red-100 text-red-600 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-red-200 transition-all disabled:opacity-50"
+                >
+                  Não
+                </button>
+                <button
+                  onClick={() => handleBikeFoundSim(bikeFoundModal.bikePat)}
+                  disabled={isLoading}
+                  className="py-3 bg-green-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-green-200 hover:bg-green-700 active:scale-95 transition-all disabled:opacity-50"
+                >
+                  Sim
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação "Não Encontrada" (Mecânica) */}
+      {mechanicNotFoundModal?.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
+                <AlertCircle size={32} className="text-red-600" />
+              </div>
+              <h2 className="text-xl font-black text-gray-800 uppercase mb-2">Marcar como não encontrada?</h2>
+              <p className="text-sm text-gray-500 mb-6">
+                Deseja realmente marcar a bicicleta <span className="font-bold text-gray-800">{mechanicNotFoundModal.bikePat}</span> como <span className="font-bold text-red-600 uppercase">Não Encontrada</span>?
+              </p>
+              <div className="grid grid-cols-2 gap-3 w-full">
+                <button
+                  onClick={() => setMechanicNotFoundModal(null)}
+                  disabled={isLoading}
+                  className="py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => handleMarkAsNotFound(mechanicNotFoundModal.bikePat)}
+                  disabled={isLoading}
+                  className="py-3 bg-red-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-red-200 hover:bg-red-700 active:scale-95 transition-all disabled:opacity-50"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação "Enviar para Técnica" */}
+      {isTechnicalConfirmOpen?.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-4">
+                <Settings size={32} className="text-blue-600" />
+              </div>
+              <h2 className="text-xl font-black text-gray-800 uppercase mb-2">Enviar para Técnica?</h2>
+              <p className="text-sm text-gray-500 mb-6">
+                Deseja enviar a bicicleta <span className="font-bold text-gray-800">{isTechnicalConfirmOpen.bikePat}</span> para a <span className="font-bold text-blue-600 uppercase">Técnica</span>?
+              </p>
+              <div className="grid grid-cols-2 gap-3 w-full">
+                <button
+                  onClick={() => setIsTechnicalConfirmOpen(null)}
+                  disabled={isLoading}
+                  className="py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => handleSendToTechnical(isTechnicalConfirmOpen.bikePat)}
+                  disabled={isLoading}
+                  className="py-3 bg-blue-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-blue-200 hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação "Bike Vandalizada" */}
+      {isVandalizedConfirmOpen?.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
+                <AlertTriangleIcon size={32} className="text-red-600" />
+              </div>
+              <h2 className="text-xl font-black text-gray-800 uppercase mb-2">Bike Vandalizada?</h2>
+              <p className="text-sm text-gray-500 mb-6">
+                Marcar a bicicleta <span className="font-bold text-gray-800">{isVandalizedConfirmOpen.bikePat}</span> como <span className="font-bold text-red-600 uppercase">Vandalizada sem recuperação</span>?
+              </p>
+              <div className="grid grid-cols-2 gap-3 w-full">
+                <button
+                  onClick={() => setIsVandalizedConfirmOpen(null)}
+                  disabled={isLoading}
+                  className="py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => handleMarkAsVandalizedNoRecovery(isVandalizedConfirmOpen.bikePat)}
+                  disabled={isLoading}
+                  className="py-3 bg-red-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-red-200 hover:bg-red-700 active:scale-95 transition-all disabled:opacity-50"
                 >
                   Confirmar
                 </button>

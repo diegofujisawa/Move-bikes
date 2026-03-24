@@ -86,11 +86,19 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
           kmInicial: result.user.kmInicial
         });
       } else {
-        throw new Error(result.error || 'Resposta do servidor inválida ou incompleta.');
+        const errorMsg = result.error || 'Resposta do servidor inválida ou incompleta.';
+        throw new Error(errorMsg);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Login failed:", err);
-      setError(err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.');
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      
+      // Se o erro for sobre placa/km, foca no campo de placa
+      if (msg.includes('Placa e KM Inicial')) {
+        const plateSelect = document.getElementById('plate');
+        if (plateSelect) plateSelect.focus();
+      }
     } finally {
       setIsLoading(false);
     }

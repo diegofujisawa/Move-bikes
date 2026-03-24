@@ -250,7 +250,9 @@ function doPost(e) {
       'updateDriverState', 'finalizeCollectedBike', 'finalizeRouteBike',
       'confirmBikeFound', 'confirmVandalizedFound', 'switchVehicle',
       'saveDailySummary', 'clearAdminAlerts', 'confirmMechanicsReceipt',
-      'finalizeMechanicsRepair', 'organizeTrailer', 'finalizeTrailer'
+      'finalizeMechanicsRepair', 'organizeTrailer', 'finalizeTrailer',
+      'moveToAguardandoManutencao', 'declineMechanicsReceipt',
+      'markAsNotFound', 'editMechanicsBike', 'deleteMechanicsBike'
     ];
 
     const isWriteAction = writeActions.includes(action);
@@ -315,6 +317,11 @@ function doPost(e) {
       case 'getDirections':        response = { ...getDirections(request.fromLat, request.fromLng, request.toLat, request.toLng), version: BACKEND_VERSION }; break;
       case 'getBikeMovement':      response = { ...getBikeMovement(request.bikeNumber, request.limit), version: BACKEND_VERSION }; break;
       case 'confirmMechanicsReceipt': response = { ...confirmMechanicsReceipt(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
+      case 'moveToAguardandoManutencao': response = { ...moveToAguardandoManutencao(request.bikeNumber), version: BACKEND_VERSION }; break;
+      case 'declineMechanicsReceipt': response = { ...declineMechanicsReceipt(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
+      case 'markAsNotFound': response = { ...markAsNotFound(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
+      case 'editMechanicsBike': response = { ...editMechanicsBike(request.oldPat, request.newPat), version: BACKEND_VERSION }; break;
+      case 'deleteMechanicsBike': response = { ...deleteMechanicsBike(request.bikeNumber), version: BACKEND_VERSION }; break;
       case 'insertBikeMechanics':   response = { ...insertBikeMechanics(request.bikeNumber, request.driverName, request.targetStatus), version: BACKEND_VERSION }; break;
       case 'notifyAdmins':          response = { ...notifyAdmins(request.message, request.bikes, request.trailerName), version: BACKEND_VERSION }; break;
       case 'finalizeMechanicsRepair': response = { ...finalizeMechanicsRepair(request.bikeNumber, request.mechanicName, request.treatment), version: BACKEND_VERSION }; break;
@@ -2434,7 +2441,7 @@ function addToMechanics(bikeNumber) {
     if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === bikeStr
         && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] !== 'Remanejada') return;
   }
-  sheet.appendRow([bikeNumber, 'Aguardando Confirmação', new Date(), '', '', '', '']);
+  sheet.appendRow([bikeNumber, 'Alterar Status', new Date(), '', '', '', '']);
 }
 
 // =================================================================
@@ -2577,7 +2584,7 @@ function getMechanicsList() {
     } catch (e) {}
   }
 
-  const CUTOFF_MS = new Date('2026-03-20T00:00:00').getTime();
+  const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
   // Mapa de bateria/carregamento — lê direto da planilha sem cache
   const bikeInfoMap = {};
@@ -2633,7 +2640,8 @@ function getMechanicsList() {
   const lastStatusByBike = {};
   const EXIT_STATUSES = new Set([
     'estação', 'estacao', 'não encontrada', 'nao encontrada',
-    'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno'
+    'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno',
+    'Remanejada'
   ]);
 
   try {
@@ -2685,7 +2693,8 @@ function getMechanicsList() {
       const pat    = String(row[COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
       const status = (row[COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
       if (!pat) return;
-      if (status === 'Remanejada' || status === 'Aguardando Confirmação') return;
+      if (status === 'Remanejada') return;
+      // Não filtra 'Não encontrada' para que apareçam na seção Alterar Status
       const tsMs = toMs(row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
       if (tsMs !== null && tsMs < CUTOFF_MS) return;
       if (tsMs === null) return;
@@ -2723,9 +2732,9 @@ function getMechanicsList() {
         observacao: entry.observacao || ''
       };
     } else {
-      // Ainda não processada → Aguardando Confirmação
+      // Ainda não processada → Alterar Status
       bikeMap[pat] = {
-        row: -1, patrimonio: pat, status: 'Aguardando Confirmação',
+        row: -1, patrimonio: pat, status: 'Alterar Status',
         dataEntrada: new Date(entry.tsMs), mecanico: '', tratativa: '',
         dataFinalizacao: '', carretinha: '',
         bateria: info.bateria, carregamento: info.carregamento,
@@ -2796,7 +2805,7 @@ function confirmMechanicsReceipt(bikeNumber, mechanicName) {
   const pStr = String(bikeNumber).trim().replace(/^0+/, '');
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr
-        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] === 'Aguardando Confirmação') {
+        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] === 'Aguardando Manutenção') {
       const row = i + 1;
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Em Manutenção');
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
@@ -2805,6 +2814,93 @@ function confirmMechanicsReceipt(bikeNumber, mechanicName) {
   }
   sheet.appendRow([bikeNumber, 'Em Manutenção', new Date(), mechanicName, '', '', '']);
   return { success: true };
+}
+
+function moveToAguardandoManutencao(bikeNumber) {
+  const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
+  if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
+  const data = sheet.getDataRange().getValues();
+  const pStr = String(bikeNumber).trim().replace(/^0+/, '');
+  
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr
+        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] === 'Alterar Status') {
+      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Aguardando Manutenção');
+      return { success: true };
+    }
+  }
+  
+  sheet.appendRow([bikeNumber, 'Aguardando Manutenção', new Date(), '', '', '', '']);
+  return { success: true };
+}
+
+function declineMechanicsReceipt(bikeNumber, mechanicName) {
+  const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
+  if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
+  const data = sheet.getDataRange().getValues();
+  const pStr = String(bikeNumber).trim().replace(/^0+/, '');
+  
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr
+        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] === 'Aguardando Manutenção') {
+      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Não encontrada');
+      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
+      return { success: true };
+    }
+  }
+  return { success: false, error: 'Bicicleta não encontrada em Aguardando Manutenção.' };
+}
+
+function markAsNotFound(bikeNumber, mechanicName) {
+  const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
+  if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
+  const data = sheet.getDataRange().getValues();
+  const pStr = String(bikeNumber).trim().replace(/^0+/, '');
+  
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr
+        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] !== 'Remanejada') {
+      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Não encontrada');
+      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
+      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
+      return { success: true };
+    }
+  }
+  
+  sheet.appendRow([bikeNumber, 'Não encontrada', new Date(), mechanicName, '', '', '']);
+  return { success: true };
+}
+
+function editMechanicsBike(oldPat, newPat) {
+  const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
+  if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
+  const data = sheet.getDataRange().getValues();
+  const oldStr = String(oldPat).trim().replace(/^0+/, '');
+  
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === oldStr
+        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] !== 'Remanejada') {
+      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.PATRIMONIO).setValue(newPat);
+      return { success: true };
+    }
+  }
+  return { success: false, error: 'Bicicleta não encontrada para edição.' };
+}
+
+function deleteMechanicsBike(bikeNumber) {
+  const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
+  if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
+  const data = sheet.getDataRange().getValues();
+  const pStr = String(bikeNumber).trim().replace(/^0+/, '');
+  
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr
+        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] !== 'Remanejada') {
+      sheet.deleteRow(i + 1);
+      return { success: true };
+    }
+  }
+  return { success: false, error: 'Bicicleta não encontrada para exclusão.' };
 }
 
 function finalizeMechanicsRepair(bikeNumber, mechanicName, treatment) {
@@ -2884,7 +2980,7 @@ function testTimestamp() {
   if (!sheet) { Logger.log('Aba Relatorio não encontrada'); return; }
   const lastRow = sheet.getLastRow();
   const sample = sheet.getRange(lastRow - 10, 1, 10, 3).getValues();
-  const CUTOFF_MS = new Date('2026-03-20T00:00:00').getTime();
+  const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
   sample.forEach((row, i) => {
     const raw = row[0];
     const ts = raw instanceof Date ? raw : parseTimestamp(raw);
