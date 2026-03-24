@@ -20,7 +20,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.0-remove-divergence';
+const BACKEND_VERSION = '85.1-search-fix';
 
 // --- CONFIGURAÇÃO GLOBAL ---
 // IMPORTANTE: Defina SPREADSHEET_ID via:
@@ -863,7 +863,11 @@ function getBikeIndex() {
   const index = {};
   data.slice(1).forEach(row => {
     const pat = String(row[COLUMN_INDICES.BIKES.PATRIMONIO - 1]).trim();
-    if (pat) index[pat] = row;
+    if (!pat) return;
+    index[pat] = row;
+    // Indexa também sem zeros à esquerda — busca "123" encontra "0123" e vice-versa
+    const patNoZeros = pat.replace(/^0+/, '');
+    if (patNoZeros && patNoZeros !== pat) index[patNoZeros] = row;
   });
 
   try { cache.put(cacheKey, JSON.stringify(index), 600); } catch (e) {}
@@ -873,12 +877,33 @@ function getBikeIndex() {
 function searchBike(bikeNumber) {
   if (!bikeNumber) return { success: false, error: 'Número da bicicleta não informado.' };
   const bikeStr = String(bikeNumber).trim();
+  const bikeNum = parseFloat(bikeStr); // para comparar com células numéricas
 
   try {
-    const index = getBikeIndex();
-    const row = index[bikeStr];
-    if (!row) return { success: false, error: 'Bicicleta não encontrada.' };
+    const sheet = getSpreadsheet().getSheetByName(BIKES_SHEET_NAME);
+    if (!sheet) return { success: false, error: 'Aba Bicicletas não encontrada.' };
 
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { success: false, error: 'Bicicleta não encontrada.' };
+
+    // Lê apenas a coluna de patrimônio — mais rápido que getDataRange
+    const patValues = sheet.getRange(2, COLUMN_INDICES.BIKES.PATRIMONIO, lastRow - 1, 1).getValues();
+    let foundRow = -1;
+
+    for (let i = 0; i < patValues.length; i++) {
+      const cell = patValues[i][0];
+      // Compara como número (para células numéricas) e como string (para células texto)
+      const cellStr = String(cell).trim();
+      const cellNum = parseFloat(cellStr);
+      if (cellStr === bikeStr || cellNum === bikeNum) {
+        foundRow = i + 2; // +2: linha 1 é cabeçalho, array começa em 0
+        break;
+      }
+    }
+
+    if (foundRow === -1) return { success: false, error: 'Bicicleta não encontrada.' };
+
+    const row = sheet.getRange(foundRow, 1, 1, sheet.getLastColumn()).getValues()[0];
     const bikeObject = {
       'Patrimônio':                    row[COLUMN_INDICES.BIKES.PATRIMONIO - 1],
       'Status':                         row[COLUMN_INDICES.BIKES.STATUS - 1],

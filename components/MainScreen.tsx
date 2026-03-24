@@ -1111,15 +1111,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
       });
       
       if (res.success) {
-        setAlert({ type: 'success', message: `Bike ${bikePat} inserida em ${targetStatus}.` });
-        fetchMechanicsData();
+        setSuccessMessage(`Bike ${bikePat} inserida em ${targetStatus}.`);
+        refreshAll(true);
         setBikeSearchTerm('');
         setBikeSearchResult([]);
       } else {
-        setAlert({ type: 'error', message: res.error || 'Erro ao inserir bike.' });
+        setError(res.error || 'Erro ao inserir bike.');
       }
     } catch {
-      setAlert({ type: 'error', message: 'Erro de conexão.' });
+      setError('Erro de conexão.');
     } finally {
       setIsBikeSearchLoading(false);
       setManualMechanicModal({ isOpen: false, bikePat: '', targetStatus: '' });
@@ -1171,7 +1171,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setSearchedBike(null);
         const errorMsg = result.error || 'Bicicleta não encontrada.';
         setError(errorMsg);
-        setAlert({ type: 'error', message: errorMsg });
+        
       }
     } catch (err: any) {
       setSearchedBike(null);
@@ -3335,28 +3335,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             )}
 
                             {/* Botões de Ação Manual (Apenas Perfil Mecânica) */}
-                            {user?.category?.toUpperCase()?.includes('MECANICA') && (
+                            {isMecanica && (
                               <div className="mt-3 pt-2 border-t border-dashed flex flex-wrap gap-2">
                                 <button 
-                                  onClick={() => handleManualInsert(record.patrimonio, 'Alterar Status')}
+                                  onClick={() => handleManualInsert(bikeSearchTerm.trim(), 'Alterar Status')}
                                   className="px-2 py-1 bg-purple-100 text-purple-700 text-[9px] font-black uppercase rounded border border-purple-200 hover:bg-purple-200 transition-colors"
                                 >
                                   Alterar status
                                 </button>
                                 <button 
-                                  onClick={() => handleManualInsert(record.patrimonio, 'Aguardando Manutenção')}
+                                  onClick={() => handleManualInsert(bikeSearchTerm.trim(), 'Aguardando Manutenção')}
                                   className="px-2 py-1 bg-blue-100 text-blue-700 text-[9px] font-black uppercase rounded border border-blue-200 hover:bg-blue-200 transition-colors"
                                 >
                                   Aguardando manutenção
                                 </button>
                                 <button 
-                                  onClick={() => handleManualInsert(record.patrimonio, 'Em Manutenção')}
+                                  onClick={() => handleManualInsert(bikeSearchTerm.trim(), 'Em Manutenção')}
                                   className="px-2 py-1 bg-orange-100 text-orange-700 text-[9px] font-black uppercase rounded border border-orange-200 hover:bg-orange-200 transition-colors"
                                 >
                                   Manutenção
                                 </button>
                                 <button 
-                                  onClick={() => handleManualInsert(record.patrimonio, 'Reserva')}
+                                  onClick={() => handleManualInsert(bikeSearchTerm.trim(), 'Reserva')}
                                   className="px-2 py-1 bg-green-100 text-green-700 text-[9px] font-black uppercase rounded border border-green-200 hover:bg-green-200 transition-colors"
                                 >
                                   Reserva
