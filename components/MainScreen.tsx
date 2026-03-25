@@ -4,7 +4,7 @@ import {
   LogoutIcon, PlusIcon, PlusPlusIcon, MapIcon, SheetIcon, SearchIcon,
   AlertIcon, CalendarIcon, CarIcon, XIcon, BicycleIcon, MovingIcon,
   UserIcon, AlertTriangleIcon, QrCodeIcon, TrailerIcon, SwitchIcon,
-  RefreshIcon, DatabaseIcon, CheckCircleIcon
+  RefreshIcon, DatabaseIcon, CheckCircleIcon, DocumentTextIcon
 } from './icons';
 import { 
   Settings, Battery, Lock, Map as MapIconLucide, 
@@ -15,8 +15,8 @@ import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
 import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import {
-  collection, onSnapshot, doc, updateDoc, addDoc,
-  serverTimestamp, setDoc
+  collection, onSnapshot, doc, updateDoc, addDoc, getDocs,
+  serverTimestamp, setDoc, query, where
 } from 'firebase/firestore';
 import ScheduleModal from './ScheduleModal';
 import ReporModal from './ReporModal';
@@ -214,8 +214,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isMechanicRepairModalOpen, setIsMechanicRepairModalOpen] = useState(false);
   const [technicaList, setTechnicaList] = useState<any[]>([]);
   const [isTechnicaLoading, setIsTechnicaLoading] = useState(false);
-  const [selectedTechnicaBike, setSelectedTechnicaBike] = useState<any>(null);
-  const [isTechnicaRepairModalOpen, setIsTechnicaRepairModalOpen] = useState(false);
   const [technicaReceiptModal, setTechnicaReceiptModal] = useState<{ bikeNumber: string; originalMechanic: string } | null>(null);
   const [technicaRepairModal, setTechnicaRepairModal] = useState<{ bike: any } | null>(null);
   const [technicaRepairSelected, setTechnicaRepairSelected] = useState<Set<string>>(new Set());
@@ -240,7 +238,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [timelineDate, setTimelineDate] = useState<string>(localDateStr()); // YYYY-MM-DD
   const [summaryTimeRange, setSummaryTimeRange] = useState<'day' | 'week' | 'month' | '-1' | '-7'>('day');
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
-  const [activeQuadrant, setActiveQuadrant] = useState<'summary' | 'alerts' | 'vandalized' | 'status' | 'mechanics' | 'bike_search'>('summary');
+  const [activeQuadrant, setActiveQuadrant] = useState<'summary' | 'alerts' | 'vandalized' | 'status' | 'mechanics' | 'bike_search' | 'boletim'>('summary');
   const [bikeSearchTerm, setBikeSearchTerm] = useState('');
   const [bikeSearchLimit, setBikeSearchLimit] = useState<5|10|15>(5);
   const [bikeSearchResult, setBikeSearchResult] = useState<any[]>([]);
@@ -249,10 +247,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isAlertsLoading, setIsAlertsLoading] = useState(false);
   const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
   const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
-  const [changeStatusData, setChangeStatusData] = useState<{ vandalizadas: any[], filial: any[] }>({ vandalizadas: [], filial: [] });
-  const [statusTimeRange, setStatusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
+  const [statusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
   const [alertCount, setAlertCount] = useState(0);
   const [hasNewAlerts, setHasNewAlerts] = useState(false);
+  const [pendingActions, setPendingActions] = useState<any[]>([]);
+  const [isPendingActionsLoading, setIsPendingActionsLoading] = useState(false);
 
   // --- Route Generation ---
   const [isRouteConfigOpen, setIsRouteConfigOpen] = useState(false);
@@ -311,7 +310,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   });
   const [bikeFoundModal, setBikeFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [mechanicNotFoundModal, setMechanicNotFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
-  const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
+  const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string, mechanicName?: string } | null>(null);
   const [manualMechanicModal, setManualMechanicModal] = useState<{ isOpen: boolean; bikePat: string; targetStatus: string }>({ isOpen: false, bikePat: '', targetStatus: '' });
   const [manualMechanicName, setManualMechanicName] = useState('');
   const [isVandalizedConfirmOpen, setIsVandalizedConfirmOpen] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
@@ -568,15 +567,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
     let unsubTimeline = () => {};
     if (isAdm) {
       setFirebaseTimelineEvents({}); // limpa ao trocar de data
-      // Sem where() para evitar necessidade de índice — filtra no cliente
-      unsubTimeline = onSnapshot(collection(db, 'timeline_events'), snapshot => {
+      // Filtra pela data selecionada no servidor para maior eficiência
+      const q = query(collection(db, 'timeline_events'), where('date', '==', timelineDate));
+      unsubTimeline = onSnapshot(q, snapshot => {
         const byDriver: Record<string, Array<{tsMs: number, type: string, bikeNumber?: string}>> = {};
         snapshot.forEach(d => {
           const data = d.data();
           const driver = data.driverName;
           if (!driver) return;
-          // Filtra pela data selecionada no cliente
-          if (data.date && data.date !== timelineDate) return;
           // serverTimestamp() pode ser null na primeira escrita (pendingWrite)
           // Nesse caso usa o timestamp local do documento como fallback
           const ts = data.timestamp?.toDate?.()
@@ -634,7 +632,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }, err => console.error('Listener locations:', err));
     }
 
-    return () => { unsubRequests(); unsubAlerts(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); };
+    // Listener de ações pendentes (ADM)
+    let unsubPending = () => {};
+    if (isAdm) {
+      setIsPendingActionsLoading(true);
+      unsubPending = onSnapshot(collection(db, 'pending_actions'), snapshot => {
+        const actions: any[] = [];
+        snapshot.forEach(d => {
+          const data = d.data();
+          if (data.status === 'pending') {
+            actions.push({ id: d.id, ...data });
+          }
+        });
+        setPendingActions(actions.sort((a, b) => (b.timestamp?.toMillis?.() || 0) - (a.timestamp?.toMillis?.() || 0)));
+        setIsPendingActionsLoading(false);
+      }, err => {
+        console.error('Listener pending_actions:', err);
+        setIsPendingActionsLoading(false);
+      });
+    }
+
+    return () => { unsubRequests(); unsubAlerts(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); };
   }, [driverName, isAdm, timelineDate]);
 
   // =================================================================
@@ -1147,6 +1165,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const processManualInsert = async (bikePat: string, mechanicName: string, targetStatus: string) => {
     setIsBikeSearchLoading(true);
     try {
+      if (isMecanica) {
+        await addDoc(collection(db, 'pending_actions'), {
+          type: 'status_change',
+          bikeNumber: bikePat,
+          targetStatus,
+          mechanicName: driverName,
+          status: 'pending',
+          timestamp: serverTimestamp()
+        });
+        setSuccessMessage(`Solicitação de alteração de status para bike ${bikePat} enviada ao ADM.`);
+        setBikeSearchTerm('');
+        setBikeSearchResult([]);
+        return;
+      }
+
       const res = await apiCall({
         action: 'insertBikeMechanics',
         bikeNumber: bikePat,
@@ -1168,6 +1201,82 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsBikeSearchLoading(false);
       setManualMechanicModal({ isOpen: false, bikePat: '', targetStatus: '' });
       setManualMechanicName('');
+    }
+  };
+
+  const [isBoletimModalOpen, setIsBoletimModalOpen] = useState(false);
+  const [boletimSearchTerm, setBoletimSearchTerm] = useState('');
+  const [boletimResult, setBoletimResult] = useState<any>(null);
+  const [isBoletimLoading, setIsBoletimLoading] = useState(false);
+  const [boletimRecords, setBoletimRecords] = useState<any[]>([]);
+  const [isBoletimRecordsLoading, setIsBoletimRecordsLoading] = useState(false);
+  const [showBoletimForm, setShowBoletimForm] = useState(false);
+  const [newBoletim, setNewBoletim] = useState({
+    date: new Date().toISOString().split('T')[0],
+    boNumber: '',
+    author: driverName,
+    summary: ''
+  });
+
+  const fetchBoletimRecords = async (bikePat: string) => {
+    setIsBoletimRecordsLoading(true);
+    try {
+      const q = query(collection(db, 'boletins'), where('bikeNumber', '==', bikePat));
+      const querySnapshot = await getDocs(q);
+      const records = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setBoletimRecords(records.sort((a: any, b: any) => b.date.localeCompare(a.date)));
+    } catch (err: any) {
+      console.error('Erro ao buscar registros de boletim:', err);
+    } finally {
+      setIsBoletimRecordsLoading(false);
+    }
+  };
+
+  const handleSaveBoletim = async () => {
+    if (!boletimResult?.patrimonio || !newBoletim.boNumber || !newBoletim.date || !newBoletim.author) {
+      alert('Preencha todos os campos obrigatórios.');
+      return;
+    }
+    setIsBoletimLoading(true);
+    try {
+      await addDoc(collection(db, 'boletins'), {
+        bikeNumber: boletimResult.patrimonio,
+        ...newBoletim,
+        timestamp: serverTimestamp()
+      });
+      alert('Boletim registrado com sucesso!');
+      setNewBoletim({
+        date: new Date().toISOString().split('T')[0],
+        boNumber: '',
+        author: driverName,
+        summary: ''
+      });
+      setShowBoletimForm(false);
+      fetchBoletimRecords(boletimResult.patrimonio);
+    } catch (err: any) {
+      alert('Erro ao salvar boletim: ' + err.message);
+    } finally {
+      setIsBoletimLoading(false);
+    }
+  };
+
+  const handleBoletimSearch = async () => {
+    if (!boletimSearchTerm.trim()) return;
+    setIsBoletimLoading(true);
+    setBoletimResult(null);
+    setBoletimRecords([]);
+    try {
+      const res = await apiCall({ action: 'getChassiInfo', bikeNumber: boletimSearchTerm.trim() });
+      if (res.success) {
+        setBoletimResult(res.data);
+        fetchBoletimRecords(res.data.patrimonio);
+      } else {
+        alert(res.error || 'Não encontrado na aba CHASSI.');
+      }
+    } catch (err: any) {
+      alert('Erro ao buscar boletim: ' + err.message);
+    } finally {
+      setIsBoletimLoading(false);
     }
   };
 
@@ -1300,6 +1409,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
       return next;
     });
 
+    if (isMecanica) {
+      try {
+        await addDoc(collection(db, 'pending_actions'), {
+          type: 'status_change',
+          bikeNumber: bikeId,
+          targetStatus: 'Aguardando Manutenção',
+          mechanicName: driverName,
+          status: 'pending',
+          timestamp: serverTimestamp()
+        });
+        setSuccessMessage('Solicitação de alteração de status enviada para o ADM!');
+        refreshAll(true);
+      } catch (e: any) {
+        alert('Erro ao enviar solicitação: ' + e.message);
+      }
+      return;
+    }
+
     // Move para Aguardando Manutenção no backend
     try {
       await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true);
@@ -1338,17 +1465,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsZerarListaConfirmOpen(false);
   };
 
-  const handleSendToTechnical = async (bikePat: string) => {
+  const handleSendToTechnical = async (bikePat: string, mechanicName?: string) => {
     setIsLoading(true);
     // Otimista — remove da lista Mecânica imediatamente
     setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
     try {
+      const finalMechanic = mechanicName || driverName;
       // Firebase não-bloqueante
       setDoc(doc(db, 'bikes', bikePat), {
-        status: 'Aguardando Técnica', responsavel: driverName, ultimaAtualizacao: serverTimestamp()
+        status: 'Aguardando Técnica', responsavel: finalMechanic, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes:', e.code));
       // Backend — grava na aba Mecânica com status Aguardando Técnica
-      await apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: driverName }, 1, false);
+      await apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: finalMechanic }, 1, false);
     } catch (err: any) {
       console.error('Erro ao enviar para técnica:', err);
       setError('Erro ao enviar para técnica: ' + err.message);
@@ -1488,6 +1616,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (!treatment) { alert('Descreva a tratativa.'); return; }
     setIsLoading(true);
     const bikeNumber = selectedMechanicBike.patrimonio;
+
+    if (isMecanica) {
+      try {
+        await addDoc(collection(db, 'pending_actions'), {
+          type: 'status_change',
+          bikeNumber,
+          targetStatus: 'Reserva',
+          treatment,
+          mechanicName: driverName,
+          status: 'pending',
+          timestamp: serverTimestamp()
+        });
+        alert('Reparo enviado para validação do ADM!');
+        setIsMechanicRepairModalOpen(false);
+      } catch (e: any) {
+        alert('Erro ao enviar reparo: ' + e.message);
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     // Atualização otimista
     setMechanicsList(prev => prev.map(b =>
       b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', tratativa: treatment } : b
@@ -1506,6 +1656,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const handleOrganizeTrailer = async (bikeNumbers: string[], trailerName: string) => {
     if (!trailerName) { alert('Informe o nome da carretinha.'); return; }
     setIsLoading(true);
+
+    if (isMecanica) {
+      try {
+        await addDoc(collection(db, 'pending_actions'), {
+          type: 'trailer_validation',
+          bikes: bikeNumbers,
+          trailerName,
+          mechanicName: driverName,
+          status: 'pending',
+          timestamp: serverTimestamp()
+        });
+        alert('Carretinha enviada para validação do ADM!');
+        setIsTrailerSelectionModalOpen(false);
+      } catch (err: any) {
+        alert('Erro: ' + err.message);
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     // Atualização otimista
     setMechanicsList(prev => prev.map(b =>
       bikeNumbers.includes(b.patrimonio) ? { ...b, carretinha: trailerName } : b
@@ -1518,6 +1689,62 @@ const MainScreen: React.FC<MainScreenProps> = ({
       alert('Erro: ' + err.message);
       refreshAll(true);
     } finally { setIsLoading(false); }
+  };
+
+  const handleApproveAction = async (action: any) => {
+    setIsLoading(true);
+    try {
+      if (action.type === 'status_change') {
+        if (action.targetStatus === 'Reserva') {
+          // Caso especial de finalização de reparo
+          updateDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
+          addDoc(collection(db, 'reports'), { bikeNumber: action.bikeNumber, status: 'Em Estação', driverName: action.mechanicName, treatment: action.treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(() => {});
+          const res = await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber: action.bikeNumber, mechanicName: action.mechanicName, treatment: action.treatment }, 1, true);
+          if (!res.success) throw new Error(res.error || 'Erro ao aprovar reparo.');
+        } else {
+          const res = await apiCall({
+            action: 'insertBikeMechanics',
+            bikeNumber: action.bikeNumber,
+            mechanicName: action.mechanicName || '',
+            targetStatus: action.targetStatus
+          });
+          if (!res.success) throw new Error(res.error || 'Erro ao aprovar status.');
+        }
+      } else if (action.type === 'trailer_validation') {
+        await Promise.all(action.bikes.map((id: string) => updateDoc(doc(db, 'bikes', id), { carretinha: action.trailerName, ultimaAtualizacao: serverTimestamp() })));
+        const res = await apiCall({ action: 'organizeTrailer', bikeNumbers: action.bikes, trailerName: action.trailerName }, 1, true);
+        if (!res.success) throw new Error(res.error || 'Erro ao aprovar carretinha.');
+      }
+
+      await updateDoc(doc(db, 'pending_actions', action.id), {
+        status: 'approved',
+        approvedBy: driverName,
+        approvedAt: serverTimestamp()
+      });
+      setSuccessMessage('Ação aprovada com sucesso!');
+      refreshAll(true);
+    } catch (err: any) {
+      alert('Erro ao aprovar: ' + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRejectAction = async (actionId: string) => {
+    if (!confirm('Deseja rejeitar esta solicitação?')) return;
+    setIsLoading(true);
+    try {
+      await updateDoc(doc(db, 'pending_actions', actionId), {
+        status: 'rejected',
+        rejectedBy: driverName,
+        rejectedAt: serverTimestamp()
+      });
+      setSuccessMessage('Solicitação rejeitada.');
+    } catch (err: any) {
+      alert('Erro ao rejeitar: ' + err.message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleForceReload = async () => {
@@ -1842,10 +2069,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } catch (err) { console.error('Fallback summary:', err); }
   };
 
-  const copyToClipboard = (list: string[]) => {
-    navigator.clipboard.writeText(list.join(',')).then(() => alert('Copiado!')).catch(() => alert('Erro ao copiar.'));
-  };
-
   // =================================================================
   // REFRESH ALL
   //
@@ -1867,18 +2090,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
           return !status || status === 'pendente';
         });
         setPendingRequests(prev => {
-          // Mantém requests do Firebase (id alfanumérico) que não estão no Sheets ainda
           const firebaseOnly = prev.filter(r => {
             const id = String(r.id);
             const isFirestoreId = id.length > 10 && isNaN(Number(id));
             if (!isFirestoreId) return false;
             if (processedRequestIds.current.has(id)) return false;
-            // Mantém se não foi encontrado nos requests do Sheets
             return !sheetsRequests.find((sr: any) => String(sr.id) === id);
           });
           return [...firebaseOnly, ...sheetsRequests];
         });
-        // Não sincroniza/deleta do Firebase durante applyData para evitar loop
       }
       if (d.driverState && !isUpdatingStateRef.current && canSheetsOverride()) {
         applyStateFromSheets(
@@ -1891,14 +2111,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (d.schedule) setUserSchedule(d.schedule);
       if (d.motoristas) setMotoristas(d.motoristas);
       if (d.driverLocations) {
-        // Sheets serve como base; Firebase atualiza em cima via listener
         setDriverLocations(prev => {
           const fbLocations = prev.filter((l:any) => l.source === 'firebase');
           if (fbLocations.length === 0) {
-            // Sem dados Firebase ainda — usa Sheets direto
             return d.driverLocations;
           }
-          // Mescla: Firebase tem prioridade, Sheets complementa quem não tem Firebase
           const fbNames = new Set(fbLocations.map((l:any) => l.driverName));
           const sheetsOnly = (d.driverLocations as any[]).filter((l:any) => !fbNames.has(l.driverName));
           return [...fbLocations, ...sheetsOnly.map((l:any) => ({ ...l, stale: true }))];
@@ -1942,7 +2159,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
         if (d.adminAlerts) {
           const n = d.adminAlerts.length;
           setAlertCount(n);
-          // Só mostra badge se há alertas novos além do que já foi visto
           if (n > lastViewedAlertCountRef.current) {
             setHasNewAlerts(true);
           }
@@ -1952,15 +2168,85 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     try {
       setSyncError(null);
-      const result = await apiCall({ action: 'sync', driverName, category, summaryTimeRange, statusTimeRange, timelineDate }, 2, true);
-      if (result.success && result.data) {
-        applyData(result.data);
-        localStorage.setItem('cached_main_data', JSON.stringify(result.data));
-        if (result.version) setBackendVersion(result.version);
-        setLastSyncTime(new Date().toLocaleTimeString());
+
+      if (isAdm) {
+        // ADM: divide em 2 chamadas paralelas para evitar timeout do Apps Script (90s)
+        // Chamada 1: sync base (requests, driverState, bikeStatuses, motoristas, localizações)
+        // Chamada 2: summary pesado (resumo por motorista, timeline, alertas, vandalizadas)
+        const [baseResult, summaryResult] = await Promise.allSettled([
+          apiCall({
+            action: 'sync',
+            driverName,
+            category,
+            summaryTimeRange,
+            statusTimeRange,
+            timelineDate,
+          }, 3, true),
+          apiCall({
+            action: 'getDriversSummary',
+            timeRange: summaryTimeRange,
+            timelineDate,
+          }, 3, true),
+        ]);
+
+        let hasAnySuccess = false;
+
+        // Aplica dados base
+        if (baseResult.status === 'fulfilled' && baseResult.value?.success) {
+          applyData(baseResult.value.data);
+          if (baseResult.value.version) setBackendVersion(baseResult.value.version);
+          localStorage.setItem('cached_main_data', JSON.stringify(baseResult.value.data));
+          setLastSyncTime(new Date().toLocaleTimeString());
+          hasAnySuccess = true;
+        }
+
+        // Aplica summary separadamente
+        if (summaryResult.status === 'fulfilled' && summaryResult.value?.success) {
+          setDriversSummary(prev => summaryResult.value.data.map((newD: any) => {
+            const prevD = prev.find((p: any) => p.name === newD.name);
+            const hasNewTL = newD.timeline && newD.timeline.length > 0;
+            return {
+              ...newD,
+              timeline: hasNewTL ? newD.timeline : (prevD?.timeline || []),
+              timelineWindow: newD.timelineWindow || prevD?.timelineWindow || null,
+            };
+          }));
+          hasAnySuccess = true;
+        }
+
+        // Só exibe erro se AMBAS as chamadas falharam
+        if (!hasAnySuccess) {
+          const errMsg = baseResult.status === 'rejected'
+            ? (baseResult.reason?.message || 'Erro de conexão.')
+            : (baseResult.value?.error || 'Falha na sincronização.');
+          setSyncError(errMsg);
+          const cached = localStorage.getItem('cached_main_data');
+          if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
+        }
+
       } else {
-        setSyncError(result.error || 'Falha na sincronização.');
+        // MOTORISTA / MECÂNICA / TÉCNICA: sync único e leve
+        const result = await apiCall({
+          action: 'sync',
+          driverName,
+          category,
+          summaryTimeRange,
+          statusTimeRange,
+          timelineDate,
+        }, 3, true);
+
+        if (result.success && result.data) {
+          applyData(result.data);
+          localStorage.setItem('cached_main_data', JSON.stringify(result.data));
+          if (result.version) setBackendVersion(result.version);
+          setLastSyncTime(new Date().toLocaleTimeString());
+        } else {
+          setSyncError(result.error || 'Falha na sincronização.');
+          const cached = localStorage.getItem('cached_main_data');
+          if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
+        }
       }
+
     } catch (err: any) {
       setSyncError(err.message || 'Erro de conexão.');
       const cached = localStorage.getItem('cached_main_data');
@@ -2035,7 +2321,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const interval = setInterval(() => {
       refreshAll();
       if (isTecnica) fetchTechnicaList();
-    }, 10000);
+    }, 12000);
     const onVisibility = () => { if (document.visibilityState === 'visible') refreshAll(true); };
     document.addEventListener('visibilitychange', onVisibility);
     return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVisibility); };
@@ -2520,7 +2806,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     const ok = confirmedBikes.has(bike.patrimonio);
                     const isBatFail = batteryFailed === bike.patrimonio;
                     const pct = getBatPct(bike.bateria);
-                    const batOk = pct === undefined || pct >= 85;
                     return (
                       <div key={bike.patrimonio}
                         className={`flex items-center justify-between p-2 rounded-lg border transition-all ${
@@ -2702,7 +2987,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 </button>
                 <button
                   onClick={async () => {
-                    const { patrimonio, trailerName } = removeFromTrailerConfirm;
+                    const { patrimonio } = removeFromTrailerConfirm;
                     setRemoveFromTrailerConfirm(null);
                     // Remove do modal QR
                     setTrailerQrModal(prev => prev ? {
@@ -2797,7 +3082,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             <span className={`text-[10px] flex items-center gap-1 cursor-help ${syncError ? 'text-red-500 font-bold' : 'text-gray-400'}`}
               title={syncError || 'Sincronizado'} onClick={() => syncError && alert(syncError)}>
               <span className={`w-1.5 h-1.5 rounded-full ${isSyncing ? 'bg-blue-500 animate-pulse' : syncError ? 'bg-red-500' : 'bg-green-500'}`}></span>
-              {syncError ? 'Erro Planilha' : lastSyncTime}
+              {syncError ? (syncError.includes('sobrecarregado') || syncError.includes('busy') ? 'Servidor Ocupado' : 'Erro Planilha') : lastSyncTime}
             </span>
           </div>
         </div>
@@ -2842,6 +3127,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <button onClick={() => setReportModalOpen(true)} disabled={isLoading} title="Relatório" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><SheetIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             </>}
             <button onClick={() => { fetchReporData(); setIsReporModalOpen(true); }} disabled={isLoading} title="Estações Livres" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><BicycleIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
+            {isAdm && <button onClick={() => setIsBoletimModalOpen(true)} disabled={isLoading} title="Boletim de Bike" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><DocumentTextIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>}
           </>}
           <button onClick={onLogout} disabled={isLoading} title="Sair" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-red-600 disabled:opacity-50"><LogoutIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
         </div>
@@ -3327,7 +3613,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           <div className="flex flex-col gap-2">
                             <button onClick={() => { setSelectedMechanicBike(bike); setIsMechanicRepairModalOpen(true); }} className="px-3 py-1.5 bg-orange-600 text-white text-xs font-bold rounded hover:bg-orange-700 active:scale-95">Finalizar Reparo</button>
                             <div className="flex gap-2">
-                              <button onClick={() => setIsTechnicalConfirmOpen({ isOpen: true, bikePat: bike.patrimonio })} className="flex-1 px-2 py-1 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700 active:scale-95">Técnica</button>
+                              <button onClick={() => setIsTechnicalConfirmOpen({ isOpen: true, bikePat: bike.patrimonio, mechanicName: bike.mecanico })} className="flex-1 px-2 py-1 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700 active:scale-95">Técnica</button>
                               <button onClick={() => setIsVandalizedConfirmOpen({ isOpen: true, bikePat: bike.patrimonio })} className="flex-1 px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded hover:bg-red-700 active:scale-95">Vandalizada</button>
                             </div>
                           </div>
@@ -3517,18 +3803,29 @@ const MainScreen: React.FC<MainScreenProps> = ({
           <div className="mt-6 overflow-hidden">
             <div className="flex gap-2 mb-2 px-1">
               {[
-                { key: 'summary', icon: <UserIcon className="w-5 h-5"/>, color: 'blue' },
-                { key: 'alerts', icon: <AlertIcon className="w-5 h-5"/>, color: 'red' },
-                { key: 'vandalized', icon: <AlertTriangleIcon className="w-5 h-5"/>, color: 'orange' },
-                { key: 'status', icon: <PlusPlusIcon className="w-5 h-5"/>, color: 'blue' },
+                { key: 'summary', icon: <UserIcon className="w-5 h-5"/>, color: 'blue', title: 'Resumo' },
+                { key: 'alerts', icon: <AlertIcon className="w-5 h-5"/>, color: 'red', title: 'Alertas' },
+                { key: 'vandalized', icon: <AlertTriangleIcon className="w-5 h-5"/>, color: 'orange', title: 'Vandalizadas' },
+                { key: 'status', icon: (
+                  <div className="relative">
+                    <PlusPlusIcon className="w-5 h-5"/>
+                    {pendingActions.length > 0 && (
+                      <span className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[8px] font-black px-1 rounded-full border border-white">
+                        {pendingActions.length}
+                      </span>
+                    )}
+                  </div>
+                ), color: 'blue', title: 'Validação Mecânica' },
                 { key: 'mechanics', icon: (
                   <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
                   </svg>
-                ), color: 'orange' },
-                { key: 'bike_search', icon: <SearchIcon className="w-5 h-5"/>, color: 'purple' },
-              ].map(({ key, icon, color }) => (
+                ), color: 'orange', title: 'Mecânica' },
+                { key: 'bike_search', icon: <SearchIcon className="w-5 h-5"/>, color: 'purple', title: 'Busca de Bike' },
+                { key: 'boletim', icon: <SheetIcon className="w-5 h-5"/>, color: 'blue', title: 'Boletim' },
+              ].map(({ key, icon, color, title }) => (
                 <button key={key} onClick={() => setActiveQuadrant(key as any)}
+                  title={title}
                   className={`p-2 rounded-full transition-all ${activeQuadrant === key ? `bg-${color}-600 text-white shadow-md` : 'bg-gray-200 text-gray-500'}`}>
                   {icon}
                 </button>
@@ -3537,7 +3834,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
             <div className="relative w-full overflow-hidden rounded-lg border bg-gray-50 shadow-inner min-h-[400px]">
               <div className="flex transition-transform duration-500 ease-in-out"
-                style={{ transform: `translateX(${activeQuadrant === 'summary' ? '0%' : activeQuadrant === 'alerts' ? '-100%' : activeQuadrant === 'vandalized' ? '-200%' : activeQuadrant === 'status' ? '-300%' : activeQuadrant === 'mechanics' ? '-400%' : '-500%'})` }}>
+                style={{ transform: `translateX(${activeQuadrant === 'summary' ? '0%' : activeQuadrant === 'alerts' ? '-100%' : activeQuadrant === 'vandalized' ? '-200%' : activeQuadrant === 'status' ? '-300%' : activeQuadrant === 'mechanics' ? '-400%' : activeQuadrant === 'bike_search' ? '-500%' : '-600%'})` }}>
 
                 {/* Quadrante 1: Resumo */}
                 <div className="w-full flex-shrink-0 p-3">
@@ -3591,13 +3888,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
                           {/* Linha do tempo de atividade */}
                           {(() => {
-                            const isToday = timelineDate === localDateStr();
                             const sheetsEvents = (driver.timeline || []) as Array<{tsMs: number, hour: number, min: number, type: string, bikeNumber?: string}>;
-                            // Eventos Firebase (em_posse) só disponíveis para hoje
-                            const fbEvents = isToday ? (firebaseTimelineEvents[driver.name] || []).map((e: any) => ({
+                            // Eventos Firebase (em_posse) disponíveis para a data selecionada
+                            const fbEvents = (firebaseTimelineEvents[driver.name] || []).map((e: any) => ({
                               tsMs: e.tsMs, hour: new Date(e.tsMs).getHours(),
                               min: new Date(e.tsMs).getMinutes(), type: e.type, bikeNumber: e.bikeNumber
-                            })) : [];
+                            }));
                             const merged = [...sheetsEvents];
                             fbEvents.forEach(fe => {
                               const isDup = sheetsEvents.some(se => se.type === fe.type && Math.abs(se.tsMs - fe.tsMs) < 2 * 60 * 1000);
@@ -3799,39 +4095,94 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   </div>
                 </div>
 
-                {/* Quadrante 4: Alterar Status */}
+                {/* Quadrante 4: Validação Mecânica (Status & Carretinhas) */}
                 <div className="min-w-full p-4">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-                    <div className="flex items-center gap-2"><BicycleIcon className="w-5 h-5 text-blue-600"/><h3 className="text-lg font-bold text-gray-800">Alterar Status</h3></div>
+                    <div className="flex items-center gap-2">
+                      <PlusPlusIcon className="w-5 h-5 text-blue-600"/>
+                      <h3 className="text-lg font-bold text-gray-800">Validação Mecânica (Status & Carretinhas)</h3>
+                    </div>
                     <div className="flex items-center gap-2 bg-white p-1 rounded-lg border shadow-sm">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase ml-2">Período:</span>
-                      <select value={statusTimeRange} onChange={e => setStatusTimeRange(e.target.value as any)} className="text-xs font-bold text-gray-600 bg-transparent border-none focus:ring-0 cursor-pointer py-1 pr-8">
-                        <option value="24h">Últimas 24h</option>
-                        <option value="48h">Últimas 48h</option>
-                        <option value="72h">Últimas 72h</option>
-                        <option value="week">Última Semana</option>
-                      </select>
+                      <span className="text-[10px] font-bold text-gray-400 uppercase ml-2">Pendentes:</span>
+                      <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-[10px] font-black rounded-full">
+                        {pendingActions.length}
+                      </span>
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {[
-                      { key: 'vandalizadas', label: 'Vandalizadas', color: 'orange', data: changeStatusData.vandalizadas },
-                      { key: 'filial', label: 'Filial', color: 'blue', data: changeStatusData.filial },
-                    ].map(({ key, label, color, data }) => (
-                      <div key={key} className="bg-white p-3 rounded-lg border shadow-sm">
-                        <div className="flex justify-between items-center mb-2">
-                          <h4 className={`text-sm font-bold text-${color}-700 uppercase tracking-wider`}>{label}</h4>
-                          <button onClick={() => copyToClipboard(data.map((v: any) => v.patrimonio))} className="px-2 py-1 bg-gray-100 text-gray-600 text-[10px] font-bold rounded hover:bg-gray-200 flex items-center gap-1">
-                            <SheetIcon className="w-3 h-3"/> Copiar Lista
-                          </button>
-                        </div>
-                        <div className="max-h-[200px] overflow-y-auto bg-gray-50 rounded p-2 border border-dashed">
-                          {data.length > 0
-                            ? <p className="text-xs font-mono break-all text-gray-600 leading-relaxed">{data.map((v: any) => v.patrimonio).join(',')}</p>
-                            : <p className="text-xs text-gray-400 italic text-center py-4">Nenhuma bike.</p>}
-                        </div>
+
+                  <div className="space-y-3">
+                    {isPendingActionsLoading ? (
+                      <div className="flex justify-center py-8">
+                        <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
                       </div>
-                    ))}
+                    ) : pendingActions.length > 0 ? (
+                      pendingActions.map((action) => (
+                        <div key={action.id} className="bg-white p-4 rounded-xl border shadow-sm hover:shadow-md transition-shadow">
+                          <div className="flex justify-between items-start mb-3">
+                            <div>
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className={`px-2 py-0.5 text-[9px] font-black uppercase rounded ${
+                                  action.type === 'status_change' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-700'
+                                }`}>
+                                  {action.type === 'status_change' ? 'Alteração de Status' : 'Validação de Carretinha'}
+                                </span>
+                                <span className="text-[10px] text-gray-400 font-bold">
+                                  {action.timestamp?.toDate?.()?.toLocaleString('pt-BR')}
+                                </span>
+                              </div>
+                              <p className="text-sm font-black text-gray-800">
+                                {action.type === 'status_change' ? `Bike ${action.bikeNumber}` : `Carretinha: ${action.trailerName}`}
+                              </p>
+                              <p className="text-[10px] text-gray-500 font-bold uppercase">
+                                Solicitado por: <span className="text-blue-600">{action.mechanicName}</span>
+                              </p>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleApproveAction(action)}
+                                disabled={isLoading}
+                                className="p-2 bg-green-50 text-green-600 rounded-lg border border-green-100 hover:bg-green-100 transition-colors"
+                                title="Aprovar"
+                              >
+                                <CheckCircleIcon className="w-5 h-5" />
+                              </button>
+                              <button
+                                onClick={() => handleRejectAction(action.id)}
+                                disabled={isLoading}
+                                className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
+                                title="Rejeitar"
+                              >
+                                <XIcon className="w-5 h-5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {action.type === 'status_change' ? (
+                            <div className="bg-gray-50 p-2 rounded border border-dashed">
+                              <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Status Pretendido:</p>
+                              <span className="px-2 py-0.5 bg-blue-600 text-white text-[10px] font-black rounded uppercase">
+                                {action.targetStatus}
+                              </span>
+                              {action.treatment && (
+                                <p className="text-[10px] text-gray-500 mt-2 italic">📝 {action.treatment}</p>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="bg-gray-50 p-2 rounded border border-dashed">
+                              <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Bikes na Carretinha ({action.bikes?.length}):</p>
+                              <p className="text-xs font-mono text-gray-600 break-all leading-relaxed">
+                                {action.bikes?.join(', ')}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="py-12 text-center bg-gray-50 rounded-xl border border-dashed">
+                        <BicycleIcon className="w-12 h-12 text-gray-200 mx-auto mb-3" />
+                        <p className="text-sm text-gray-400 font-bold uppercase">Nenhuma ação pendente no momento</p>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -4058,6 +4409,165 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       <p className="text-gray-400 text-xs">Nenhum registro encontrado para a bike {bikeSearchTerm}</p>
                     </div>
                   )}
+                </div>
+
+                {/* Quadrante 7: Boletim (Consulta CHASSI) */}
+                <div className="min-w-full p-3">
+                  <h2 className="text-base font-bold text-gray-700 flex items-center gap-2 mb-4">
+                    <SheetIcon className="w-4 h-4 text-blue-600"/>
+                    Boletim de Bike
+                  </h2>
+
+                  <div className="bg-white p-4 rounded-xl border shadow-sm space-y-4">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={boletimSearchTerm}
+                        onChange={e => setBoletimSearchTerm(e.target.value.toUpperCase())}
+                        onKeyDown={e => e.key === 'Enter' && handleBoletimSearch()}
+                        placeholder="Nº PATRIMÔNIO"
+                        className="flex-1 p-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none uppercase"
+                      />
+                      <button
+                        onClick={handleBoletimSearch}
+                        disabled={isBoletimLoading || !boletimSearchTerm.trim()}
+                        className="px-4 bg-blue-600 text-white rounded-lg font-bold text-xs uppercase hover:bg-blue-700 disabled:bg-gray-200 transition-all flex items-center justify-center min-w-[100px]"
+                      >
+                        {isBoletimLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Consultar'}
+                      </button>
+                    </div>
+
+                    {boletimResult ? (
+                      <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                        <div className="bg-blue-50/50 rounded-xl p-4 border border-blue-100">
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-0.5">
+                              <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Patrimônio</p>
+                              <p className="text-xs font-black text-blue-700">{boletimResult.patrimonio}</p>
+                            </div>
+                            <div className="space-y-0.5">
+                              <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Chassi</p>
+                              <p className="text-xs font-black text-gray-800">{boletimResult.chassi || '---'}</p>
+                            </div>
+                            <div className="space-y-0.5">
+                              <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">IMEI</p>
+                              <p className="text-xs font-black text-gray-800">{boletimResult.imei || '---'}</p>
+                            </div>
+                            <div className="space-y-0.5">
+                              <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Telefone</p>
+                              <p className="text-xs font-black text-gray-800">{boletimResult.telefone || '---'}</p>
+                            </div>
+                            <div className="col-span-2 pt-2 border-t border-blue-100 mt-1">
+                              <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1">Status Atual</p>
+                              <div className={`inline-block px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                                boletimResult.status?.toLowerCase().includes('disponível') ? 'bg-green-100 text-green-700' :
+                                boletimResult.status?.toLowerCase().includes('oficina') ? 'bg-orange-100 text-orange-700' :
+                                'bg-blue-100 text-blue-700'
+                              }`}>
+                                {boletimResult.status || 'NÃO INFORMADO'}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Seção de Banco de Dados de Boletins */}
+                        <div className="border-t pt-4">
+                          <div className="flex justify-between items-center mb-3">
+                            <h3 className="text-xs font-black text-gray-700 uppercase tracking-tight flex items-center gap-2">
+                              <DatabaseIcon className="w-3.5 h-3.5 text-blue-500" />
+                              Histórico de Boletins
+                            </h3>
+                            <button
+                              onClick={() => setShowBoletimForm(!showBoletimForm)}
+                              className="px-2 py-1 bg-blue-50 text-blue-600 text-[9px] font-black uppercase rounded border border-blue-100 hover:bg-blue-100 transition-colors"
+                            >
+                              {showBoletimForm ? 'Cancelar' : 'Registrar B.O.'}
+                            </button>
+                          </div>
+
+                          {showBoletimForm && (
+                            <div className="bg-gray-50 p-3 rounded-lg border border-gray-200 mb-4 space-y-3 animate-in fade-in zoom-in duration-200">
+                              <div className="grid grid-cols-2 gap-2">
+                                <div className="space-y-1">
+                                  <label className="text-[8px] font-black text-gray-400 uppercase">Data do B.O.</label>
+                                  <input
+                                    type="date"
+                                    value={newBoletim.date}
+                                    onChange={e => setNewBoletim({ ...newBoletim, date: e.target.value })}
+                                    className="w-full p-2 bg-white border border-gray-200 rounded text-xs font-bold"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[8px] font-black text-gray-400 uppercase">Número do B.O.</label>
+                                  <input
+                                    type="text"
+                                    value={newBoletim.boNumber}
+                                    onChange={e => setNewBoletim({ ...newBoletim, boNumber: e.target.value.toUpperCase() })}
+                                    placeholder="Nº DO B.O."
+                                    className="w-full p-2 bg-white border border-gray-200 rounded text-xs font-bold uppercase"
+                                  />
+                                </div>
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[8px] font-black text-gray-400 uppercase">Quem Realizou</label>
+                                <input
+                                  type="text"
+                                  value={newBoletim.author}
+                                  onChange={e => setNewBoletim({ ...newBoletim, author: e.target.value.toUpperCase() })}
+                                  placeholder="NOME DO RESPONSÁVEL"
+                                  className="w-full p-2 bg-white border border-gray-200 rounded text-xs font-bold uppercase"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[8px] font-black text-gray-400 uppercase">Resumo</label>
+                                <textarea
+                                  value={newBoletim.summary}
+                                  onChange={e => setNewBoletim({ ...newBoletim, summary: e.target.value })}
+                                  placeholder="BREVE RESUMO DO OCORRIDO..."
+                                  className="w-full p-2 bg-white border border-gray-200 rounded text-xs font-bold h-16 resize-none"
+                                />
+                              </div>
+                              <button
+                                onClick={handleSaveBoletim}
+                                disabled={isBoletimLoading}
+                                className="w-full py-2 bg-blue-600 text-white text-[10px] font-black uppercase rounded hover:bg-blue-700 disabled:bg-gray-300 transition-all flex items-center justify-center gap-2"
+                              >
+                                {isBoletimLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Salvar Registro'}
+                              </button>
+                            </div>
+                          )}
+
+                          <div className="space-y-2">
+                            {isBoletimRecordsLoading ? (
+                              <div className="flex justify-center py-4">
+                                <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                              </div>
+                            ) : boletimRecords.length > 0 ? (
+                              boletimRecords.map((rec: any) => (
+                                <div key={rec.id} className="bg-white border border-gray-100 rounded-lg p-3 shadow-sm">
+                                  <div className="flex justify-between items-start mb-1">
+                                    <span className="text-[10px] font-black text-blue-600 uppercase">B.O. {rec.boNumber}</span>
+                                    <span className="text-[9px] font-bold text-gray-400">{new Date(rec.date + 'T12:00:00').toLocaleDateString('pt-BR')}</span>
+                                  </div>
+                                  <p className="text-[10px] font-bold text-gray-700 mb-1">👤 {rec.author}</p>
+                                  {rec.summary && <p className="text-[10px] text-gray-500 italic">"{rec.summary}"</p>}
+                                </div>
+                              ))
+                            ) : (
+                              <div className="text-center py-4 bg-gray-50 rounded-lg border border-dashed">
+                                <p className="text-[9px] text-gray-400 uppercase font-bold">Nenhum B.O. registrado para esta bike</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="py-8 text-center border border-dashed rounded-xl">
+                        <SheetIcon className="w-8 h-8 text-gray-200 mx-auto mb-2" />
+                        <p className="text-[10px] text-gray-400 uppercase font-bold">Aguardando consulta...</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -4594,7 +5104,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   Cancelar
                 </button>
                 <button
-                  onClick={() => handleSendToTechnical(isTechnicalConfirmOpen.bikePat)}
+                  onClick={() => handleSendToTechnical(isTechnicalConfirmOpen.bikePat, isTechnicalConfirmOpen.mechanicName)}
                   disabled={isLoading}
                   className="py-3 bg-blue-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-blue-200 hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50"
                 >
@@ -4648,6 +5158,173 @@ const MainScreen: React.FC<MainScreenProps> = ({
       <TrailerSelectionModal isOpen={isTrailerSelectionModalOpen} onClose={() => setIsTrailerSelectionModalOpen(false)}
         onConfirm={name => { handleOrganizeTrailer(selectedBikesForTrailer, name); setIsTrailerSelectionModalOpen(false); }}
         isLoading={isLoading} bikeNumbers={selectedBikesForTrailer}/>
+
+      {/* Modal Boletim */}
+      {isBoletimModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-gray-50 w-full max-w-2xl max-h-[90vh] rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-white/20 animate-in zoom-in-95 duration-200">
+            <div className="p-4 bg-white border-b flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-50 rounded-lg">
+                  <DocumentTextIcon className="w-5 h-5 text-blue-600" />
+                </div>
+                <h2 className="text-lg font-black text-gray-900 uppercase tracking-tight">Boletim de Bike</h2>
+              </div>
+              <button onClick={() => setIsBoletimModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-400">
+                <XIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className="bg-white p-4 rounded-xl border shadow-sm space-y-4">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={boletimSearchTerm}
+                    onChange={e => setBoletimSearchTerm(e.target.value.toUpperCase())}
+                    onKeyDown={e => e.key === 'Enter' && handleBoletimSearch()}
+                    placeholder="Nº PATRIMÔNIO"
+                    className="flex-1 p-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none uppercase"
+                  />
+                  <button
+                    onClick={handleBoletimSearch}
+                    disabled={isBoletimLoading || !boletimSearchTerm.trim()}
+                    className="px-4 bg-blue-600 text-white rounded-lg font-bold text-xs uppercase hover:bg-blue-700 disabled:bg-gray-200 transition-all flex items-center justify-center min-w-[100px]"
+                  >
+                    {isBoletimLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Consultar'}
+                  </button>
+                </div>
+
+                {boletimResult && (
+                  <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <div className="bg-blue-50/50 rounded-xl p-4 border border-blue-100">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-0.5">
+                          <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Patrimônio</p>
+                          <p className="text-xs font-black text-blue-700">{boletimResult.patrimonio}</p>
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Chassi</p>
+                          <p className="text-xs font-black text-gray-800">{boletimResult.chassi || '---'}</p>
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">IMEI</p>
+                          <p className="text-xs font-black text-gray-800">{boletimResult.imei || '---'}</p>
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Telefone</p>
+                          <p className="text-xs font-black text-gray-800">{boletimResult.telefone || '---'}</p>
+                        </div>
+                        <div className="col-span-2 pt-2 border-t border-blue-100 mt-1">
+                          <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1">Status Atual</p>
+                          <div className={`inline-block px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                            boletimResult.status?.toLowerCase().includes('disponível') ? 'bg-green-100 text-green-700' :
+                            boletimResult.status?.toLowerCase().includes('oficina') ? 'bg-orange-100 text-orange-700' :
+                            'bg-blue-100 text-blue-700'
+                          }`}>
+                            {boletimResult.status || 'NÃO INFORMADO'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="border-t pt-4">
+                      <div className="flex justify-between items-center mb-3">
+                        <h3 className="text-xs font-black text-gray-700 uppercase tracking-tight flex items-center gap-2">
+                          <DatabaseIcon className="w-3.5 h-3.5 text-blue-500" />
+                          Histórico de Boletins
+                        </h3>
+                        <button
+                          onClick={() => setShowBoletimForm(!showBoletimForm)}
+                          className="px-2 py-1 bg-blue-50 text-blue-600 text-[9px] font-black uppercase rounded border border-blue-100 hover:bg-blue-100 transition-colors"
+                        >
+                          {showBoletimForm ? 'Cancelar' : 'Registrar B.O.'}
+                        </button>
+                      </div>
+
+                      {showBoletimForm && (
+                        <div className="bg-gray-50 p-3 rounded-lg border border-gray-200 mb-4 space-y-3 animate-in fade-in zoom-in duration-200">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1">
+                              <label className="text-[8px] font-black text-gray-400 uppercase">Data do B.O.</label>
+                              <input
+                                type="date"
+                                value={newBoletim.date}
+                                onChange={e => setNewBoletim({ ...newBoletim, date: e.target.value })}
+                                className="w-full p-2 bg-white border border-gray-200 rounded text-xs font-bold"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[8px] font-black text-gray-400 uppercase">Número do B.O.</label>
+                              <input
+                                type="text"
+                                value={newBoletim.boNumber}
+                                onChange={e => setNewBoletim({ ...newBoletim, boNumber: e.target.value.toUpperCase() })}
+                                placeholder="Nº DO B.O."
+                                className="w-full p-2 bg-white border border-gray-200 rounded text-xs font-bold uppercase"
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[8px] font-black text-gray-400 uppercase">Quem Realizou</label>
+                            <input
+                              type="text"
+                              value={newBoletim.author}
+                              onChange={e => setNewBoletim({ ...newBoletim, author: e.target.value.toUpperCase() })}
+                              placeholder="NOME DO RESPONSÁVEL"
+                              className="w-full p-2 bg-white border border-gray-200 rounded text-xs font-bold uppercase"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[8px] font-black text-gray-400 uppercase">Resumo</label>
+                            <textarea
+                              value={newBoletim.summary}
+                              onChange={e => setNewBoletim({ ...newBoletim, summary: e.target.value })}
+                              placeholder="BREVE RESUMO DO OCORRIDO..."
+                              className="w-full p-2 bg-white border border-gray-200 rounded text-xs font-bold h-16 resize-none"
+                            />
+                          </div>
+                          <button
+                            onClick={handleSaveBoletim}
+                            disabled={isBoletimLoading}
+                            className="w-full py-2 bg-blue-600 text-white text-[10px] font-black uppercase rounded hover:bg-blue-700 disabled:bg-gray-300 transition-all flex items-center justify-center gap-2"
+                          >
+                            {isBoletimLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Salvar Registro'}
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="space-y-2">
+                        {isBoletimRecordsLoading ? (
+                          <div className="flex justify-center py-4">
+                            <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                          </div>
+                        ) : boletimRecords.length > 0 ? (
+                          boletimRecords.map((rec: any, idx: number) => (
+                            <div key={idx} className="p-3 bg-white rounded-lg border border-gray-100 shadow-sm hover:border-blue-200 transition-colors">
+                              <div className="flex justify-between items-start mb-2">
+                                <div>
+                                  <span className="text-[10px] font-black text-blue-600 uppercase bg-blue-50 px-1.5 py-0.5 rounded">B.O. {rec.boNumber}</span>
+                                  <p className="text-[10px] text-gray-400 mt-1">Data: {new Date(rec.date).toLocaleDateString()} • Por: {rec.author}</p>
+                                </div>
+                              </div>
+                              {rec.summary && <p className="text-xs text-gray-600 leading-relaxed bg-gray-50 p-2 rounded italic">"{rec.summary}"</p>}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-center py-8 bg-gray-50 rounded-xl border border-dashed">
+                            <p className="text-gray-400 text-xs italic">Nenhum B.O. registrado para esta bike.</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

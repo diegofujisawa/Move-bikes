@@ -12,9 +12,52 @@ const READ_ACTIONS = new Set([
   'getDriverState', 'getBikeDetailsBatch', 'getDailyReportData',
   'getSchedule', 'getBikeStatuses', 'getReporData', 'getChangeStatusData',
   'getAlerts', 'getVandalized', 'getRouteDetails', 'getVehiclePlates',
-  'getDriversSummary', 'getAdminAlerts', 'getMechanicsList',
+  'getDriversSummary', 'getAdminAlerts', 'getMechanicsList', 'getChassiInfo',
   'exportAllData', 'sync',
 ]);
+
+// =================================================================
+// CACHE — evita chamadas repetidas para leituras frequentes
+// TTL padrão: 30 segundos
+// =================================================================
+const CACHEABLE_ACTIONS = new Set([
+  'getStations', 'getBikeStatuses', 'getMotoristas',
+  'getVehiclePlates', 'getMechanicsList',
+]);
+
+const CACHE_TTL_MS = 30_000; // 30 segundos
+
+interface CacheEntry {
+  data: any;
+  expiresAt: number;
+}
+
+const memoryCache = new Map<string, CacheEntry>();
+
+function getCached(key: string): any | null {
+  const entry = memoryCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    memoryCache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCache(key: string, data: any): void {
+  memoryCache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
+export function clearCache(action?: string): void {
+  if (action) {
+    // Remove todas as entradas que começam com a action
+    for (const key of memoryCache.keys()) {
+      if (key.startsWith(action + ':')) memoryCache.delete(key);
+    }
+  } else {
+    memoryCache.clear();
+  }
+}
 
 // =================================================================
 // SESSÃO — sessionStorage (isolado por aba) para dados ativos.
@@ -77,10 +120,17 @@ function parseJsonResponse(text: string): any {
   try {
     return JSON.parse(text);
   } catch {
+    const lowerText = text.toLowerCase();
     if (
-      text.includes('Service invoked too many times') ||
-      text.includes('Too many simultaneous invocations') ||
-      text.includes('ScriptError')
+      lowerText.includes('service invoked too many times') ||
+      lowerText.includes('too many simultaneous invocations') ||
+      lowerText.includes('scripterror') ||
+      lowerText.includes('exceeded maximum execution time') ||
+      lowerText.includes('concurrent invocations limit exceeded') ||
+      lowerText.includes('limit exceeded') ||
+      lowerText.includes('service error') ||
+      lowerText.includes('internal error') ||
+      lowerText.includes('server error')
     ) {
       throw new Error('__SERVER_BUSY__');
     }
@@ -131,6 +181,13 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Backoff exponencial com jitter: 2s, 4s, 8s + ruído aleatório
+function calcBackoff(attempt: number): number {
+  const base = Math.min(2000 * Math.pow(2, attempt), 16000);
+  const jitter = Math.random() * 1500;
+  return base + jitter;
+}
+
 function normalizeError(err: any): Error {
   if (err?.name === 'AbortError' || err?.message?.includes('aborted')) {
     return new Error(
@@ -149,12 +206,24 @@ function normalizeError(err: any): Error {
 
 // =================================================================
 // API GET — leituras via GET (compatível com CORS sem preflight)
+// Retries aumentados para 3. Cache automático para actions frequentes.
 // =================================================================
 export const apiGetCall = async (
   action: string,
   params: Record<string, string> = {},
-  retries = 1
+  retries = 3  // ← aumentado de 1 para 3
 ): Promise<any> => {
+
+  // Verifica cache antes de fazer a requisição
+  if (CACHEABLE_ACTIONS.has(action)) {
+    const cacheKey = `${action}:${JSON.stringify(params)}`;
+    const cached = getCached(cacheKey);
+    if (cached) {
+      console.info(`[GET] Cache hit para "${action}"`);
+      return cached;
+    }
+  }
+
   const url = new URL(SCRIPT_URL);
   url.searchParams.append('action', action);
 
@@ -165,6 +234,9 @@ export const apiGetCall = async (
   if (user?.name) url.searchParams.append('userName', user.name);
 
   Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, v));
+
+  const maxRetries = 3;
+  const attempt = maxRetries - retries;
 
   try {
     const response = await fetchWithTimeout(url.toString(), {
@@ -189,12 +261,19 @@ export const apiGetCall = async (
       throw new Error(result.error || 'O servidor retornou uma falha.');
     }
 
+    // Armazena no cache se aplicável
+    if (CACHEABLE_ACTIONS.has(action)) {
+      const cacheKey = `${action}:${JSON.stringify(params)}`;
+      setCache(cacheKey, result);
+    }
+
     return result;
 
   } catch (err: any) {
     if (retries > 0 && isRetryableNetworkError(err)) {
-      console.warn(`[GET] Tentando novamente (${retries} restantes)...`);
-      await delay(2000);
+      const backoff = calcBackoff(attempt);
+      console.warn(`[GET] Tentando novamente (${retries} restantes) em ${Math.round(backoff)}ms...`);
+      await delay(backoff);
       return apiGetCall(action, params, retries - 1);
     }
     throw normalizeError(err);
@@ -207,14 +286,26 @@ export const apiGetCall = async (
 // REGRA DE RETRY:
 //   Leitura  → retry livre, sem risco de duplicata
 //   Escrita  → retry com mesmo idempotencyKey, backend deduplica
+//
+// Retries aumentados para 3. Backoff exponencial com jitter.
 // =================================================================
 export const apiCall = async (
   payload: Record<string, any>,
-  retries = 1,
+  retries = 3,  // ← aumentado de 1 para 3
   silent = false
 ): Promise<any> => {
   const action = (payload.action || '').toString();
   const isReadAction = READ_ACTIONS.has(action);
+
+  // Verifica cache antes de fazer a requisição (apenas leituras cacheáveis)
+  if (isReadAction && CACHEABLE_ACTIONS.has(action)) {
+    const cacheKey = `${action}:${JSON.stringify(payload)}`;
+    const cached = getCached(cacheKey);
+    if (cached) {
+      if (!silent) console.info(`[POST] Cache hit para "${action}"`);
+      return cached;
+    }
+  }
 
   // Gera o key uma vez por operação de escrita.
   // Se o caller já enviou um key (retry externo), reutiliza.
@@ -226,6 +317,9 @@ export const apiCall = async (
     ...payload,
     ...(idempotencyKey ? { idempotencyKey } : {}),
   });
+
+  const maxRetries = 3;
+  const attempt = maxRetries - retries;
 
   try {
     const response = await fetchWithTimeout(SCRIPT_URL, {
@@ -251,8 +345,8 @@ export const apiCall = async (
     } catch (parseErr: any) {
       if (parseErr.message === '__SERVER_BUSY__') {
         if (retries > 0) {
-          const backoff = (2 - retries + 1) * 2000 + Math.random() * 1000;
-          if (!silent) console.warn(`[API] Servidor ocupado. Retry em ${Math.round(backoff)}ms...`);
+          const backoff = calcBackoff(attempt);
+          if (!silent) console.warn(`[API] Servidor ocupado. Tentativa ${attempt + 1}. Retry em ${Math.round(backoff)}ms...`);
           await delay(backoff);
           return apiCall({ ...payload, idempotencyKey }, retries - 1, silent);
         }
@@ -274,8 +368,8 @@ export const apiCall = async (
 
       // Backend sinalizou que é seguro tentar novamente
       if (result.retryable && retries > 0) {
-        const backoff = (2 - retries + 1) * 2000 + Math.random() * 1000;
-        if (!silent) console.warn(`[API] Servidor ocupado (retryable). Retry em ${Math.round(backoff)}ms...`);
+        const backoff = calcBackoff(attempt);
+        if (!silent) console.warn(`[API] Servidor ocupado (retryable). Tentativa ${attempt + 1}. Retry em ${Math.round(backoff)}ms...`);
         await delay(backoff);
         return apiCall({ ...payload, idempotencyKey }, retries - 1, silent);
       }
@@ -283,19 +377,24 @@ export const apiCall = async (
       throw new Error(result.error || 'O servidor retornou uma falha.');
     }
 
+    // Armazena no cache se aplicável
+    if (isReadAction && CACHEABLE_ACTIONS.has(action)) {
+      const cacheKey = `${action}:${JSON.stringify(payload)}`;
+      setCache(cacheKey, result);
+    }
+
     return result;
 
   } catch (err: any) {
     if (retries > 0 && isRetryableNetworkError(err)) {
+      const backoff = calcBackoff(attempt);
       if (isReadAction) {
-        // Leitura: retry direto, sem risco de duplicata
-        if (!silent) console.warn(`[API][READ] Retry por falha de rede (${retries} restantes)...`);
-        await delay(2000);
+        if (!silent) console.warn(`[API][READ] Retry por falha de rede (${retries} restantes) em ${Math.round(backoff)}ms...`);
+        await delay(backoff);
         return apiCall(payload, retries - 1, silent);
       } else {
-        // Escrita: retry com o mesmo idempotencyKey — backend deduplica
-        if (!silent) console.warn(`[API][WRITE] Retry com idempotencyKey (${retries} restantes)...`);
-        await delay(2000);
+        if (!silent) console.warn(`[API][WRITE] Retry com idempotencyKey (${retries} restantes) em ${Math.round(backoff)}ms...`);
+        await delay(backoff);
         return apiCall({ ...payload, idempotencyKey }, retries - 1, silent);
       }
     }

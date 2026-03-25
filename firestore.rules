@@ -40,6 +40,14 @@ service cloud.firestore {
              data.timestamp is timestamp;
     }
 
+    function isValidBoletim(data) {
+      return data.bikeNumber is string && data.bikeNumber.size() > 0 &&
+             data.date is string && data.date.size() > 0 &&
+             data.boNumber is string && data.boNumber.size() > 0 &&
+             data.author is string && data.author.size() > 0 &&
+             data.timestamp is timestamp;
+    }
+
     match /bikes/{patrimonio} {
       allow read: if isAuthenticated();
       allow write: if isAuthenticated();
@@ -74,6 +82,15 @@ service cloud.firestore {
     }
 
     match /notifications/{id} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /boletins/{id} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isValidBoletim(request.resource.data);
+    }
+
+    match /pending_actions/{id} {
       allow read, write: if isAuthenticated();
     }
   }

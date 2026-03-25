@@ -130,6 +130,39 @@
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["type", "timestamp"]
+    },
+    "BoletimRecord": {
+      "title": "Boletim Record",
+      "description": "Information about a police report (B.O.) for a bike.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "bikeNumber": { "type": "string", "description": "Bike patrimônio number." },
+        "date": { "type": "string", "format": "date", "description": "Date the report was made (YYYY-MM-DD)." },
+        "boNumber": { "type": "string", "description": "Police report (B.O.) number." },
+        "author": { "type": "string", "description": "Person who performed the report." },
+        "summary": { "type": "string", "description": "Brief summary of the report." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When this record was created." }
+      },
+      "required": ["bikeNumber", "date", "boNumber", "author", "timestamp"]
+    },
+    "PendingAction": {
+      "title": "Pending Action",
+      "description": "Actions from mechanics that require admin approval.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["status_change", "trailer_validation"] },
+        "bikeNumber": { "type": "string" },
+        "bikes": { "type": "array", "items": { "type": "string" } },
+        "targetStatus": { "type": "string" },
+        "treatment": { "type": "string" },
+        "mechanicName": { "type": "string" },
+        "trailerName": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] }
+      },
+      "required": ["type", "status", "timestamp"]
     }
   },
   "firestore": {
@@ -164,6 +197,14 @@
     "/notifications/{id}": {
       "schema": "Notification",
       "description": "Collection of system notifications."
+    },
+    "/boletins/{id}": {
+      "schema": "BoletimRecord",
+      "description": "Collection of police reports for bikes."
+    },
+    "/pending_actions/{id}": {
+      "schema": "PendingAction",
+      "description": "Collection of actions pending admin approval."
     }
   }
 }

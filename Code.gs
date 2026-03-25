@@ -39,6 +39,7 @@ const DAILY_SUMMARY_SHEET_NAME = 'ResumoDiario';
 const MECHANICS_SHEET_NAME     = 'Mecanica';
 const QUEUE_SHEET_NAME         = 'FilaProcessamento';
 const ALERTS_SHEET_NAME        = 'Alertas';
+const CHASSI_SHEET_NAME        = 'CHASSI';
 
 // --- STATUS CONSTANTS ---
 const STATUS = {
@@ -349,6 +350,7 @@ function doPost(e) {
       case 'removeFromTrailer':     response = { ...removeFromTrailer(request.bikeNumber), version: BACKEND_VERSION }; break;
       case 'sendToTechnical':       response = { ...sendToTechnical(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
       case 'getTechnicaList':       response = { ...getTechnicaList(), version: BACKEND_VERSION }; break;
+      case 'getChassiInfo':         response = { ...getChassiInfo(request.bikeNumber), version: BACKEND_VERSION }; break;
       case 'confirmTechnicaReceipt':response = { ...confirmTechnicaReceipt(request.bikeNumber, request.technicianName), version: BACKEND_VERSION }; break;
       case 'finalizeTechnicaRepair':response = { ...finalizeTechnicaRepair(request.bikeNumber, request.technicianName, request.treatment), version: BACKEND_VERSION }; break;
       case 'insertBikeMechanics':   response = { ...insertBikeMechanics(request.bikeNumber, request.driverName, request.targetStatus), version: BACKEND_VERSION }; break;
@@ -534,6 +536,17 @@ function generateDriverRoute(driverName, location, filters, maxBikes, rangeKm) {
 
 function handleSync(request) {
   const { driverName, category, summaryTimeRange, statusTimeRange, timelineDate } = request;
+  const cacheKey = `handleSync_${driverName || 'all'}_${category || 'all'}_${summaryTimeRange || 'day'}_${statusTimeRange || 'day'}_${timelineDate || 'none'}`;
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached);
+      parsed.cached = true;
+      return parsed;
+    } catch (e) {}
+  }
+
   const catNorm = normalizeCategory(category);
   const isAdm = catNorm.includes('ADM');
   const isMecanica = catNorm.includes('MECANICA') || catNorm.includes('MECANICO');
@@ -601,6 +614,10 @@ function handleSync(request) {
     if (isMecanica || isAdm) {
       response.data.mechanicsList = getMechanicsList().data || [];
     }
+
+    try {
+      cache.put(cacheKey, JSON.stringify(response), 8); // Cache de 8 segundos
+    } catch (e) {}
 
     return response;
   } catch (e) {
@@ -958,6 +975,43 @@ function debugSearch(bikeNumber) {
     };
   } catch(e) {
     return { success: false, error: e.message };
+  }
+}
+
+function getChassiInfo(bikeNumber) {
+  if (!bikeNumber) return { success: false, error: 'Número do patrimônio não fornecido.' };
+  try {
+    const ss = getSpreadsheet();
+    const sheet = ss.getSheetByName(CHASSI_SHEET_NAME);
+    if (!sheet) return { success: false, error: 'Aba "CHASSI" não encontrada na planilha.' };
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { success: false, error: 'Nenhum dado encontrado na aba CHASSI.' };
+
+    const data = sheet.getRange(2, 2, lastRow - 1, 14).getValues(); // Coluna B (2) até O (15)
+    const bikeNumStr = String(bikeNumber).trim();
+
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      const patrimonio = String(row[0]).trim(); // Coluna B (index 0 no range)
+
+      if (patrimonio === bikeNumStr) {
+        return {
+          success: true,
+          data: {
+            patrimonio: patrimonio,
+            chassi: row[1],      // Coluna C (index 1)
+            imei: row[9],        // Coluna K (index 9)
+            status: row[12],     // Coluna N (index 12)
+            telefone: row[13]    // Coluna O (index 13)
+          }
+        };
+      }
+    }
+
+    return { success: false, error: `Patrimônio "${bikeNumber}" não encontrado na aba CHASSI.` };
+  } catch (e) {
+    return { success: false, error: 'Erro ao buscar informações do chassi: ' + e.message };
   }
 }
 
