@@ -55,7 +55,7 @@ import { migrateDataToFirebase } from '../migrationService';
 
 // Janela de proteção após ação do motorista (ms).
 // Durante esse período, o sync do Sheets não sobrescreve o estado local.
-const DRIVER_ACTION_GRACE_MS = 8000; // 8 segundos — cobre latência do Apps Script
+const DRIVER_ACTION_GRACE_MS = 20000; // 20 segundos — cobre latência do Apps Script em fire-and-forget
 
 interface MainScreenProps {
   driverName: string;
@@ -212,6 +212,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isEditDriverModalOpen, setIsEditDriverModalOpen] = useState(false);
   const [isNotFoundConfirmOpen, setIsNotFoundConfirmOpen] = useState(false);
   const [isMechanicRepairModalOpen, setIsMechanicRepairModalOpen] = useState(false);
+  const [technicaList, setTechnicaList] = useState<any[]>([]);
+  const [isTechnicaLoading, setIsTechnicaLoading] = useState(false);
+  const [selectedTechnicaBike, setSelectedTechnicaBike] = useState<any>(null);
+  const [isTechnicaRepairModalOpen, setIsTechnicaRepairModalOpen] = useState(false);
+  const [technicaReceiptModal, setTechnicaReceiptModal] = useState<{ bikeNumber: string; originalMechanic: string } | null>(null);
+  const [technicaRepairModal, setTechnicaRepairModal] = useState<{ bike: any } | null>(null);
+  const [technicaRepairSelected, setTechnicaRepairSelected] = useState<Set<string>>(new Set());
+  const TECNICA_TECHNICIANS = ['Diego', 'Juliano'];
+  const TECNICA_REPAIR_OPTIONS = [
+    'CARCAÇA FRONTAL', 'CARCAÇA TRASEIRA', 'TRAVA', 'MOTOR TRAVADO',
+    'SENSORES', 'ALTO FALANTE', 'CABO DE ENERGIA', 'BATERIA',
+    'ATUALIZAÇÃO DE SOFTWARE', 'RESET DO LOCKER', 'PROTEÇÃO COMPLETA', 'QRCODE'
+  ];
   const [isMechanicSelectionModalOpen, setIsMechanicSelectionModalOpen] = useState(false);
   const [isTrailerSelectionModalOpen, setIsTrailerSelectionModalOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -287,6 +300,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [searchedBike, setSearchedBike] = useState<BicycleData | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [activeMechanicCategory, setActiveMechanicCategory] = useState<string | null>(null);
+  const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
   const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
   const [mechanicSummaryPeriod, setMechanicSummaryPeriod] = useState<'diario'|'semanal'|'mensal'>('diario');
   const [clickedBikesForStatus, setClickedBikesForStatus] = useState<Set<string>>(() => {
@@ -302,6 +316,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [manualMechanicName, setManualMechanicName] = useState('');
   const [isVandalizedConfirmOpen, setIsVandalizedConfirmOpen] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [isZerarListaConfirmOpen, setIsZerarListaConfirmOpen] = useState(false);
+  const [trailerQrModal, setTrailerQrModal] = useState<{
+    isOpen: boolean;
+    trailerName: string;
+    expectedBikes: { patrimonio: string; bateria: number | undefined }[];
+    confirmedBikes: Set<string>;
+    batteryFailed: string | null; // patrimônio da bike com bateria insuficiente
+    scannerActive: boolean;
+    lastScanned: string | null;
+    lastError: string | null;
+  } | null>(null);
+  const trailerScannerRef = useRef<Html5Qrcode | null>(null);
+  const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
+  const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
   const [formattedBikesForCopy, setFormattedBikesForCopy] = useState<string>(() => {
     try {
       return localStorage.getItem(`status_copy_${driverName}`) || '';
@@ -335,6 +362,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const normalizedCategory = category.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const isAdm = normalizedCategory.includes('ADM');
   const isMecanica = normalizedCategory.includes('MECANICA') || normalizedCategory.includes('MECANICO');
+  const isTecnica  = normalizedCategory.includes('TECNICA') || normalizedCategory.includes('TECNICO');
 
   // =================================================================
   // HELPERS DE ESTADO
@@ -702,20 +730,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // MEMOS
   // =================================================================
   const sortedRouteBikes = useMemo(() => {
-    // Se já temos distâncias calculadas por carro para TODAS as bikes, a ordem de routeBikes 
-    // já está otimizada pelo buildOptimizedRoute (Nearest Neighbor).
-    // Caso contrário, ordena por Haversine para garantir que a mais próxima esteja no topo.
-    if (!currentDriverLocation || !routeBikes.length) return routeBikes;
-    
-    const isOptimized = routeBikes.length > 0 && routeBikes.every(id => routeDistances[id]?.isRoad);
-    if (isOptimized) return routeBikes;
+    if (!routeBikes.length) return routeBikes;
 
-    // Fallback dinâmico: Haversine enquanto roteamento por estrada não carregou ou se bikes se moveram
+    // 1. Se Nearest Neighbor já rodou para TODAS as bikes → ordem já otimizada, respeita
+    const isFullyOptimized = routeBikes.length > 0 && routeBikes.every(id => routeDistances[id]?.isRoad);
+    if (isFullyOptimized) return routeBikes;
+
+    // 2. Ordena pelo menor valor disponível: distância de estrada (value em metros) ou Haversine
     return [...routeBikes].sort((a, b) => {
+      const rdA = routeDistances[a], rdB = routeDistances[b];
+      // Se ambos têm distância calculada (estrada ou Haversine), usa value
+      if (rdA?.value !== undefined && rdB?.value !== undefined) return rdA.value - rdB.value;
+      if (rdA?.value !== undefined) return -1;
+      if (rdB?.value !== undefined) return 1;
+      // Fallback: Haversine com coordenadas das bikes
+      if (!currentDriverLocation) return 0;
       const dA = routeBikesDetails[a], dB = routeBikesDetails[b];
-      if (!dA || !dB) return 0;
-      if (!dA.currentLat || !dA.currentLng) return 1;
-      if (!dB.currentLat || !dB.currentLng) return -1;
+      if (!dA?.currentLat || !dA?.currentLng) return 1;
+      if (!dB?.currentLat || !dB?.currentLng) return -1;
       return calculateDistance(currentDriverLocation.lat, currentDriverLocation.lng, dA.currentLat, dA.currentLng)
            - calculateDistance(currentDriverLocation.lat, currentDriverLocation.lng, dB.currentLat, dB.currentLng);
     });
@@ -760,27 +792,29 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
 
     try {
-      // Busca estado do Sheets — sem depender do Firebase
-      const stateResult = await apiCall({ action: 'getDriverState', driverName }, 1, true);
-      let newRoute: string[] = stateResult.success ? (stateResult.data?.routeBikes || []) : routeBikes;
-      let newCollected: string[] = stateResult.success ? (stateResult.data?.collectedBikes || []) : collectedBikes;
+      // Usa estado local — protegido por isUpdatingStateRef=true, nenhum sync externo altera durante a operação
+      let newRoute: string[] = [...routeBikes];
+      let newCollected: string[] = [...collectedBikes];
 
       if (status === 'Recolhida') {
         if (collectedBikes.includes(bikeNumber)) {
           alert(`Você já está em posse da bicicleta ${bikeNumber}.`);
           return;
         }
+
         newCollected = [...new Set([...newCollected, bikeNumber])];
         newRoute = newRoute.filter(b => String(b) !== bikeNumber);
 
-        // Atualiza estado local imediatamente
+        // 1. Atualiza UI imediatamente
         setCollectedBikes(newCollected);
         setRouteBikes(newRoute);
+        setSearchedBike(null);
+        setSearchTerm('');
 
-        // Firebase + Sheets
-        await persistDriverState(newRoute, newCollected);
+        // 2. Registra ação antes das chamadas ao Sheets
+        markDriverAction();
 
-        // Status da bike e evento de timeline — não bloqueantes (permissão pode variar)
+        // 3. Firebase + Sheets — fire-and-forget (não bloqueiam a UI)
         setDoc(doc(db, 'bikes', bikeNumber), {
           status: 'Recolhida', responsavel: driverName, ultimaAtualizacao: serverTimestamp()
         }, { merge: true }).catch(err => console.warn('[Firebase] bikes write:', err.code));
@@ -789,22 +823,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
           driverName, bikeNumber, type: 'em_posse',
           timestamp: serverTimestamp(),
           date: localDateStr()
-        }).then(() => {
-          console.log('[Timeline] Evento em_posse gravado:', bikeNumber);
-        }).catch(err => {
-          console.error('[Timeline] Erro:', err.code, err.message);
-        });
+        }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
+
+        persistDriverState(newRoute, newCollected);
 
         setSuccessMessage(`Bicicleta ${bikeNumber} recolhida!`);
-        setSearchedBike(null);
-        setSearchTerm('');
 
       } else if (status === 'Não encontrada') {
         newRoute = newRoute.filter(b => String(b) !== bikeNumber);
 
+        // 1. Atualiza UI imediatamente
         setRouteBikes(newRoute);
-        await persistDriverState(newRoute, newCollected);
+        setSearchedBike(null);
+        setSearchTerm('');
 
+        // 2. Registra ação antes das chamadas ao Sheets
+        markDriverAction();
+
+        // 3. Firebase + Sheets — fire-and-forget (não bloqueiam a UI)
         setDoc(doc(db, 'bikes', bikeNumber), {
           status: 'Não encontrada', responsavel: null, ultimaAtualizacao: serverTimestamp()
         }, { merge: true }).catch(err => console.warn('[Firebase] bikes write:', err.code));
@@ -813,17 +849,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
           driverName, bikeNumber, status: 'Não encontrada', timestamp: serverTimestamp(), observation: ''
         }).catch(err => console.warn('[Firebase] reports write:', err.code));
 
-        await apiCall({
+        persistDriverState(newRoute, newCollected);
+
+        apiCall({
           action: 'finalizeRouteBike', driverName, bikeNumber,
           finalStatus: 'Não encontrada', finalObservation: ''
         }, 1, true).catch(e => console.warn('[Sheets] finalizeRouteBike:', e));
 
         setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não encontrada.`);
-        setSearchedBike(null);
-        setSearchTerm('');
       }
 
-      markDriverAction();
     } catch (err: any) {
       console.error('Erro ao atualizar status:', err);
       setError('Erro ao atualizar status: ' + err.message);
@@ -840,14 +875,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
     isUpdatingStateRef.current = true;
     if (!silent) setIsLoading(true);
     try {
-      const stateResult = await apiCall({ action: 'getDriverState', driverName }, 1, true);
-      const newRoute = (stateResult.success ? (stateResult.data?.routeBikes || []) : routeBikes)
-        .filter((b: string) => String(b) !== bikeNumber);
-      const newCollected = stateResult.success ? (stateResult.data?.collectedBikes || []) : collectedBikes;
+      // Usa estado local — protegido por isUpdatingStateRef=true
+      const newRoute = routeBikes.filter((b: string) => String(b) !== bikeNumber);
+      const newCollected = [...collectedBikes];
 
+      // 1. Atualiza UI imediatamente
       setRouteBikes(newRoute);
-      await persistDriverState(newRoute, newCollected);
 
+      // 2. Registra ação antes das chamadas ao Sheets
+      markDriverAction();
+
+      // 3. Firebase + Sheets — fire-and-forget
       setDoc(doc(db, 'bikes', bikeNumber), {
         status: 'Pendente', responsavel: null, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
@@ -856,12 +894,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
         driverName, bikeNumber, status: 'Não atendida', timestamp: serverTimestamp(), observation: ''
       }).catch(e => console.warn('[Firebase] reports write:', e.code));
 
-      await apiCall({
+      persistDriverState(newRoute, newCollected);
+
+      apiCall({
         action: 'finalizeRouteBike', driverName, bikeNumber,
         finalStatus: 'Não atendida', finalObservation: ''
       }, 1, true).catch(e => console.warn('[Sheets] finalizeRouteBike:', e));
 
-      markDriverAction();
       if (!silent) setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não atendida.`);
     } catch (err: any) {
       console.error('Erro não atendida:', err);
@@ -887,23 +926,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setProcessingBikes(new Set(processingBikesRef.current));
     setIsLoading(true);
 
-    // Atualização otimista imediata
+    // 1. Remove da UI imediatamente — motorista não espera o Sheets
     setCollectedBikes(prev => prev.filter(b => String(b) !== bikeNumber));
 
+    // 2. Calcula novo estado com base no estado local já protegido por isUpdatingStateRef
+    //    (não precisa consultar o Sheets — nenhum sync externo altera o estado enquanto
+    //     isUpdatingStateRef = true)
+    const newCollected = collectedBikes.filter(b => String(b) !== bikeNumber);
+    const newRoute = routeBikes;
+
+    const finalStatus = status === 'Enviada para Estação' ? 'Estação'
+      : status === 'Enviada para Filial' ? 'Filial'
+      : status;
+
+    // 3. Registra ação ANTES das chamadas ao Sheets — protege contra sync que devolveria a bike
+    markDriverAction();
+
     try {
-      // Busca estado atual do Sheets (fonte de verdade) — sem depender do Firebase
-      const stateResult = await apiCall({ action: 'getDriverState', driverName }, 1, true);
-      const newCollected = (stateResult.success ? (stateResult.data?.collectedBikes || []) : collectedBikes)
-        .filter((b: string) => String(b) !== bikeNumber);
-      const newRoute = stateResult.success ? (stateResult.data?.routeBikes || []) : routeBikes;
-
-      await persistDriverState(newRoute, newCollected);
-
-      const finalStatus = status === 'Enviada para Estação' ? 'Estação'
-        : status === 'Enviada para Filial' ? 'Filial'
-        : status;
-
-      // Firebase não-bloqueante
+      // 4. Firebase — não-bloqueante (resposta imediata ao motorista)
       setDoc(doc(db, 'bikes', bikeNumber), {
         status: finalStatus, responsavel: null,
         observacao: observation, ultimaAtualizacao: serverTimestamp()
@@ -914,17 +954,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
         observation, timestamp: serverTimestamp()
       }).catch(e => console.warn('[Firebase] reports write:', e.code));
 
-      await apiCall({
+      // 5. Sheets — fire-and-forget em paralelo (não bloqueia a UI)
+      //    updateDriverState remove a bike do estado persistido
+      //    finalizeCollectedBike grava o relatório e aciona addToMechanics se necessário
+      persistDriverState(newRoute, newCollected);
+
+      apiCall({
         action: 'finalizeCollectedBike', driverName, bikeNumber,
         finalStatus, finalObservation: observation
       }, 1, true).catch(e => console.warn('[Sheets] finalizeCollectedBike:', e));
 
-      markDriverAction();
       setSuccessMessage(`Bicicleta ${bikeNumber} finalizada!`);
     } catch (err: any) {
       console.error(`Erro bike ${bikeNumber}:`, err);
       setError(`Erro ao processar bike ${bikeNumber}: ${err.message}`);
-      // Reverte atualização otimista em caso de erro
+      // Reverte atualização otimista em caso de erro síncrono
       setCollectedBikes(prev => [...new Set([...prev, bikeNumber])]);
     } finally {
       isUpdatingStateRef.current = false;
@@ -1296,28 +1340,83 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const handleSendToTechnical = async (bikePat: string) => {
     setIsLoading(true);
+    // Otimista — remove da lista Mecânica imediatamente
+    setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
     try {
-      setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
-      await updateDoc(doc(db, 'bikes', bikePat), { 
-        status: 'Técnica', 
-        responsavel: driverName, 
-        ultimaAtualizacao: serverTimestamp() 
-      });
-      await addDoc(collection(db, 'reports'), { 
-        bikeNumber: bikePat, 
-        status: 'Técnica', 
-        driverName, 
-        timestamp: serverTimestamp(), 
-        type: 'Técnica' 
-      });
-      await apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: driverName }, 1, true);
-      refreshAll(true);
+      // Firebase não-bloqueante
+      setDoc(doc(db, 'bikes', bikePat), {
+        status: 'Aguardando Técnica', responsavel: driverName, ultimaAtualizacao: serverTimestamp()
+      }, { merge: true }).catch(e => console.warn('[Firebase] bikes:', e.code));
+      // Backend — grava na aba Mecânica com status Aguardando Técnica
+      await apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: driverName }, 1, false);
     } catch (err: any) {
       console.error('Erro ao enviar para técnica:', err);
+      setError('Erro ao enviar para técnica: ' + err.message);
     } finally {
       setIsLoading(false);
       setIsTechnicalConfirmOpen(null);
     }
+  };
+
+  const fetchTechnicaList = async () => {
+    setIsTechnicaLoading(true);
+    try {
+      const r = await apiCall({ action: 'getTechnicaList' }, 1, false);
+      if (r.success) setTechnicaList(r.data || []);
+    } catch (e: any) { console.warn('[getTechnicaList]', e.message); }
+    finally { setIsTechnicaLoading(false); }
+  };
+
+  const handleConfirmTechnicaReceipt = (bike: any) => {
+    // Abre modal de seleção de técnico — não processa direto
+    setTechnicaReceiptModal({ bikeNumber: bike.patrimonio, originalMechanic: bike.mecanico || '' });
+  };
+
+  const executeConfirmTechnicaReceipt = async (bikeNumber: string, technicianName: string) => {
+    setTechnicaReceiptModal(null);
+    setIsLoading(true);
+    setTechnicaList(prev => prev.map(b =>
+      b.patrimonio === bikeNumber ? { ...b, status: 'Em Técnica', mecanico: technicianName } : b
+    ));
+    try {
+      setDoc(doc(db, 'bikes', bikeNumber), {
+        status: 'Em Técnica', responsavel: technicianName, ultimaAtualizacao: serverTimestamp()
+      }, { merge: true }).catch(e => console.warn('[Firebase]', e.code));
+      await apiCall({ action: 'confirmTechnicaReceipt', bikeNumber, technicianName }, 1, false);
+    } catch (err: any) {
+      setError('Erro: ' + err.message);
+      fetchTechnicaList();
+    } finally { setIsLoading(false); }
+  };
+
+  const handleFinalizeTechnicaRepair = (bike: any) => {
+    setTechnicaRepairModal({ bike });
+    setTechnicaRepairSelected(new Set());
+  };
+
+  const executeFinalizeTechnicaRepair = async () => {
+    if (!technicaRepairModal || technicaRepairSelected.size === 0) return;
+    const { bike } = technicaRepairModal;
+    const bikeNumber = bike.patrimonio;
+    const originalMechanic = bike.mecanico || '';
+    const treatment = Array.from(technicaRepairSelected).join(', ');
+    setTechnicaRepairModal(null);
+    setTechnicaRepairSelected(new Set());
+    setIsLoading(true);
+    setTechnicaList(prev => prev.filter(b => b.patrimonio !== bikeNumber));
+    try {
+      setDoc(doc(db, 'bikes', bikeNumber), {
+        status: 'Em Manutenção', responsavel: originalMechanic || null, ultimaAtualizacao: serverTimestamp()
+      }, { merge: true }).catch(e => console.warn('[Firebase]', e.code));
+      await apiCall({
+        action: 'finalizeTechnicaRepair', bikeNumber,
+        technicianName: driverName, treatment, originalMechanic
+      }, 1, false);
+      setSuccessMessage(`Bike ${bikeNumber} devolvida para ${originalMechanic || 'Mecânica'} — Em Manutenção.`);
+    } catch (err: any) {
+      setError('Erro: ' + err.message);
+      fetchTechnicaList();
+    } finally { setIsLoading(false); }
   };
 
   const handleMarkAsVandalizedNoRecovery = async (bikePat: string) => {
@@ -1439,35 +1538,121 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
+  const stopTrailerScanner = async () => {
+    if (trailerScannerRef.current) {
+      try { await trailerScannerRef.current.stop(); await trailerScannerRef.current.clear(); } catch {}
+      trailerScannerRef.current = null;
+    }
+    setTrailerQrModal(prev => prev ? { ...prev, scannerActive: false } : null);
+  };
+
+  const startTrailerScanner = async () => {
+    setTrailerQrModal(prev => prev ? { ...prev, scannerActive: true, lastError: null } : null);
+    setTimeout(async () => {
+      try {
+        const qr = new Html5Qrcode('qr-trailer-reader');
+        trailerScannerRef.current = qr;
+        await qr.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 220, height: 220 } },
+          (decodedText) => {
+            // Extrai número do QR: http://www.bikesjc.com.br/home/download/835 → "835"
+            const match = decodedText.match(/\/download\/(\d+)/);
+            const bikeId = match ? match[1] : (/^\d+$/.test(decodedText.trim()) ? decodedText.trim() : null);
+            if (!bikeId) {
+              setTrailerQrModal(prev => prev ? { ...prev, lastError: 'QR inválido: ' + decodedText, lastScanned: null } : null);
+              return;
+            }
+            setTrailerQrModal(prev => {
+              if (!prev) return null;
+              const normalizedId = String(parseFloat(bikeId));
+              const found = prev.expectedBikes.find(b => {
+                const nb = String(parseFloat(b.patrimonio));
+                return nb === normalizedId || b.patrimonio === bikeId;
+              });
+              if (!found) {
+                return { ...prev, lastError: `Bike ${bikeId} não pertence a esta carretinha!`, lastScanned: bikeId, batteryFailed: null };
+              }
+              if (prev.confirmedBikes.has(found.patrimonio)) {
+                return { ...prev, lastError: null, lastScanned: `${bikeId} já confirmada ✓`, batteryFailed: null };
+              }
+              // Valida bateria ≥ 85%
+              const bateriaVal = found.bateria !== undefined ? Number(found.bateria) : undefined;
+              const bateriaPct = bateriaVal !== undefined
+                ? (bateriaVal <= 1 && bateriaVal > 0 ? Math.round(bateriaVal * 100) : Math.round(bateriaVal))
+                : undefined;
+              if (bateriaPct !== undefined && bateriaPct < 85) {
+                return {
+                  ...prev,
+                  lastError: null,
+                  lastScanned: null,
+                  batteryFailed: found.patrimonio,
+                };
+              }
+              const newConfirmed = new Set(prev.confirmedBikes);
+              newConfirmed.add(found.patrimonio);
+              return { ...prev, confirmedBikes: newConfirmed, lastScanned: bikeId, lastError: null, batteryFailed: null };
+            });
+          },
+          () => {}
+        );
+      } catch {
+        setTrailerQrModal(prev => prev ? { ...prev, scannerActive: false, lastError: 'Não foi possível acessar a câmera.' } : null);
+      }
+    }, 150);
+  };
+
   const handleFinalizeTrailer = async (trailerName: string) => {
-    if (!window.confirm(`Finalizar a carretinha "${trailerName}"? Os ADMs serão notificados para alterar o status das bikes.`)) return;
+    // Abre modal de verificação QR — window.confirm substituído
+    const bikesRaw = mechanicsList.filter(b => b.carretinha === trailerName && b.status === 'Reserva');
+    if (bikesRaw.length === 0) {
+      setError('Nenhuma bike encontrada nesta carretinha.');
+      return;
+    }
+    const bikeObjects = bikesRaw.map(b => ({
+      patrimonio: String(b.patrimonio),
+      bateria: b.bateria !== undefined ? Number(b.bateria) : undefined
+    }));
+    setTrailerQrModal({
+      isOpen: true,
+      trailerName,
+      expectedBikes: bikeObjects,
+      confirmedBikes: new Set(),
+      batteryFailed: null,
+      scannerActive: false,
+      lastScanned: null,
+      lastError: null,
+    });
+  };
+
+  const executeTrailerFinalization = async () => {
+    if (!trailerQrModal) return;
+    const { trailerName, expectedBikes, confirmedBikes } = trailerQrModal;
+    if (confirmedBikes.size < expectedBikes.length) return;
+    await stopTrailerScanner();
+    setTrailerQrModal(null);
     setIsLoading(true);
-    // Atualização otimista — remove bikes da reserva
+    const bikeIds = expectedBikes.map(b => b.patrimonio);
     setMechanicsList(prev => prev.map(b =>
       b.carretinha === trailerName ? { ...b, status: 'Remanejada' } : b
     ));
     try {
-      const bikes = mechanicsList.filter(b => b.carretinha === trailerName && b.status === 'Reserva').map(b => b.patrimonio);
-      await Promise.all(bikes.map(id => setDoc(doc(db, 'bikes', id), { carretinha: null, ultimaAtualizacao: serverTimestamp() }, { merge: true })));
+      await Promise.all(bikeIds.map(id => setDoc(doc(db, 'bikes', id), { carretinha: null, ultimaAtualizacao: serverTimestamp() }, { merge: true })));
       apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
-      // Envia notificação para todos os ADMs
       await addDoc(collection(db, 'notifications'), {
         type: 'trailer_finalizado',
-        message: `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikes.length} bike(s) prontas para alterar status: ${bikes.join(', ')}`,
-        bikes,
-        trailerName,
-        mechanic: driverName,
-        timestamp: serverTimestamp(),
-        recipient: 'ADM'
+        message: `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para alterar status: ${bikeIds.join(', ')}`,
+        bikes: bikeIds, trailerName, mechanic: driverName,
+        timestamp: serverTimestamp(), recipient: 'ADM'
       });
       apiCall({
         action: 'notifyAdmins',
-        message: `Carretinha "${trailerName}" finalizada por ${driverName}. Bikes para alterar status: ${bikes.join(', ')}`,
-        bikes,
-        trailerName
+        message: `Carretinha "${trailerName}" finalizada por ${driverName}. Bikes para alterar status: ${bikeIds.join(', ')}`,
+        bikes: bikeIds, trailerName
       }, 1, true).catch(() => {});
+      setSuccessMessage(`Carretinha "${trailerName}" finalizada com sucesso!`);
     } catch (err: any) {
-      alert('Erro: ' + err.message);
+      setError('Erro: ' + err.message);
       refreshAll(true);
     } finally { setIsLoading(false); }
   };
@@ -1516,6 +1701,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   };
 
   useEffect(() => { return () => { if (scannerRef.current) scannerRef.current.stop().catch(() => {}); }; }, []);
+  useEffect(() => { return () => { if (trailerScannerRef.current) trailerScannerRef.current.stop().catch(() => {}); }; }, []);
 
   // =================================================================
   // MIGRAÇÃO
@@ -1838,6 +2024,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // Sync periódico — 4s para reduzir delay percebido
   useEffect(() => {
     refreshAll();
+    if (isTecnica) fetchTechnicaList();
     const fetchSt = async () => {
       try {
         const r = await apiGetCall('getStations');
@@ -1845,7 +2032,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
       } catch {}
     };
     fetchSt();
-    const interval = setInterval(() => refreshAll(), 4000);
+    const interval = setInterval(() => {
+      refreshAll();
+      if (isTecnica) fetchTechnicaList();
+    }, 10000);
     const onVisibility = () => { if (document.visibilityState === 'visible') refreshAll(true); };
     document.addEventListener('visibilitychange', onVisibility);
     return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVisibility); };
@@ -1971,7 +2161,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const dists: Record<string, any> = {};
     routeBikes.forEach(id => {
       const d = routeBikesDetails[id];
-      if (d?.currentLat && d?.currentLng && !routeDistances[id]) {
+      // Sempre calcula Haversine como base de ordenação — sobrescrito pelo Nearest Neighbor quando disponível
+      if (d?.currentLat && d?.currentLng && !routeDistances[id]?.isRoad) {
         const km = calculateDistance(currentDriverLocation.lat, currentDriverLocation.lng, d.currentLat, d.currentLng);
         dists[id] = { 
           distance: km < 1 ? `${(km*1000).toFixed(0)}m` : `${km.toFixed(1)}km`, 
@@ -2144,13 +2335,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
         location,
         filters: routeConfig.filters,
         maxBikes: 20,
-        rangeKm: 3
+        rangeKm: 2
       });
 
       if (response.success) {
         setSuccessMessage(response.message || 'Roteiro gerado com sucesso!');
         setIsRouteConfigOpen(false);
         if (refreshAllRef.current) refreshAllRef.current();
+        // Dispara otimização imediatamente após gerar roteiro — sem aguardar debounce
+        setTimeout(() => buildOptimizedRoute(), 1500);
       } else {
         setError('Erro ao gerar roteiro: ' + response.error);
       }
@@ -2240,6 +2433,361 @@ const MainScreen: React.FC<MainScreenProps> = ({
         </div>
       )}
 
+      {/* Modal Verificação QR — Finalizar Carretinha */}
+      {trailerQrModal?.isOpen && (() => {
+        const { trailerName, expectedBikes, confirmedBikes, scannerActive, lastScanned, lastError, batteryFailed } = trailerQrModal;
+        const allConfirmed = confirmedBikes.size >= expectedBikes.length;
+        const getBatPct = (b: number | undefined) => b === undefined ? undefined : (b <= 1 && b > 0 ? Math.round(b * 100) : Math.round(b));
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col max-h-[92vh] overflow-hidden">
+
+              {/* Header */}
+              <div className="bg-green-700 p-4 text-white flex items-center justify-between flex-shrink-0">
+                <div>
+                  <p className="text-xs font-bold uppercase opacity-80">Verificação de Segurança</p>
+                  <h2 className="text-lg font-black">{trailerName}</h2>
+                  <p className="text-[10px] opacity-70 mt-0.5">QR Code + Bateria ≥ 85%</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-2xl font-black">{confirmedBikes.size}<span className="text-sm font-normal opacity-70">/{expectedBikes.length}</span></p>
+                  <p className="text-[10px] opacity-70">confirmadas</p>
+                </div>
+              </div>
+
+              {/* Barra de progresso */}
+              <div className="h-1.5 bg-green-100 flex-shrink-0">
+                <div className="h-full bg-green-500 transition-all duration-300"
+                  style={{ width: `${expectedBikes.length > 0 ? (confirmedBikes.size / expectedBikes.length) * 100 : 0}%` }} />
+              </div>
+
+              {/* Scanner */}
+              <div className="p-3 flex-shrink-0">
+                {scannerActive ? (
+                  <div className="relative overflow-hidden rounded-xl bg-black aspect-square w-full border-2 border-green-500 shadow-lg">
+                    <div id="qr-trailer-reader" className="w-full h-full" />
+                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                      <div className="w-44 h-44 border-2 border-green-400/60 rounded-xl" />
+                    </div>
+                    <button onClick={stopTrailerScanner} className="absolute top-2 right-2 bg-black/60 text-white p-1.5 rounded-full">
+                      <XIcon className="w-4 h-4" />
+                    </button>
+                    <p className="absolute bottom-2 left-0 right-0 text-center text-[10px] text-white bg-black/50 py-1">
+                      Aponte para o QR Code da bike
+                    </p>
+                  </div>
+                ) : (
+                  <button onClick={startTrailerScanner} disabled={allConfirmed}
+                    className="w-full py-3 bg-green-600 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-green-700 active:scale-95 transition-all disabled:bg-gray-300">
+                    <QrCodeIcon className="w-5 h-5" />
+                    {allConfirmed ? '✅ Todas confirmadas!' : 'Escanear QR Code'}
+                  </button>
+                )}
+
+                {/* Feedbacks */}
+                {lastScanned && !lastError && !batteryFailed && (
+                  <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded-lg text-center">
+                    <p className="text-xs font-bold text-green-700">✅ Bike {lastScanned} confirmada</p>
+                  </div>
+                )}
+                {batteryFailed && (() => {
+                  const bike = expectedBikes.find(b => b.patrimonio === batteryFailed);
+                  const pct = bike ? getBatPct(bike.bateria) : undefined;
+                  return (
+                    <div className="mt-2 p-3 bg-orange-50 border-2 border-orange-400 rounded-lg">
+                      <p className="text-xs font-black text-orange-700 text-center">🔋 Bateria insuficiente!</p>
+                      <p className="text-[10px] text-orange-600 text-center mt-0.5">
+                        Bike <span className="font-black">{batteryFailed}</span>: {pct !== undefined ? `${pct}%` : 'sem dados'} — mínimo exigido: 85%
+                      </p>
+                      <p className="text-[9px] text-orange-500 text-center mt-1 italic">Recarregue a bike e tente novamente, ou remova-a da carretinha.</p>
+                    </div>
+                  );
+                })()}
+                {lastError && (
+                  <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-lg text-center">
+                    <p className="text-xs font-bold text-red-700">⚠️ {lastError}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Lista de bikes */}
+              <div className="flex-1 overflow-y-auto px-3 pb-2">
+                <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-2">
+                  Bikes da carretinha ({expectedBikes.length})
+                </p>
+                <div className="space-y-1.5">
+                  {expectedBikes.map(bike => {
+                    const ok = confirmedBikes.has(bike.patrimonio);
+                    const isBatFail = batteryFailed === bike.patrimonio;
+                    const pct = getBatPct(bike.bateria);
+                    const batOk = pct === undefined || pct >= 85;
+                    return (
+                      <div key={bike.patrimonio}
+                        className={`flex items-center justify-between p-2 rounded-lg border transition-all ${
+                          ok ? 'bg-green-50 border-green-300' :
+                          isBatFail ? 'bg-orange-50 border-orange-400 ring-1 ring-orange-400' :
+                          'bg-gray-50 border-gray-200'}`}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">{ok ? '✅' : isBatFail ? '🔋' : '⏳'}</span>
+                          <div>
+                            <p className={`text-xs font-black font-mono ${ok ? 'text-green-700' : isBatFail ? 'text-orange-700' : 'text-gray-600'}`}>
+                              {bike.patrimonio}
+                            </p>
+                            {pct !== undefined && (
+                              <p className={`text-[9px] font-bold ${pct >= 85 ? 'text-green-600' : 'text-orange-600'}`}>
+                                🔋 {pct}% {pct < 85 ? '(insuf.)' : ''}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        {/* Botão remover — só aparece se bike ainda não confirmada */}
+                        {!ok && (
+                          <button
+                            onClick={() => setRemoveFromTrailerConfirm({ patrimonio: bike.patrimonio, trailerName })}
+                            className="p-1.5 bg-red-50 border border-red-200 text-red-500 rounded-lg hover:bg-red-100 active:scale-95 transition-all flex-shrink-0"
+                            title="Remover da carretinha"
+                          >
+                            <XIcon className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Botões */}
+              <div className="p-3 border-t flex gap-2 flex-shrink-0">
+                <button onClick={async () => { await stopTrailerScanner(); setTrailerQrModal(null); }}
+                  className="flex-1 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase hover:bg-gray-200">
+                  Cancelar
+                </button>
+                <button onClick={executeTrailerFinalization}
+                  disabled={!allConfirmed || isLoading}
+                  className="flex-1 py-2.5 bg-green-600 text-white rounded-xl font-bold text-xs uppercase shadow-lg hover:bg-green-700 active:scale-95 disabled:bg-gray-300 disabled:shadow-none transition-all">
+                  {isLoading ? '...' : `Confirmar (${confirmedBikes.size}/${expectedBikes.length})`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal — Seleção de Técnico (Confirmar Recebimento) */}
+      {technicaReceiptModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-14 h-14 bg-blue-100 rounded-full flex items-center justify-center mb-3">
+                <UserIcon className="w-7 h-7 text-blue-600" />
+              </div>
+              <h2 className="text-lg font-black text-gray-800 uppercase mb-1">Selecionar Técnico</h2>
+              <p className="text-sm text-gray-500 mb-5">
+                Bike <span className="font-bold text-gray-800">{technicaReceiptModal.bikeNumber}</span> — quem irá realizar a análise?
+              </p>
+              <div className="flex flex-col gap-3 w-full">
+                {TECNICA_TECHNICIANS.map(tech => (
+                  <button
+                    key={tech}
+                    onClick={() => executeConfirmTechnicaReceipt(technicaReceiptModal.bikeNumber, tech)}
+                    className="py-3 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 active:scale-95 transition-all shadow-sm"
+                  >
+                    {tech}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setTechnicaReceiptModal(null)}
+                  className="py-2.5 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase hover:bg-gray-200 transition-all"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal — Opções de Reparo (Finalizar Reparo Técnica) */}
+      {technicaRepairModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col max-h-[90vh] overflow-hidden">
+            {/* Header */}
+            <div className="bg-orange-600 p-4 text-white flex-shrink-0">
+              <p className="text-xs font-bold uppercase opacity-80">Finalizar Reparo</p>
+              <h2 className="text-lg font-black">Bike {technicaRepairModal.bike.patrimonio}</h2>
+              {technicaRepairModal.bike.mecanico && (
+                <p className="text-[11px] opacity-80 mt-0.5">
+                  Retornará para: <span className="font-bold">{technicaRepairModal.bike.mecanico}</span>
+                </p>
+              )}
+            </div>
+            {/* Lista de opções */}
+            <div className="flex-1 overflow-y-auto p-4">
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">
+                Selecione o(s) serviço(s) realizado(s)
+              </p>
+              <div className="space-y-2">
+                {TECNICA_REPAIR_OPTIONS.map(opt => {
+                  const selected = technicaRepairSelected.has(opt);
+                  return (
+                    <button
+                      key={opt}
+                      onClick={() => setTechnicaRepairSelected(prev => {
+                        const next = new Set(prev);
+                        if (next.has(opt)) next.delete(opt); else next.add(opt);
+                        return next;
+                      })}
+                      className={`w-full text-left px-4 py-3 rounded-xl border-2 font-bold text-sm transition-all active:scale-95 flex items-center gap-3 ${
+                        selected
+                          ? 'bg-orange-50 border-orange-400 text-orange-700'
+                          : 'bg-white border-gray-200 text-gray-600 hover:border-orange-200'
+                      }`}
+                    >
+                      <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 text-[10px] font-black ${
+                        selected ? 'bg-orange-500 border-orange-500 text-white' : 'border-gray-300'
+                      }`}>
+                        {selected ? '✓' : ''}
+                      </span>
+                      {opt}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            {/* Rodapé */}
+            <div className="p-4 border-t flex-shrink-0 space-y-2">
+              {technicaRepairSelected.size > 0 && (
+                <p className="text-[10px] text-orange-600 font-bold text-center">
+                  {technicaRepairSelected.size} serviço(s) selecionado(s)
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setTechnicaRepairModal(null); setTechnicaRepairSelected(new Set()); }}
+                  className="flex-1 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase hover:bg-gray-200"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={executeFinalizeTechnicaRepair}
+                  disabled={technicaRepairSelected.size === 0 || isLoading}
+                  className="flex-1 py-2.5 bg-orange-600 text-white rounded-xl font-bold text-xs uppercase shadow-lg hover:bg-orange-700 active:scale-95 disabled:bg-gray-300 disabled:shadow-none transition-all"
+                >
+                  Confirmar Finalização
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Confirmação — Remover bike da carretinha */}
+      {removeFromTrailerConfirm && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
+                <XIcon className="w-8 h-8 text-red-600" />
+              </div>
+              <h2 className="text-xl font-black text-gray-800 uppercase mb-2">Remover da Carretinha?</h2>
+              <p className="text-sm text-gray-500 mb-2">
+                A bike <span className="font-bold text-gray-800">{removeFromTrailerConfirm.patrimonio}</span> será removida da carretinha e voltará para <span className="font-bold text-orange-600">Em Manutenção</span> com o mecânico designado.
+              </p>
+              <div className="grid grid-cols-2 gap-3 w-full mt-4">
+                <button
+                  onClick={() => setRemoveFromTrailerConfirm(null)}
+                  className="py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={async () => {
+                    const { patrimonio, trailerName } = removeFromTrailerConfirm;
+                    setRemoveFromTrailerConfirm(null);
+                    // Remove do modal QR
+                    setTrailerQrModal(prev => prev ? {
+                      ...prev,
+                      expectedBikes: prev.expectedBikes.filter(b => b.patrimonio !== patrimonio),
+                      batteryFailed: prev.batteryFailed === patrimonio ? null : prev.batteryFailed,
+                      lastError: null,
+                    } : null);
+                    // Atualiza lista local — volta para Em Manutenção sem carretinha
+                    setMechanicsList(prev => prev.map(b =>
+                      b.patrimonio === patrimonio
+                        ? { ...b, status: 'Em Manutenção', carretinha: null, dataFinalizacao: '' }
+                        : b
+                    ));
+                    // Backend
+                    try {
+                      await apiCall({ action: 'removeFromTrailer', bikeNumber: patrimonio }, 1, false);
+                    } catch (e: any) {
+                      console.warn('[removeFromTrailer]', e.message);
+                    }
+                  }}
+                  className="py-3 bg-red-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-red-200 hover:bg-red-700 active:scale-95 transition-all"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Limpar Lista Alterar Status */}
+      {isLimparListaConfirmOpen && (() => {
+        const bikesToClear = mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada');
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
+              <div className="flex flex-col items-center text-center">
+                <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mb-4">
+                  <XIcon className="w-8 h-8 text-purple-600" />
+                </div>
+                <h2 className="text-xl font-black text-gray-800 uppercase mb-2">Limpar Lista?</h2>
+                <p className="text-sm text-gray-500 mb-6">
+                  Remove <span className="font-bold text-gray-800">{bikesToClear.length} bike(s)</span> da lista Alterar Status sem gerar registros. Novas bikes registradas aparecerão normalmente.
+                </p>
+                <div className="grid grid-cols-2 gap-3 w-full">
+                  <button
+                    onClick={() => setIsLimparListaConfirmOpen(false)}
+                    className="py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={async () => {
+                      setIsLimparListaConfirmOpen(false);
+                      setIsLoading(true);
+                      setError(null);
+                      try {
+                        const r = await apiCall({
+                          action: 'clearAlterarStatus',
+                          bikes: bikesToClear.map(b => ({ patrimonio: b.patrimonio, row: b.row }))
+                        }, 1, false);
+                        if (r.success) {
+                          setMechanicsList(prev => prev.filter(b => b.status !== 'Alterar Status' && b.status !== 'Não encontrada'));
+                          setSuccessMessage(`${r.cleared} bike(s) removidas da lista.`);
+                        } else {
+                          setError(r.error || 'Erro ao limpar lista.');
+                        }
+                      } catch (e: any) {
+                        setError('Erro ao limpar lista: ' + e.message);
+                      } finally {
+                        setIsLoading(false);
+                      }
+                    }}
+                    className="py-3 bg-purple-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-purple-200 hover:bg-purple-700 active:scale-95 transition-all"
+                  >
+                    Confirmar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* HEADER */}
       <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 pb-4 border-b">
         <div>
@@ -2260,7 +2808,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <DatabaseIcon className="w-6 h-6 sm:w-7 sm:h-7" />
             </button>
           )}
-          {!isMecanica && <>
+          {!isMecanica && !isTecnica && <>
             <button onClick={() => setRequestModalOpen(true)} disabled={isLoading} title="Nova Solicitação" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             <button onClick={() => setRouteModalOpen(true)} disabled={isLoading} title="Criar Roteiro" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusPlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             <button onClick={() => setTrailerModalOpen(true)} disabled={isLoading} title="Carretinha" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><TrailerIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
@@ -2301,7 +2849,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       <main>
         {/* RESUMO MOTORISTA */}
-        {!isAdm && !isMecanica && driversSummary.length > 0 && (
+        {!isAdm && !isMecanica && !isTecnica && driversSummary.length > 0 && (
           <div className="mb-4 p-3 border rounded-lg bg-gray-50 shadow-sm">
             <div className="flex justify-between items-center mb-2">
               <h2 className="text-sm font-bold text-gray-700 uppercase flex items-center gap-2"><SheetIcon className="w-4 h-4 text-blue-600"/>Resumo</h2>
@@ -2333,8 +2881,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
           </div>
         )}
 
-        {/* RESUMO DE PRODUÇÃO MECÂNICA — acima da busca */}
-        {isMecanica && (() => {
+        {/* RESUMO DE PRODUÇÃO — acima da busca */}
+        {(isMecanica || isTecnica) && (() => {
           const periods = [
             { key: 'diario' as const, label: 'Dia' },
             { key: 'semanal' as const, label: 'Semana' },
@@ -2345,13 +2893,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
           if (mechanicSummaryPeriod === 'semanal') { cutoff.setDate(now.getDate() - 7); cutoff.setHours(0,0,0,0); }
           else if (mechanicSummaryPeriod === 'mensal') { cutoff.setMonth(now.getMonth() - 1); cutoff.setHours(0,0,0,0); }
           else { cutoff.setHours(0,0,0,0); }
+          const sourceList = isTecnica ? technicaList : mechanicsList;
+          const activeStatuses = isTecnica
+            ? ['Em Técnica', 'Aguardando Técnica']
+            : ['Em Manutenção', 'Reserva'];
           const byMechanic: Record<string, {manutencao: number, reserva: number}> = {};
-          mechanicsList.filter(b => b.status === 'Em Manutenção' || b.status === 'Reserva').forEach(b => {
+          sourceList.filter(b => activeStatuses.includes(b.status)).forEach(b => {
             const m = b.mecanico || '—';
             if (!byMechanic[m]) byMechanic[m] = { manutencao: 0, reserva: 0 };
             const entryDate = b.dataEntrada ? new Date(b.dataEntrada) : null;
             if (!entryDate || entryDate >= cutoff) {
-              if (b.status === 'Em Manutenção') byMechanic[m].manutencao++;
+              const isMainStatus = isTecnica ? b.status === 'Em Técnica' : b.status === 'Em Manutenção';
+              if (isMainStatus) byMechanic[m].manutencao++;
               else byMechanic[m].reserva++;
             }
           });
@@ -2377,11 +2930,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       <span className="text-[10px] font-bold text-gray-500 uppercase w-16 truncate flex-shrink-0">{name}</span>
                       <div className="flex gap-1.5 flex-1">
                         <div className="flex flex-col items-center py-0.5 px-2 bg-orange-50 border border-orange-100 rounded-md flex-1">
-                          <span className="text-[7px] font-bold text-orange-400 uppercase leading-none">Man</span>
+                          <span className="text-[7px] font-bold text-orange-400 uppercase leading-none">{isTecnica ? 'Téc' : 'Man'}</span>
                           <span className="text-sm font-black text-orange-500 leading-tight">{counts.manutencao}</span>
                         </div>
                         <div className="flex flex-col items-center py-0.5 px-2 bg-green-50 border border-green-100 rounded-md flex-1">
-                          <span className="text-[7px] font-bold text-green-500 uppercase leading-none">Res</span>
+                          <span className="text-[7px] font-bold text-green-500 uppercase leading-none">{isTecnica ? 'Agu' : 'Res'}</span>
                           <span className="text-sm font-black text-green-600 leading-tight">{counts.reserva}</span>
                         </div>
                       </div>
@@ -2484,7 +3037,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
             </div>
             <div className="mt-4 pt-4 border-t border-green-200 grid grid-cols-2 gap-2">
-              {!isMecanica && (
+              {!isMecanica && !isTecnica && (
                 <>
                   <button onClick={() => handleStatusUpdate('Recolhida')} disabled={isLoading || processingBikes.has(String(searchedBike['Patrimônio']))}
                     className="px-3 py-1.5 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm disabled:bg-gray-400">Recolhida</button>
@@ -2495,29 +3048,38 @@ const MainScreen: React.FC<MainScreenProps> = ({
               
               {isMecanica && (
                 <div className="col-span-2 grid grid-cols-2 gap-2 mt-2">
-                  <button 
-                    onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Alterar Status')}
-                    className="px-3 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-[10px] font-black uppercase shadow-sm transition-colors"
-                  >
+                  <button onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Alterar Status')}
+                    className="px-3 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-[10px] font-black uppercase shadow-sm transition-colors">
                     Alterar Status
                   </button>
-                  <button 
-                    onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Aguardando Manutenção')}
-                    className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-[10px] font-black uppercase shadow-sm transition-colors"
-                  >
+                  <button onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Aguardando Manutenção')}
+                    className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-[10px] font-black uppercase shadow-sm transition-colors">
                     Aguardando Manutenção
                   </button>
-                  <button 
-                    onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Em Manutenção')}
-                    className="px-3 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 text-[10px] font-black uppercase shadow-sm transition-colors"
-                  >
+                  <button onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Em Manutenção')}
+                    className="px-3 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 text-[10px] font-black uppercase shadow-sm transition-colors">
                     Manutenção
                   </button>
-                  <button 
-                    onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Reserva')}
-                    className="px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-[10px] font-black uppercase shadow-sm transition-colors"
-                  >
+                  <button onClick={() => handleManualInsert(String(searchedBike['Patrimônio']), 'Reserva')}
+                    className="px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-[10px] font-black uppercase shadow-sm transition-colors">
                     Reserva
+                  </button>
+                </div>
+              )}
+              {isTecnica && (
+                <div className="col-span-2 grid grid-cols-2 gap-2 mt-2">
+                  <button onClick={async () => {
+                    const pat = String(searchedBike['Patrimônio']);
+                    setIsLoading(true);
+                    try {
+                      await apiCall({ action: 'sendToTechnical', bikeNumber: pat, mechanicName: driverName }, 1, false);
+                      await fetchTechnicaList();
+                      setSearchedBike(null); setSearchTerm('');
+                      setSuccessMessage(`Bike ${pat} em Aguardando Técnica.`);
+                    } catch(e: any) { setError(e.message); }
+                    finally { setIsLoading(false); }
+                  }} className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-[10px] font-black uppercase shadow-sm col-span-2">
+                    Aguardando Técnica
                   </button>
                 </div>
               )}
@@ -2625,7 +3187,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
           <div className="mt-6 space-y-6">
             {activeMechanicCategory === 'Alterar status' && (
               <div id="section-alterar-status" className="p-4 border rounded-lg bg-purple-50 shadow-sm scroll-mt-4">
-                <h2 className="text-lg font-bold text-purple-800 mb-3 flex items-center gap-2"><PlusPlusIcon className="w-5 h-5"/>Alterar Status</h2>
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-lg font-bold text-purple-800 flex items-center gap-2"><PlusPlusIcon className="w-5 h-5"/>Alterar Status</h2>
+                  {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length > 0 && (
+                    <button
+                      onClick={() => setIsLimparListaConfirmOpen(true)}
+                      disabled={isLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-purple-300 text-purple-700 text-[10px] font-bold rounded-lg hover:bg-purple-100 active:scale-95 transition-all disabled:opacity-50 shadow-sm"
+                    >
+                      <XIcon className="w-3.5 h-3.5" />
+                      Limpar Lista
+                    </button>
+                  )}
+                </div>
                 {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length > 0 ? (
                   <div className="space-y-2">
                     {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').map((bike, i) => {
@@ -2810,6 +3384,116 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 ) : <p className="text-sm text-gray-500 italic">Nenhuma bike na reserva.</p>}
               </div>
             )}
+          </div>
+        )}
+
+        {/* ÍCONES DE ATALHO TÉCNICA */}
+        {isTecnica && (
+          <div className="grid grid-cols-2 gap-2 mb-6 mt-6">
+            <button
+              onClick={() => setActiveTechnicaCategory(activeTechnicaCategory === 'Aguardando' ? null : 'Aguardando')}
+              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeTechnicaCategory === 'Aguardando' ? 'bg-blue-600 border-blue-700 text-white' : 'bg-blue-50 border-blue-100 hover:bg-blue-100'}`}
+            >
+              <div className={`p-1.5 rounded-full mb-1 ${activeTechnicaCategory === 'Aguardando' ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
+                <CarIcon className="w-4 h-4" />
+              </div>
+              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeTechnicaCategory === 'Aguardando' ? 'text-white' : 'text-blue-800'}`}>Aguardando técnica</span>
+              <span className={`mt-0.5 text-[10px] font-black ${activeTechnicaCategory === 'Aguardando' ? 'text-white' : 'text-blue-600'}`}>
+                {technicaList.filter(b => b.status === 'Aguardando Técnica').length}
+              </span>
+            </button>
+            <button
+              onClick={() => setActiveTechnicaCategory(activeTechnicaCategory === 'EmTecnica' ? null : 'EmTecnica')}
+              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeTechnicaCategory === 'EmTecnica' ? 'bg-orange-600 border-orange-700 text-white' : 'bg-orange-50 border-orange-100 hover:bg-orange-100'}`}
+            >
+              <div className={`p-1.5 rounded-full mb-1 ${activeTechnicaCategory === 'EmTecnica' ? 'bg-white text-orange-600' : 'bg-orange-600 text-white'}`}>
+                <BicycleIcon className="w-4 h-4" />
+              </div>
+              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeTechnicaCategory === 'EmTecnica' ? 'text-white' : 'text-orange-800'}`}>Em técnica</span>
+              <span className={`mt-0.5 text-[10px] font-black ${activeTechnicaCategory === 'EmTecnica' ? 'text-white' : 'text-orange-600'}`}>
+                {technicaList.filter(b => b.status === 'Em Técnica').length}
+              </span>
+            </button>
+          </div>
+        )}
+
+        {/* PERFIL TÉCNICA */}
+        {isTecnica && activeTechnicaCategory && (
+          <div className="mt-6 space-y-6">
+
+            {/* Aguardando Técnica */}
+            {activeTechnicaCategory === 'Aguardando' && (
+              <div id="tec-aguardando" className="p-4 border rounded-lg bg-blue-50 shadow-sm scroll-mt-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-lg font-bold text-blue-800 flex items-center gap-2">
+                    <CarIcon className="w-5 h-5"/>Aguardando Técnica
+                  </h2>
+                  <span className="text-xs font-bold text-blue-600 bg-blue-100 px-2 py-0.5 rounded-full">
+                    {technicaList.filter(b => b.status === 'Aguardando Técnica').length}
+                  </span>
+                </div>
+                {isTechnicaLoading && technicaList.length === 0
+                  ? <p className="text-sm text-gray-400 italic">Carregando...</p>
+                  : technicaList.filter(b => b.status === 'Aguardando Técnica').length > 0 ? (
+                    <div className="space-y-2">
+                      {technicaList.filter(b => b.status === 'Aguardando Técnica').map((bike, i) => (
+                        <div key={`tec-agu-${bike.patrimonio}-${i}`} className="flex justify-between items-center p-3 bg-white border rounded-md shadow-sm">
+                          <div>
+                            <p className="font-bold text-gray-700">Bike: {bike.patrimonio}</p>
+                            {bike.bateria !== undefined && <p className="text-[10px] text-gray-500">Bateria: {bike.bateria}%</p>}
+                            {bike.mecanico && <p className="text-[10px] text-blue-600 font-semibold">Enviado por: {bike.mecanico}</p>}
+                            {bike.dataEntrada && <p className="text-[10px] text-gray-400">{new Date(bike.dataEntrada).toLocaleString('pt-BR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</p>}
+                          </div>
+                          <button
+                            onClick={() => handleConfirmTechnicaReceipt(bike)}
+                            disabled={isLoading}
+                            className="px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded hover:bg-blue-700 active:scale-95 disabled:bg-gray-400 transition-colors"
+                          >
+                            Confirmar Recebimento
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <p className="text-sm text-gray-500 italic">Nenhuma bike aguardando.</p>}
+              </div>
+            )}
+
+            {/* Em Técnica */}
+            {activeTechnicaCategory === 'EmTecnica' && (
+              <div id="tec-em-tecnica" className="p-4 border rounded-lg bg-orange-50 shadow-sm scroll-mt-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-lg font-bold text-orange-800 flex items-center gap-2">
+                    <BicycleIcon className="w-5 h-5"/>Em Técnica
+                  </h2>
+                  <span className="text-xs font-bold text-orange-600 bg-orange-100 px-2 py-0.5 rounded-full">
+                    {technicaList.filter(b => b.status === 'Em Técnica').length}
+                  </span>
+                </div>
+                {technicaList.filter(b => b.status === 'Em Técnica').length > 0 ? (
+                  <div className="space-y-2">
+                    {technicaList.filter(b => b.status === 'Em Técnica').map((bike, i) => (
+                      <div key={`tec-em-${bike.patrimonio}-${i}`} className="flex justify-between items-center p-3 bg-white border rounded-md shadow-sm">
+                        <div>
+                          <p className="font-bold text-gray-700">Bike: {bike.patrimonio}</p>
+                          {bike.bateria !== undefined && <p className="text-[10px] text-gray-500">Bateria: {bike.bateria}%</p>}
+                          {bike.mecanico && <p className="text-[10px] text-orange-600 font-semibold">Técnico: {bike.mecanico}</p>}
+                          {bike.dataEntrada && <p className="text-[10px] text-gray-400">{new Date(bike.dataEntrada).toLocaleString('pt-BR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</p>}
+                          {bike.tratativa && bike.tratativa !== 'MANUAL' && <p className="text-[10px] text-gray-500 italic">Obs: {bike.tratativa}</p>}
+                        </div>
+                        <button
+                          onClick={() => handleFinalizeTechnicaRepair(bike)}
+                          disabled={isLoading}
+                          className="px-3 py-1.5 bg-orange-600 text-white text-xs font-bold rounded hover:bg-orange-700 active:scale-95 disabled:bg-gray-400 transition-colors"
+                        >
+                          Finalizar Reparo
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="text-sm text-gray-500 italic">Nenhuma bike em técnica.</p>}
+              </div>
+            )}
+
           </div>
         )}
 
@@ -3381,7 +4065,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         )}
 
         {/* ROTEIRO DE RECOLHAS */}
-        {!isAdm && !isMecanica && (
+        {!isAdm && !isMecanica && !isTecnica && (
           <div className="mt-6 p-4 border rounded-lg bg-gray-50">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
@@ -3458,7 +4142,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         )}
 
         {/* BIKES RECOLHIDAS */}
-        {!isAdm && !isMecanica && (
+        {!isAdm && !isMecanica && !isTecnica && (
           <div className="mt-6 p-4 border rounded-lg bg-gray-50">
             <h2 className="text-lg font-semibold text-gray-700 mb-3">Bikes Recolhidas</h2>
             {sortedCollectedBikes.length > 0 ? (
@@ -3956,7 +4640,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       )}
 
       <ScheduleModal isOpen={isScheduleModalOpen} onClose={() => setIsScheduleModalOpen(false)} schedule={userSchedule} driverName={driverName} isLoading={isScheduleLoading}/>
-      <VehicleSwitchModal isOpen={isVehicleModalOpen} onClose={() => setIsVehicleModalOpen(false)} onSwitch={(p, km) => onUpdateUser({ plate: p, kmInicial: km })} driverName={driverName}/>
+      <VehicleSwitchModal isOpen={isVehicleModalOpen} onClose={() => setIsVehicleModalOpen(false)} onSwitch={(p, km) => onUpdateUser({ plate: p, kmInicial: km })} driverName={driverName} currentPlate={plate}/>
       <AdminAlerts isOpen={isAdminAlertsOpen} onClose={() => setIsAdminAlertsOpen(false)} adminName={driverName}/>
       <ReporModal isOpen={isReporModalOpen} onClose={() => setIsReporModalOpen(false)} data={reporData} isLoading={isReporLoading}/>
       <MechanicRepairModal isOpen={isMechanicRepairModalOpen} onClose={() => setIsMechanicRepairModalOpen(false)} onConfirm={handleFinalizeMechanicsRepair} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
