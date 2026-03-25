@@ -179,6 +179,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const syncFailCountRef = useRef(0); // só exibe erro após 3 falhas consecutivas
   const [lastSyncTime, setLastSyncTime] = useState(new Date().toLocaleTimeString());
   const [backendVersion, setBackendVersion] = useState<string | null>(null);
   const [isMigrating, setIsMigrating] = useState(false);
@@ -2168,11 +2169,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     try {
       setSyncError(null);
+      syncFailCountRef.current = 0; // reset contador de falhas ao iniciar sync com sucesso
 
       if (isAdm) {
         // ADM: divide em 2 chamadas paralelas para evitar timeout do Apps Script (90s)
-        // Chamada 1: sync base (requests, driverState, bikeStatuses, motoristas, localizações)
-        // Chamada 2: summary pesado (resumo por motorista, timeline, alertas, vandalizadas)
         const [baseResult, summaryResult] = await Promise.allSettled([
           apiCall({
             action: 'sync',
@@ -2191,7 +2191,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         let hasAnySuccess = false;
 
-        // Aplica dados base
         if (baseResult.status === 'fulfilled' && baseResult.value?.success) {
           applyData(baseResult.value.data);
           if (baseResult.value.version) setBackendVersion(baseResult.value.version);
@@ -2200,7 +2199,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
           hasAnySuccess = true;
         }
 
-        // Aplica summary separadamente
         if (summaryResult.status === 'fulfilled' && summaryResult.value?.success) {
           setDriversSummary(prev => summaryResult.value.data.map((newD: any) => {
             const prevD = prev.find((p: any) => p.name === newD.name);
@@ -2214,14 +2212,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
           hasAnySuccess = true;
         }
 
-        // Só exibe erro se AMBAS as chamadas falharam
+        // Só exibe erro se AMBAS falharam E após 3 tentativas consecutivas
         if (!hasAnySuccess) {
-          const errMsg = baseResult.status === 'rejected'
-            ? (baseResult.reason?.message || 'Erro de conexão.')
-            : (baseResult.value?.error || 'Falha na sincronização.');
-          setSyncError(errMsg);
+          syncFailCountRef.current += 1;
+          if (syncFailCountRef.current >= 3) {
+            const errMsg = baseResult.status === 'rejected'
+              ? (baseResult.reason?.message || 'Erro de conexão.')
+              : (baseResult.value?.error || 'Falha na sincronização.');
+            setSyncError(errMsg);
+          }
           const cached = localStorage.getItem('cached_main_data');
           if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
+        } else {
+          syncFailCountRef.current = 0;
         }
 
       } else {
@@ -2240,15 +2243,22 @@ const MainScreen: React.FC<MainScreenProps> = ({
           localStorage.setItem('cached_main_data', JSON.stringify(result.data));
           if (result.version) setBackendVersion(result.version);
           setLastSyncTime(new Date().toLocaleTimeString());
+          syncFailCountRef.current = 0;
         } else {
-          setSyncError(result.error || 'Falha na sincronização.');
+          syncFailCountRef.current += 1;
+          if (syncFailCountRef.current >= 3) {
+            setSyncError(result.error || 'Falha na sincronização.');
+          }
           const cached = localStorage.getItem('cached_main_data');
           if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
         }
       }
 
     } catch (err: any) {
-      setSyncError(err.message || 'Erro de conexão.');
+      syncFailCountRef.current += 1;
+      if (syncFailCountRef.current >= 3) {
+        setSyncError(err.message || 'Erro de conexão.');
+      }
       const cached = localStorage.getItem('cached_main_data');
       if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
     } finally {

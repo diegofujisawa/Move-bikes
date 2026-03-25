@@ -31,53 +31,97 @@ export const auth = getAuth(app);
 // =================================================================
 // LOGIN ANÔNIMO com retry e backoff exponencial
 // =================================================================
-const performAnonymousLogin = (retryCount = 0) => {
-  const MAX_RETRIES = 3;
+let isLoggingIn = false;
+
+const performAnonymousLogin = async (retryCount = 0) => {
+  const MAX_RETRIES = 5; // Aumentado para 5 retries
+
+  if (isLoggingIn) return;
+  isLoggingIn = true;
 
   if (typeof window !== 'undefined' && !navigator.onLine) {
     console.warn('[Firebase] Offline. Aguardando conexão para login anônimo...');
-    window.addEventListener('online', () => performAnonymousLogin(retryCount), { once: true });
+    window.addEventListener('online', () => {
+      isLoggingIn = false;
+      performAnonymousLogin(retryCount);
+    }, { once: true });
+    isLoggingIn = false;
     return;
   }
 
   console.log(`[Firebase] Tentando login anônimo (tentativa ${retryCount + 1})...`);
-  signInAnonymously(auth)
-    .then(() => console.log('[Firebase] Login anônimo realizado com sucesso.'))
-    .catch((err) => {
-      console.error(`[Firebase] Erro no login anônimo (tentativa ${retryCount + 1}):`, err.code, err.message);
+  try {
+    await signInAnonymously(auth);
+    console.log('[Firebase] Login anônimo realizado com sucesso.');
+  } catch (err: any) {
+    console.error(`[Firebase] Erro no login anônimo (tentativa ${retryCount + 1}):`, err.code, err.message);
 
-      if (
-        (err.code === 'auth/network-request-failed' || err.code === 'auth/internal-error') &&
-        retryCount < MAX_RETRIES
-      ) {
-        const delay = Math.pow(2, retryCount) * 2000 + Math.random() * 1000;
-        console.log(`[Firebase] Retentando login anônimo em ${Math.round(delay)}ms...`);
-        setTimeout(() => performAnonymousLogin(retryCount + 1), delay);
-      } else if (err.code === 'auth/operation-not-allowed') {
+    const retryableErrors = [
+      'auth/network-request-failed',
+      'auth/internal-error',
+      'auth/too-many-requests',
+      'auth/web-storage-unsupported'
+    ];
+
+    if (retryableErrors.includes(err.code) && retryCount < MAX_RETRIES) {
+      const delay = Math.pow(2, retryCount) * 2000 + Math.random() * 1500;
+      console.log(`[Firebase] Retentando login anônimo em ${Math.round(delay)}ms...`);
+      setTimeout(() => {
+        isLoggingIn = false;
+        performAnonymousLogin(retryCount + 1);
+      }, delay);
+    } else {
+      if (err.code === 'auth/operation-not-allowed') {
         console.error('[Firebase] Login anônimo não está habilitado no console do Firebase.');
       }
-    });
+      isLoggingIn = false;
+    }
+    return;
+  }
+  isLoggingIn = false;
 };
 
 // =================================================================
-// INICIALIZAÇÃO — persistência antes de qualquer ação
+// INICIALIZAÇÃO — persistência com fallback
 // =================================================================
-if (typeof window !== 'undefined') {
-  setPersistence(auth, browserLocalPersistence)
-    .then(() => {
-      console.log('[Firebase] Persistência configurada.');
-      onAuthStateChanged(auth, (user) => {
-        if (!user) {
-          performAnonymousLogin();
-        } else {
-          console.log('[Firebase] Usuário já autenticado:', user.uid);
-        }
-      });
-    })
-    .catch(err => {
-      console.error('[Firebase] Erro ao configurar persistência:', err);
+const setupAuth = async () => {
+  if (typeof window === 'undefined') return;
+
+  try {
+    // Tenta persistência local (localStorage)
+    await setPersistence(auth, browserLocalPersistence);
+    console.log('[Firebase] Persistência local configurada.');
+  } catch (err) {
+    console.warn('[Firebase] Falha na persistência local, tentando sessão...', err);
+    try {
+      // Fallback para sessão (sessionStorage)
+      const { browserSessionPersistence } = await import('firebase/auth');
+      await setPersistence(auth, browserSessionPersistence);
+      console.log('[Firebase] Persistência de sessão configurada.');
+    } catch (err2) {
+      console.warn('[Firebase] Falha na persistência de sessão, usando memória...', err2);
+      try {
+        // Fallback final para memória
+        const { inMemoryPersistence } = await import('firebase/auth');
+        await setPersistence(auth, inMemoryPersistence);
+        console.log('[Firebase] Persistência em memória configurada.');
+      } catch (err3) {
+        console.error('[Firebase] Falha crítica ao configurar persistência:', err3);
+      }
+    }
+  }
+
+  onAuthStateChanged(auth, (user) => {
+    if (!user) {
       performAnonymousLogin();
-    });
+    } else {
+      console.log('[Firebase] Usuário já autenticado:', user.uid);
+    }
+  });
+};
+
+if (typeof window !== 'undefined') {
+  setupAuth();
 }
 
 // =================================================================
