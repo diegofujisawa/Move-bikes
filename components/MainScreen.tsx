@@ -1155,30 +1155,40 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsBikeSearchLoading(true);
     try {
       if (isMecanica) {
-        if (targetStatus === 'Alterar Status') {
-          // Apenas insere na seção "Alterar Status" — NÃO move para Aguardando Manutenção.
-          // O mecânico clica no botão "Alterar Status" dentro da seção para avançar.
+        if (targetStatus === 'Alterar Status' || targetStatus === 'Reserva') {
+          // Move no backend imediatamente — evita que o refreshAll reverta o estado
+          protectMechanicBike(bikePat, targetStatus);
+
           const jaExiste = mechanicsList.some(b => b.patrimonio === bikePat);
-          if (!jaExiste) {
+          if (jaExiste) {
+            setMechanicsList(prev => prev.map(b => 
+              b.patrimonio === bikePat ? { ...b, status: targetStatus, mecanico: driverName } : b
+            ));
+          } else {
             setMechanicsList(prev => [...prev, {
               patrimonio: bikePat,
-              status: 'Alterar Status',
+              status: targetStatus,
               dataEntrada: new Date(),
               mecanico: driverName,
               tratativa: 'MANUAL',
               manual: true,
             }]);
           }
-          // Persiste no backend como "Alterar Status"
-          await apiCall({ action: 'insertBikeMechanics', bikeNumber: bikePat, mechanicName: driverName, targetStatus: 'Alterar Status' }, 1, true).catch(() => {});
-          setSuccessMessage(`Bike ${bikePat} adicionada em Alterar Status.`);
+          // Persiste no backend
+          await apiCall({ action: 'insertBikeMechanics', bikeNumber: bikePat, mechanicName: driverName, targetStatus }, 1, true).catch(() => {});
+          
+          setSuccessMessage(targetStatus === 'Alterar Status' 
+            ? `Bike ${bikePat} adicionada em Alterar Status.` 
+            : `Bike ${bikePat} movida para Reserva.`
+          );
+          
           setSearchedBike(null);
           setSearchTerm('');
           setBikeSearchTerm('');
           setBikeSearchResult([]);
           return;
         }
-        // Outros status (Aguardando Manutenção, Em Manutenção, Reserva) — envia direto ao ADM como antes
+        // Outros status (Aguardando Manutenção, Em Manutenção) — envia direto ao ADM como antes
         await addDoc(collection(db, 'pending_actions'), {
           type: 'status_change',
           bikeNumber: bikePat,
