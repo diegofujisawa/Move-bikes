@@ -2463,7 +2463,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const elapsed = now - lastSentTime;
 
       // Envia se: forçado, moveu >3m, ou passaram 10s sem envio
-      if (!force && movedMeters <= 3 && elapsed < 10000) return;
+      if (!force && movedMeters <= 1 && elapsed < 3000) return;
 
       // Calcula velocidade em km/h com base no deslocamento desde o último envio
       const elapsedSec = elapsed / 1000;
@@ -2506,7 +2506,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           sendLocation(latitude, longitude, force);
         },
         () => {},
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
     };
 
@@ -2522,7 +2522,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           if (err.code === err.PERMISSION_DENIED)
             setGpsError('Acesso ao GPS negado. O aplicativo requer localização ativa.');
         },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 }
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       );
     };
 
@@ -2549,7 +2549,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     };
 
     // Intervalo de segurança a cada 20s — captura posição mesmo se watchPosition parar
-    const fallbackInterval = setInterval(() => getCurrentAndSend(), 20000);
+    const fallbackInterval = setInterval(() => getCurrentAndSend(), 5000);
 
     // Inicializa
     requestWakeLock();
