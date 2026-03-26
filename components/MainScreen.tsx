@@ -496,6 +496,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const data = snap.data();
       if (data.sheetsSync === true) return;
       if (isUpdatingStateRef.current) return;
+
+      // Proteção contra dados de dias anteriores
+      const lastUpdate = data.lastUpdate?.toDate?.() || new Date(0);
+      const lastUpdateStr = `${lastUpdate.getFullYear()}-${String(lastUpdate.getMonth()+1).padStart(2,'0')}-${String(lastUpdate.getDate()).padStart(2,'0')}`;
+      const today = localDateStr();
+      
+      // Se o dado no Firebase é de outro dia, e o motorista está no dia de hoje, ignora o estado antigo
+      // Isso evita que o roteiro de ontem carregue "do nada" ao abrir o app hoje
+      if (lastUpdateStr !== today && (data.routeBikes?.length > 0 || data.collectedBikes?.length > 0)) {
+        console.log('[FirebaseSync] Ignorando estado de roteiro antigo:', lastUpdateStr);
+        return;
+      }
+
       setRouteBikes(data.routeBikes || []);
       setCollectedBikes(data.collectedBikes || []);
     }, err => console.error('Listener usuário:', err));
@@ -2220,7 +2233,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
           });
         });
       }
-      if (d.driversSummary) {
+      // ADM usa getDriversSummary dedicado; Motorista usa driversSummary do sync
+      if (d.driversSummary && !isAdm) {
         setDriversSummary(prev => d.driversSummary.map((newD: any) => {
           const prevD = prev.find((p: any) => p.name === newD.name);
           const hasNewTL = newD.timeline && newD.timeline.length > 0;
@@ -2264,6 +2278,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
     };
 
+    const today = localDateStr();
+    const cacheKey = `cached_main_data_${driverName}_${category}_${today}`;
+
     try {
       setSyncError(null);
       syncFailCountRef.current = 0; // reset contador de falhas ao iniciar sync com sucesso
@@ -2291,7 +2308,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         if (baseResult.status === 'fulfilled' && baseResult.value?.success) {
           applyData(baseResult.value.data);
           if (baseResult.value.version) setBackendVersion(baseResult.value.version);
-          localStorage.setItem('cached_main_data', JSON.stringify(baseResult.value.data));
+          localStorage.setItem(cacheKey, JSON.stringify(baseResult.value.data));
           setLastSyncTime(new Date().toLocaleTimeString());
           hasAnySuccess = true;
         }
@@ -2318,7 +2335,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               : (baseResult.value?.error || 'Falha na sincronização.');
             setSyncError(errMsg);
           }
-          const cached = localStorage.getItem('cached_main_data');
+          const cached = localStorage.getItem(cacheKey);
           if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
         } else {
           syncFailCountRef.current = 0;
@@ -2337,7 +2354,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         if (result.success && result.data) {
           applyData(result.data);
-          localStorage.setItem('cached_main_data', JSON.stringify(result.data));
+          localStorage.setItem(cacheKey, JSON.stringify(result.data));
           if (result.version) setBackendVersion(result.version);
           setLastSyncTime(new Date().toLocaleTimeString());
           syncFailCountRef.current = 0;
@@ -2346,7 +2363,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           if (syncFailCountRef.current >= 3) {
             setSyncError(result.error || 'Falha na sincronização.');
           }
-          const cached = localStorage.getItem('cached_main_data');
+          const cached = localStorage.getItem(cacheKey);
           if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
         }
       }
@@ -2356,7 +2373,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (syncFailCountRef.current >= 3) {
         setSyncError(err.message || 'Erro de conexão.');
       }
-      const cached = localStorage.getItem('cached_main_data');
+      const cached = localStorage.getItem(`cached_main_data_${driverName}_${category}_${localDateStr()}`);
       if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
     } finally {
       setIsSyncing(false);
@@ -2364,9 +2381,23 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm]);
 
-  // Cache inicial
+  // Cache inicial por usuário e categoria e data
   useEffect(() => {
-    const cached = localStorage.getItem('cached_main_data');
+    const today = localDateStr();
+    const cacheKey = `cached_main_data_${driverName}_${category}_${today}`;
+    
+    // Limpeza de caches antigos deste usuário
+    const prefix = `cached_main_data_${driverName}_${category}_`;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(prefix) && !key.endsWith(today)) {
+          localStorage.removeItem(key);
+        }
+      }
+    } catch {}
+
+    const cached = localStorage.getItem(cacheKey);
     if (!cached) return;
     try {
       const d = JSON.parse(cached);
