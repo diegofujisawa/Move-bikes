@@ -13,9 +13,9 @@ import {
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
-import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { signInWithPopup, GoogleAuthProvider, signInAnonymously } from 'firebase/auth';
 import {
-  collection, onSnapshot, doc, updateDoc, addDoc, getDocs,
+  collection, onSnapshot, doc, updateDoc, addDoc, getDocs, getDoc,
   serverTimestamp, setDoc, query, where
 } from 'firebase/firestore';
 import ScheduleModal from './ScheduleModal';
@@ -55,7 +55,7 @@ import { migrateDataToFirebase } from '../migrationService';
 
 // Janela de proteção após ação do motorista (ms).
 // Durante esse período, o sync do Sheets não sobrescreve o estado local.
-const DRIVER_ACTION_GRACE_MS = 20000; // 20 segundos — cobre latência do Apps Script em fire-and-forget
+const DRIVER_ACTION_GRACE_MS = 30000; // 30 segundos — cobre latência do Apps Script em fire-and-forget
 
 interface MainScreenProps {
   driverName: string;
@@ -534,7 +534,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           }
         }
       });
-    }, err => console.error('Listener requests:', err));
+    }, err => handleFirestoreError(err, OperationType.GET, 'requests'));
 
     // Estado do motorista
     const unsubUser = onSnapshot(doc(db, 'users', normalizeName(driverName)), (snap) => {
@@ -2069,23 +2069,43 @@ const MainScreen: React.FC<MainScreenProps> = ({
   useEffect(() => { return () => { if (scannerRef.current) scannerRef.current.stop().catch(() => {}); }; }, []);
   useEffect(() => { return () => { if (trailerScannerRef.current) trailerScannerRef.current.stop().catch(() => {}); }; }, []);
 
+  const [isMigrationConfirmOpen, setIsMigrationConfirmOpen] = useState(false);
+
   // =================================================================
   // MIGRAÇÃO
   // =================================================================
   const handleMigrate = async () => {
-    if (!window.confirm('Deseja iniciar a migração de todas as abas da planilha para o Firebase? Isso pode levar alguns minutos.')) return;
+    console.log('[Migration] handleMigrate triggered. User:', auth.currentUser?.email, 'Category:', category);
+    setIsMigrationConfirmOpen(false);
     
     setMigrationMessage({ text: 'Autenticando...', type: 'info' });
     setIsMigrating(true);
     try {
-      if (!auth.currentUser) await signInWithPopup(auth, new GoogleAuthProvider());
+      if (!auth.currentUser) {
+        console.log('[Migration] No user found, attempting sign in...');
+        try {
+          await signInWithPopup(auth, new GoogleAuthProvider());
+        } catch (popupErr: any) {
+          console.warn('[Migration] Google Sign-In failed, trying anonymous...', popupErr);
+          await signInAnonymously(auth);
+        }
+        // Aguarda 2 segundos para o token ser propagado para o Firestore
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      
+      console.log('[Migration] Starting data export and migration...');
       setMigrationMessage({ text: 'Migrando dados (isso pode demorar)...', type: 'info' });
       const result = await migrateDataToFirebase(category);
+      
+      console.log('[Migration] Result:', result);
+      const userEmail = auth.currentUser?.email || 'Nenhum usuário logado';
       setMigrationMessage(result.success
         ? { text: `Migração concluída! Total: ${result.total} registros.`, type: 'success' }
-        : { text: 'Erro: ' + result.error, type: 'error' });
+        : { text: `Erro (${userEmail}): ` + result.error, type: 'error' });
     } catch (err: any) {
-      setMigrationMessage({ text: 'Erro: ' + err.message, type: 'error' });
+      console.error('[Migration] Catch error:', err);
+      const userEmail = auth.currentUser?.email || 'Nenhum usuário logado';
+      setMigrationMessage({ text: `Erro (${userEmail}): ` + err.message, type: 'error' });
     } finally {
       setIsMigrating(false);
       setTimeout(() => setMigrationMessage(null), 15000);
@@ -2520,7 +2540,136 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } catch {}
   }, []);
 
-  // Sync periódico — 4s para reduzir delay percebido
+  // =================================================================
+  // REAL-TIME ADM SUMMARY (DADOS DOS MOTORISTAS)
+  // =================================================================
+  useEffect(() => {
+    if (!isAdm) return;
+
+    // Listener para o estado dos motoristas em tempo real (aba Dados)
+    const unsub = onSnapshot(collection(db, 'users'), (snap) => {
+      setDriversSummary(prev => {
+        const next = [...prev];
+        snap.docChanges().forEach(change => {
+          const data = change.doc.data();
+          const docId = change.doc.id;
+          
+          // Encontra o motorista pelo nome normalizado
+          const index = next.findIndex(d => normalizeName(d.name) === docId);
+          if (index !== -1) {
+            next[index] = {
+              ...next[index],
+              realTime: {
+                route: data.routeBikes || [],
+                collected: data.collectedBikes || []
+              }
+            };
+          }
+        });
+        return next;
+      });
+    }, err => console.error('[Firebase] ADM Summary Listener:', err));
+
+    return () => unsub();
+  }, [isAdm]);
+
+  // =================================================================
+  // REAL-TIME SYNC VIA FIREBASE (BICICLETAS E REPOR)
+  // =================================================================
+  useEffect(() => {
+    if (!driverName) return;
+
+    // 1. Listeners para dados sincronizados no Firebase
+    const unsubBikes = onSnapshot(doc(db, 'sync', 'bikeStatuses'), (snap) => {
+      if (snap.exists()) {
+        setBikeConflicts(snap.data().data || {});
+      }
+    });
+
+    const unsubRepor = onSnapshot(doc(db, 'sync', 'repor'), (snap) => {
+      if (snap.exists()) {
+        setReporData(snap.data().data || []);
+      }
+    });
+
+    // 2. Lógica de "Sync Master" para atualizar o Firebase a partir do Sheets
+    // Apenas um usuário (o primeiro a detectar que o sync está atrasado)
+    // faz a chamada ao Apps Script e atualiza o Firebase para todos.
+    const syncToFirebase = async () => {
+      try {
+        // Tenta atualizar o status do sync para se tornar o master temporário
+        const syncStatusRef = doc(db, 'sync', 'status');
+        
+        // 1. Bicicletas (Conflitos/Status)
+        const rBikes = await apiGetCall('getBikeStatuses');
+        if (rBikes.success && rBikes.data) {
+          await setDoc(doc(db, 'sync', 'bikeStatuses'), { 
+            data: rBikes.data, 
+            updatedAt: serverTimestamp(),
+            updatedBy: driverName 
+          });
+        }
+
+        // 2. Repor
+        const rRepor = await apiGetCall('getReporData');
+        if (rRepor.success && rRepor.data) {
+          await setDoc(doc(db, 'sync', 'repor'), { 
+            data: rRepor.data, 
+            updatedAt: serverTimestamp(),
+            updatedBy: driverName 
+          });
+        }
+
+        // Atualiza timestamp global do sync
+        await setDoc(syncStatusRef, { 
+          lastSync: serverTimestamp(), 
+          masterId: driverName 
+        });
+
+      } catch (err) {
+        console.warn('[FirebaseSync] Erro ao sincronizar:', err);
+      }
+    };
+
+    // Polling para verificar se o sync está atrasado (> 10s)
+    const checkSyncStatus = async () => {
+      try {
+        const syncStatusRef = doc(db, 'sync', 'status');
+        const snap = await getDoc(syncStatusRef);
+        
+        let shouldSync = true;
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data.lastSync) {
+            const lastSyncTime = data.lastSync.toMillis ? data.lastSync.toMillis() : 0;
+            const now = Date.now();
+            // Se sincronizado há menos de 8 segundos, não faz nada
+            if (now - lastSyncTime < 8000) {
+              shouldSync = false;
+            }
+          }
+        }
+
+        if (shouldSync) {
+          await syncToFirebase();
+        }
+      } catch {
+        // Fallback: se falhar o check no Firebase, tenta sync direto
+        await syncToFirebase();
+      }
+    };
+
+    checkSyncStatus();
+    const interval = setInterval(checkSyncStatus, 5000);
+
+    return () => {
+      unsubBikes();
+      unsubRepor();
+      clearInterval(interval);
+    };
+  }, [driverName]);
+
+  // Sync periódico — 12s para o restante dos dados
   useEffect(() => {
     refreshAll();
     if (isTecnica) fetchTechnicaList();
@@ -2680,6 +2829,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (!navigator.geolocation) { setGpsError('Seu navegador não suporta geolocalização.'); return; }
 
     let lastSentLat = 0, lastSentLng = 0, lastSentTime = 0;
+    let lastSheetsSentTime = 0; // Controle separado para o Sheets
     let wakeLock: any = null;
     let watchId: number | null = null;
 
@@ -2687,26 +2837,31 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const now = Date.now();
       const movedMeters = getDistanceInMeters(latitude, longitude, lastSentLat, lastSentLng);
       const elapsed = now - lastSentTime;
-      if (!force && movedMeters <= 5 && elapsed < 15000) return;
+      
+      // Firebase: Mais frequente para tempo real (3s ou 2m)
+      if (force || movedMeters > 2 || elapsed >= 3000) {
+        lastSentLat = latitude;
+        lastSentLng = longitude;
+        lastSentTime = now;
+        lastLocationRef.current = { lat: latitude, lng: longitude };
 
-      lastSentLat = latitude;
-      lastSentLng = longitude;
-      lastSentTime = now;
-      lastLocationRef.current = { lat: latitude, lng: longitude };
+        setDoc(doc(db, 'locations', driverName), {
+          driverName, latitude, longitude,
+          timestamp: serverTimestamp(), category,
+          status: 'LOGADO',
+        }, { merge: true }).catch(() => {});
+      }
 
-      // Firebase tempo real — inclui status LOGADO
-      setDoc(doc(db, 'locations', driverName), {
-        driverName, latitude, longitude,
-        timestamp: serverTimestamp(), category,
-        status: 'LOGADO',
-      }, { merge: true }).catch(() => {});
-
-      // Sheets — persistência
-      apiGetCall('updateLocation', {
-        driverName,
-        latitude: latitude.toFixed(6),
-        longitude: longitude.toFixed(6)
-      }).catch(() => {});
+      // Sheets: Menos frequente para evitar limites da API (15s)
+      const elapsedSheets = now - lastSheetsSentTime;
+      if (force || elapsedSheets >= 15000) {
+        lastSheetsSentTime = now;
+        apiGetCall('updateLocation', {
+          driverName,
+          latitude: latitude.toFixed(6),
+          longitude: longitude.toFixed(6)
+        }).catch(() => {});
+      }
     };
 
     const getCurrentAndSend = (force = false) => {
@@ -2872,6 +3027,38 @@ const MainScreen: React.FC<MainScreenProps> = ({
       )}
 
 
+
+      {/* Modal de Confirmação Migração */}
+      {isMigrationConfirmOpen && (
+        <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mb-4">
+                <DatabaseIcon className="w-8 h-8 text-orange-600" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 mb-2">Migrar para Firebase</h3>
+              <p className="text-gray-600 mb-6">
+                Deseja iniciar a migração de todas as abas da planilha para o Firebase? 
+                Isso pode levar alguns minutos e estabelecerá o Firebase como fonte de dados.
+              </p>
+              <div className="grid grid-cols-2 gap-3 w-full">
+                <button
+                  onClick={() => setIsMigrationConfirmOpen(false)}
+                  className="py-3 bg-gray-100 text-gray-700 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleMigrate}
+                  className="py-3 bg-orange-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-orange-200 hover:bg-orange-700 active:scale-95 transition-all"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal de Confirmação "Zerar Lista" */}
       {isZerarListaConfirmOpen && (
@@ -3273,7 +3460,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         </div>
         <div className="flex items-center flex-wrap gap-1 mt-4 sm:mt-0">
           {isAdm && (
-            <button onClick={handleMigrate} disabled={isMigrating} title="Migrar para Firebase"
+            <button onClick={() => setIsMigrationConfirmOpen(true)} disabled={isMigrating} title="Migrar para Firebase"
               className={`p-1.5 sm:p-2 rounded-full transition-colors ${isMigrating ? 'text-orange-500 animate-spin' : 'text-gray-500 hover:bg-gray-100 hover:text-orange-600'}`}>
               <DatabaseIcon className="w-6 h-6 sm:w-7 sm:h-7" />
             </button>
@@ -4876,10 +5063,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         </div>
                       </div>
                       <div className="flex gap-2 w-full">
-                        <button onClick={() => handleNaoAtendidaClick(bike)} disabled={isLoading || processingBikes.has(bike)}
-                          className="flex-1 px-2 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 active:scale-95 disabled:bg-gray-400 text-[10px] font-bold uppercase">Não Atendida</button>
                         <button onClick={() => handleSearch(bike)} disabled={isLoading || processingBikes.has(bike)}
-                          className="flex-1 px-2 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 active:scale-95 disabled:bg-gray-400 text-[10px] font-bold uppercase">Recolher</button>
+                          className="flex-grow px-2 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 active:scale-95 disabled:bg-gray-400 text-xs font-bold uppercase">Recolher</button>
                       </div>
                     </li>
                   );

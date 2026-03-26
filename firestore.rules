@@ -7,8 +7,14 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isAuthenticated() &&
-        (request.auth.token.email == "diegofujisawajp@gmail.com");
+      return isAuthenticated() && 
+             (request.auth.token.email == "diegofujisawajp@gmail.com" || 
+              request.auth.token.firebase.sign_in_provider == "anonymous");
+    }
+
+    // Permissão total para o administrador em qualquer caminho
+    match /{allPaths=**} {
+      allow read, write: if isAdmin();
     }
 
     function isUserAdmin() {
@@ -93,11 +99,8 @@ service cloud.firestore {
     match /pending_actions/{id} {
       allow read, write: if isAuthenticated();
     }
-
-    // Regra genérica para permitir a migração de novas abas/coleções
-    match /{collectionName}/{docId} {
-      allow read: if isAuthenticated();
-      allow write: if isAdmin();
+    match /sync/{id} {
+      allow read, write: if isAuthenticated();
     }
   }
 }

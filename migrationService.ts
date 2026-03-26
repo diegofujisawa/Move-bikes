@@ -41,7 +41,7 @@ export const migrateDataToFirebase = async (category: string) => {
           }
         }
 
-        const docRef = docId ? doc(colRef, docId) : doc(colRef);
+        const docRef = docId ? doc(colRef, docId.replace(/\//g, '_')) : doc(colRef);
         batch.set(docRef, {
           ...row,
           _migratedAt: new Date().toISOString(),

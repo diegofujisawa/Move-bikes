@@ -112,6 +112,23 @@ const EditDriverModal: React.FC<EditDriverModalProps> = ({ isOpen, onClose, driv
                         </button>
                     </div>
 
+                    <div className="flex justify-between items-center mb-3">
+                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Lista de Bicicletas</p>
+                        {(activeTab === 'route' ? routeBikes : collectedBikes).length > 0 && (
+                            <button 
+                                onClick={() => {
+                                    if (confirm(`Deseja limpar toda a lista de ${activeTab === 'route' ? 'Roteiro' : 'Em Posse'}?`)) {
+                                        if (activeTab === 'route') setRouteBikes([]);
+                                        else setCollectedBikes([]);
+                                    }
+                                }}
+                                className="text-[10px] font-bold text-red-500 hover:text-red-700 uppercase flex items-center gap-1"
+                            >
+                                <TrashIcon className="w-3 h-3" /> Limpar Tudo
+                            </button>
+                        )}
+                    </div>
+
                     <div className="space-y-2">
                         {(activeTab === 'route' ? routeBikes : collectedBikes).map(bike => (
                             <div key={bike} className="flex justify-between items-center p-2 bg-gray-50 rounded-lg border border-gray-200 group">
