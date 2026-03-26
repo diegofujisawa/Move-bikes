@@ -34,17 +34,35 @@ export const auth = getAuth(app);
 let isLoggingIn = false;
 
 const performAnonymousLogin = async (retryCount = 0) => {
-  const MAX_RETRIES = 5; // Aumentado para 5 retries
+  const MAX_RETRIES = 8; // Aumentado para 8 retries para maior resiliência
 
   if (isLoggingIn) return;
+  
+  // Se já estiver logado, não faz nada
+  if (auth.currentUser) {
+    console.log('[Firebase] Já autenticado, pulando login anônimo.');
+    return;
+  }
+
   isLoggingIn = true;
+
+  // Pequeno delay na primeira tentativa para garantir que o ambiente esteja pronto
+  if (retryCount === 0) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Verifica novamente se logou nesse meio tempo
+    if (auth.currentUser) {
+      isLoggingIn = false;
+      return;
+    }
+  }
 
   if (typeof window !== 'undefined' && !navigator.onLine) {
     console.warn('[Firebase] Offline. Aguardando conexão para login anônimo...');
-    window.addEventListener('online', () => {
+    const handleOnline = () => {
       isLoggingIn = false;
       performAnonymousLogin(retryCount);
-    }, { once: true });
+    };
+    window.addEventListener('online', handleOnline, { once: true });
     isLoggingIn = false;
     return;
   }
@@ -60,11 +78,13 @@ const performAnonymousLogin = async (retryCount = 0) => {
       'auth/network-request-failed',
       'auth/internal-error',
       'auth/too-many-requests',
-      'auth/web-storage-unsupported'
+      'auth/web-storage-unsupported',
+      'auth/quota-exceeded'
     ];
 
     if (retryableErrors.includes(err.code) && retryCount < MAX_RETRIES) {
-      const delay = Math.pow(2, retryCount) * 2000 + Math.random() * 1500;
+      // Backoff exponencial: 2s, 4s, 8s, 16s... com jitter
+      const delay = Math.min(Math.pow(2, retryCount) * 1000 + Math.random() * 1000, 30000);
       console.log(`[Firebase] Retentando login anônimo em ${Math.round(delay)}ms...`);
       setTimeout(() => {
         isLoggingIn = false;
@@ -73,6 +93,8 @@ const performAnonymousLogin = async (retryCount = 0) => {
     } else {
       if (err.code === 'auth/operation-not-allowed') {
         console.error('[Firebase] Login anônimo não está habilitado no console do Firebase.');
+      } else if (err.code === 'auth/network-request-failed') {
+        console.error('[Firebase] Falha persistente de rede. Verifique se o domínio do Firebase está acessível ou se há um firewall bloqueando.');
       }
       isLoggingIn = false;
     }

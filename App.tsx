@@ -33,12 +33,12 @@ const App: React.FC = () => {
       }
     });
     
-    // Timeout para mostrar erro se demorar muito
+    // Timeout para mostrar erro se demorar muito (aumentado para 25s para dar tempo aos retries)
     const timer = setTimeout(() => {
       if (!auth.currentUser) {
-        setAuthError("A conexão com o Firebase está demorando mais que o esperado. Verifique sua internet.");
+        setAuthError("A conexão com o servidor de autenticação está instável. Tentando reconectar automaticamente... Se o problema persistir, verifique se seu navegador não está bloqueando conexões com o Firebase (ex: AdBlock).");
       }
-    }, 10000);
+    }, 25000);
 
     return () => {
       unsubscribe();

@@ -302,7 +302,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
   const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
   const [mechanicSummaryPeriod, setMechanicSummaryPeriod] = useState<'diario'|'semanal'|'mensal'>('diario');
-  const [clickedBikesForStatus, setClickedBikesForStatus] = useState<Set<string>>(new Set());
   const [bikeFoundModal, setBikeFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [mechanicNotFoundModal, setMechanicNotFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string, mechanicName?: string } | null>(null);
@@ -323,11 +322,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const trailerScannerRef = useRef<Html5Qrcode | null>(null);
   const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
-  const [formattedBikesForCopy, setFormattedBikesForCopy] = useState<string>(() => {
-    try {
-      return localStorage.getItem(`status_copy_${driverName}`) || '';
-    } catch { return ''; }
-  });
 
   // --- Refs ---
   const scannerRef = useRef<Html5Qrcode | null>(null);
@@ -527,7 +521,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     // Alertas (ADM)
     let unsubAlerts = () => {};
-    let unsubNotifications = () => {};
+    const unsubNotifications = () => {};
     if (isAdm) {
       unsubAlerts = onSnapshot(collection(db, 'alerts'), snapshot => {
         const updated: any[] = [];
@@ -1434,18 +1428,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setMechanicsList(prev => prev.map(b =>
       b.patrimonio === bikeId ? { ...b, status: 'Aguardando Manutenção' } : b
     ));
-    setClickedBikesForStatus(prev => {
-      const next = new Set(prev);
-      next.add(bikeId);
-      return next;
-    });
-    setFormattedBikesForCopy(prev => {
-      const bikes = prev ? prev.split(',').map(b => b.trim()).filter(Boolean) : [];
-      if (!bikes.includes(bikeId)) bikes.push(bikeId);
-      const next = bikes.join(',');
-      try { localStorage.setItem(`status_copy_${driverName}`, next); } catch {}
-      return next;
-    });
 
     if (isMecanica) {
       try {
@@ -1526,18 +1508,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   };
 
   const handleZerarListaStatus = () => {
-    const currentBikes = mechanicsList
-      .filter(b => ['Alterar Status', 'Recolhida', 'Enviada para Filial', 'Vandalizada'].includes(b.status))
-      .map(b => b.patrimonio);
-    
-    setClickedBikesForStatus(prev => {
-      const next = new Set(prev);
-      currentBikes.forEach(id => next.add(id));
-      try { localStorage.setItem(`status_clicked_${driverName}`, JSON.stringify([...next])); } catch {}
-      return next;
-    });
-    setFormattedBikesForCopy('');
-    try { localStorage.removeItem(`status_copy_${driverName}`); } catch {}
     setIsZerarListaConfirmOpen(false);
   };
 
@@ -2222,7 +2192,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         });
       }
       if (d.mechanicsList) {
-        setMechanicsList(prev => {
+        setMechanicsList(() => {
           const now = Date.now();
           // Remove entradas expiradas do mapa de proteção
           Object.keys(mechanicOptimisticRef.current).forEach(k => { const v = mechanicOptimisticRef.current[k];
@@ -2417,7 +2387,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         });
       }
       if (d.mechanicsList) {
-        setMechanicsList(prev => {
+        setMechanicsList(() => {
           const now = Date.now();
           // Remove entradas expiradas do mapa de proteção
           Object.keys(mechanicOptimisticRef.current).forEach(k => { const v = mechanicOptimisticRef.current[k];
