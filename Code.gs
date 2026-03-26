@@ -632,31 +632,32 @@ function handleExportAllData(payload) {
     const catNorm = normalizeCategory(payload.category);
     if (!catNorm.includes('ADM')) return { success: false, error: 'Acesso negado.' };
 
-    const getAllData = sheetName => {
-      if (!sheetName) return [];
-      const sheet = getSpreadsheet().getSheetByName(sheetName);
-      if (!sheet) return [];
+    const ss = getSpreadsheet();
+    const sheets = ss.getSheets();
+    const allData = {};
+
+    sheets.forEach(sheet => {
+      const name = sheet.getName();
       const data = sheet.getDataRange().getValues();
-      if (data.length < 2) return [];
+      if (data.length < 1) {
+        allData[name] = [];
+        return;
+      }
       const headers = data[0];
-      return data.slice(1).map(row => {
+      const rows = data.slice(1).map(row => {
         const obj = {};
-        headers.forEach((h, i) => { if (h) obj[h] = row[i]; });
+        headers.forEach((h, i) => { 
+          const key = h ? String(h).trim() : `col_${i}`;
+          obj[key] = row[i]; 
+        });
         return obj;
       });
-    };
+      allData[name] = rows;
+    });
 
     return {
       success: true,
-      data: {
-        bikes:     getAllData(BIKES_SHEET_NAME) || [],
-        users:     getAllData(ACCESS_SHEET_NAME) || [],
-        requests:  getAllData(REQUESTS_SHEET_NAME) || [],
-        reports:   getAllData(REPORT_SHEET_NAME) || [],
-        alerts:    getAllData(ALERTS_SHEET_NAME) || [],
-        vandalized:getAllData(VANDALIZED_SHEET_NAME) || [],
-        stations:  getAllData(STATIONS_SHEET_NAME) || []
-      }
+      data: allData
     };
   } catch (e) {
     return { success: false, error: 'Erro ao exportar dados: ' + e.message };

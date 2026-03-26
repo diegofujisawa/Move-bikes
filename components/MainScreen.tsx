@@ -2027,20 +2027,22 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // MIGRAÇÃO
   // =================================================================
   const handleMigrate = async () => {
+    if (!window.confirm('Deseja iniciar a migração de todas as abas da planilha para o Firebase? Isso pode levar alguns minutos.')) return;
+    
     setMigrationMessage({ text: 'Autenticando...', type: 'info' });
     setIsMigrating(true);
     try {
       if (!auth.currentUser) await signInWithPopup(auth, new GoogleAuthProvider());
-      setMigrationMessage({ text: 'Migrando dados...', type: 'info' });
+      setMigrationMessage({ text: 'Migrando dados (isso pode demorar)...', type: 'info' });
       const result = await migrateDataToFirebase(category);
       setMigrationMessage(result.success
-        ? { text: 'Migração concluída!', type: 'success' }
+        ? { text: `Migração concluída! Total: ${result.total} registros.`, type: 'success' }
         : { text: 'Erro: ' + result.error, type: 'error' });
     } catch (err: any) {
       setMigrationMessage({ text: 'Erro: ' + err.message, type: 'error' });
     } finally {
       setIsMigrating(false);
-      setTimeout(() => setMigrationMessage(null), 10000);
+      setTimeout(() => setMigrationMessage(null), 15000);
     }
   };
 
@@ -2110,10 +2112,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
     try {
       const r = await apiCall({ action: 'getDriversSummary', timeRange: range, timelineDate }, 1, true);
       if (r.success && summaryTimeRange === range) {
+        const filteredData = r.data.filter((d: any) => d.name?.toUpperCase() !== 'MECANICA');
         setDriversSummary(prev => {
           // Preserva timeline e timelineWindow anteriores se o novo dado não tem eventos
           // (garante que eventos passados não somem entre syncs)
-          return r.data.map((newDriver: any) => {
+          return filteredData.map((newDriver: any) => {
             const prevDriver = prev.find((p: any) => p.name === newDriver.name);
             const hasNewTimeline = newDriver.timeline && newDriver.timeline.length > 0;
             const hasPrevTimeline = prevDriver?.timeline && prevDriver.timeline.length > 0;
@@ -2136,7 +2139,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const range = summaryTimeRange;
     try {
       const drivers: string[] = category.includes('ADM')
-        ? ((await apiCall({ action: 'getMotoristas' })).data || [])
+        ? ((await apiCall({ action: 'getMotoristas' })).data || []).filter((m: string) => m.toUpperCase() !== 'MECANICA')
         : [driverName];
       const reqResult = await apiCall({ action: 'getRequests', driverName, category }, 1, true);
       const allPending = reqResult.success ? reqResult.data : [];
@@ -2202,7 +2205,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       if (d.bikeStatuses) setBikeConflicts(d.bikeStatuses);
       if (d.schedule) setUserSchedule(d.schedule);
-      if (d.motoristas) setMotoristas(d.motoristas);
+      if (d.motoristas) {
+        const filteredMotoristas = d.motoristas.filter((m: string) => m.toUpperCase() !== 'MECANICA');
+        setMotoristas(filteredMotoristas);
+      }
       if (d.driverLocations) {
         setDriverLocations(prev => {
           const fbLocations = prev.filter((l:any) => l.source === 'firebase');
@@ -2233,9 +2239,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
           });
         });
       }
-      // ADM usa getDriversSummary dedicado; Motorista usa driversSummary do sync
-      if (d.driversSummary && !isAdm) {
-        setDriversSummary(prev => d.driversSummary.map((newD: any) => {
+      if (d.driversSummary) {
+        const filteredSummary = d.driversSummary.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
+        setDriversSummary(prev => filteredSummary.map((newD: any) => {
           const prevD = prev.find((p: any) => p.name === newD.name);
           const hasNewTL = newD.timeline && newD.timeline.length > 0;
           return {
@@ -2314,7 +2320,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }
 
         if (summaryResult.status === 'fulfilled' && summaryResult.value?.success) {
-          setDriversSummary(prev => summaryResult.value.data.map((newD: any) => {
+          const filteredData = summaryResult.value.data.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
+          setDriversSummary(prev => filteredData.map((newD: any) => {
             const prevD = prev.find((p: any) => p.name === newD.name);
             const hasNewTL = newD.timeline && newD.timeline.length > 0;
             return {
@@ -2412,7 +2419,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (d.driverState) { setRouteBikes(d.driverState.routeBikes || []); setCollectedBikes(d.driverState.collectedBikes || []); }
       if (d.bikeStatuses) setBikeConflicts(d.bikeStatuses);
       if (d.schedule) setUserSchedule(d.schedule);
-      if (d.motoristas) setMotoristas(d.motoristas);
+      if (d.motoristas) {
+        const filteredMotoristas = d.motoristas.filter((m: string) => m.toUpperCase() !== 'MECANICA');
+        setMotoristas(filteredMotoristas);
+      }
       if (d.driverLocations) {
         // Sheets serve como base; Firebase atualiza em cima via listener
         setDriverLocations(prev => {
@@ -2447,7 +2457,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
         });
       }
       if (d.driversSummary) {
-        setDriversSummary(prev => d.driversSummary.map((newD: any) => {
+        const filteredSummary = d.driversSummary.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
+        setDriversSummary(prev => filteredSummary.map((newD: any) => {
           const prevD = prev.find((p: any) => p.name === newD.name);
           const hasNewTL = newD.timeline && newD.timeline.length > 0;
           return {
