@@ -948,7 +948,7 @@ function getBikeIndex() {
     if (patNoZeros !== pat && patNoZeros !== 'NaN') index[patNoZeros] = row;
   });
 
-  try { cache.put(cacheKey, JSON.stringify(index), 15); } catch (e) {} // Cache reduzido para 15s
+  try { cache.put(cacheKey, JSON.stringify(index), 600); } catch (e) {}
   return index;
 }
 
@@ -2198,7 +2198,7 @@ function getBikeStatuses(providedStateSheet, providedReportSheet) {
       }
     }
 
-    try { cache.put(cacheKey, JSON.stringify(conflicts), 5); } catch (e) {} // Cache reduzido para 5s
+    try { cache.put(cacheKey, JSON.stringify(conflicts), 15); } catch (e) {}
     return { success: true, data: conflicts };
   } catch (e) {
     return { success: false, error: 'Erro ao buscar status das bikes: ' + e.message };
@@ -2206,11 +2206,6 @@ function getBikeStatuses(providedStateSheet, providedReportSheet) {
 }
 
 function getReporData() {
-  const cache = CacheService.getScriptCache();
-  const cacheKey = 'repor_data';
-  const cached = cache.get(cacheKey);
-  if (cached) { try { return { success: true, data: JSON.parse(cached), cached: true }; } catch (e) {} }
-
   try {
     const sheet = getSpreadsheet().getSheetByName(REPLENISHMENT_SHEET_NAME);
     if (!sheet) return { success: false, error: 'Aba "Repor" não encontrada.' };
@@ -2233,7 +2228,6 @@ function getReporData() {
       });
       if (hasContent) data.push(rowObj);
     }
-    try { cache.put(cacheKey, JSON.stringify(data), 5); } catch (e) {} // Cache de 5s
     return { success: true, data };
   } catch (e) {
     return { success: false, error: 'Erro ao buscar dados de reposição: ' + e.message };

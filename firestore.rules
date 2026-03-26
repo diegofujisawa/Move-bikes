@@ -99,8 +99,5 @@ service cloud.firestore {
     match /pending_actions/{id} {
       allow read, write: if isAuthenticated();
     }
-    match /sync/{id} {
-      allow read, write: if isAuthenticated();
-    }
   }
 }
