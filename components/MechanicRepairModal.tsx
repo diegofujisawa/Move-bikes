@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { XIcon } from './icons';
 
@@ -12,17 +11,27 @@ interface MechanicRepairModalProps {
 
 const MechanicRepairModal: React.FC<MechanicRepairModalProps> = ({ isOpen, onClose, onConfirm, isLoading, bikeNumber }) => {
     const repairOptions = [
-        "Ajuste e aperto", "placa", "cesto", "banco", "rodas", 
-        "guidão", "quadro", "adesivos", "identificação", 
-        "pedal", "carregamento", "limpeza"
+        "Ajuste e aperto", "Placa", "Cesto", "Banco", "Rodas",
+        "Guidão", "Quadro", "Adesivos", "Identificação",
+        "Pedal", "Carregamento", "Limpeza",
+        "Instalação de Locker", "Troca de Cabo de Freio",
+        "Troca Cabo Energia", "Corrente"
     ];
+
     const [selectedOptions, setSelectedOptions] = React.useState<string[]>([]);
 
+    // Reseta seleções toda vez que o modal abre
+    React.useEffect(() => {
+        if (isOpen) {
+            setSelectedOptions([]);
+        }
+    }, [isOpen]);
+
     const toggleOption = (option: string) => {
-        setSelectedOptions(prev => 
-            prev.includes(option) 
-            ? prev.filter(o => o !== option) 
-            : [...prev, option]
+        setSelectedOptions(prev =>
+            prev.includes(option)
+                ? prev.filter(o => o !== option)
+                : [...prev, option]
         );
     };
 
@@ -40,18 +49,18 @@ const MechanicRepairModal: React.FC<MechanicRepairModalProps> = ({ isOpen, onClo
                 <div className="p-6 space-y-4">
                     <div>
                         <label className="block text-sm font-bold text-gray-700 mb-3 uppercase">O que foi reparado?</label>
-                        <div className="grid grid-cols-2 gap-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                        <div className="grid grid-cols-2 gap-2 max-h-[320px] overflow-y-auto pr-2 custom-scrollbar">
                             {repairOptions.map(option => (
                                 <button
                                     key={option}
                                     onClick={() => toggleOption(option)}
                                     className={`flex items-center gap-2 p-2 rounded border text-left transition-all ${
                                         selectedOptions.includes(option)
-                                        ? 'border-orange-500 bg-orange-50 text-orange-700'
-                                        : 'border-gray-200 hover:border-gray-300 text-gray-600'
+                                            ? 'border-orange-500 bg-orange-50 text-orange-700'
+                                            : 'border-gray-200 hover:border-gray-300 text-gray-600'
                                     }`}
                                 >
-                                    <div className={`w-4 h-4 rounded border flex items-center justify-center ${
+                                    <div className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center ${
                                         selectedOptions.includes(option) ? 'bg-orange-500 border-orange-500' : 'bg-white border-gray-300'
                                     }`}>
                                         {selectedOptions.includes(option) && (
@@ -60,21 +69,21 @@ const MechanicRepairModal: React.FC<MechanicRepairModalProps> = ({ isOpen, onClo
                                             </svg>
                                         )}
                                     </div>
-                                    <span className="text-xs font-medium capitalize">{option}</span>
+                                    <span className="text-xs font-medium">{option}</span>
                                 </button>
                             ))}
                         </div>
                         <p className="text-[10px] text-gray-500 mt-2 italic">Selecione todas as opções que se aplicam.</p>
                     </div>
                     <div className="flex gap-3 pt-2">
-                        <button 
+                        <button
                             onClick={onClose}
                             disabled={isLoading}
                             className="flex-1 py-2.5 border border-gray-300 rounded-md text-sm font-bold text-gray-600 hover:bg-gray-50 transition-colors"
                         >
                             Cancelar
                         </button>
-                        <button 
+                        <button
                             onClick={() => onConfirm(selectedOptions.join(', '))}
                             disabled={isLoading || selectedOptions.length === 0}
                             className="flex-1 py-2.5 bg-orange-600 text-white rounded-md text-sm font-bold hover:bg-orange-700 transition-colors shadow-md disabled:bg-gray-400 flex items-center justify-center gap-2"

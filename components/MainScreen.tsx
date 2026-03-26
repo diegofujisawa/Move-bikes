@@ -206,7 +206,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isVehicleModalOpen, setIsVehicleModalOpen] = useState(false);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [isAdminAlertsOpen, setIsAdminAlertsOpen] = useState(false);
-  const [adminNotification, setAdminNotification] = useState<any>(null);
   const [isForceReloading, setIsForceReloading] = useState(false);
   const [isReporModalOpen, setIsReporModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
@@ -303,12 +302,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
   const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
   const [mechanicSummaryPeriod, setMechanicSummaryPeriod] = useState<'diario'|'semanal'|'mensal'>('diario');
-  const [clickedBikesForStatus, setClickedBikesForStatus] = useState<Set<string>>(() => {
-    try {
-      const saved = localStorage.getItem(`status_clicked_${driverName}`);
-      return saved ? new Set(JSON.parse(saved)) : new Set();
-    } catch { return new Set(); }
-  });
+  const [clickedBikesForStatus, setClickedBikesForStatus] = useState<Set<string>>(new Set());
   const [bikeFoundModal, setBikeFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [mechanicNotFoundModal, setMechanicNotFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string, mechanicName?: string } | null>(null);
@@ -319,7 +313,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [trailerQrModal, setTrailerQrModal] = useState<{
     isOpen: boolean;
     trailerName: string;
-    expectedBikes: { patrimonio: string; bateria: number | undefined }[];
+    expectedBikes: { patrimonio: string; bateria: number | undefined; ultimaInfo?: string }[];
     confirmedBikes: Set<string>;
     batteryFailed: string | null; // patrimônio da bike com bateria insuficiente
     scannerActive: boolean;
@@ -486,7 +480,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // FIRESTORE LISTENERS
   // =================================================================
   useEffect(() => {
-    if (!driverName) return;
+    if (!driverName) return () => {};
 
     // Pedidos pendentes — Firebase usado APENAS para notificação push de novos pedidos
     // O estado real de pendingRequests vem exclusivamente do Sheets via sync
@@ -550,18 +544,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // para evitar contagem duplicada
       }, err => console.error('Listener alertas:', err));
 
-      // Listener de notificações de carretinha — sem where() para evitar índice composto
-      unsubNotifications = onSnapshot(collection(db, 'notifications'), snapshot => {
-        snapshot.docChanges().forEach(change => {
-          if (change.type === 'added') {
-            const data = change.doc.data();
-            // Filtra no cliente
-            if (data.type !== 'trailer_finalizado' || data.recipient !== 'ADM') return;
-            const msg = data.message || `Carretinha finalizada. Bikes: ${(data.bikes || []).join(', ')}`;
-            setAdminNotification({ id: change.doc.id, message: msg, bikes: data.bikes || [], trailerName: data.trailerName });
-          }
-        });
-      }, err => console.error('Listener notificações:', err));
     }
 
     // Listener de timeline_events (para ADM — enriquece a timeline dos motoristas)
@@ -639,12 +621,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsPendingActionsLoading(true);
       unsubPending = onSnapshot(collection(db, 'pending_actions'), snapshot => {
         const actions: any[] = [];
+        // Mapa para consolidar lotes por mecânico (pega o doc mais recente de cada)
+        const loteByMechanic: Record<string, any> = {};
         snapshot.forEach(d => {
           const data = d.data();
-          if (data.status === 'pending') {
+          if (data.status !== 'pending') return;
+          if (data.type === 'alterar_status_lote') {
+            const key = data.mechanicName || 'desconhecido';
+            const existing = loteByMechanic[key];
+            const ts = data.timestamp?.toMillis?.() || 0;
+            if (!existing || ts > (existing.timestamp?.toMillis?.() || 0)) {
+              loteByMechanic[key] = { id: d.id, ...data };
+            }
+          } else {
             actions.push({ id: d.id, ...data });
           }
         });
+        // Adiciona lotes consolidados
+        Object.values(loteByMechanic).forEach(lote => actions.push(lote));
         setPendingActions(actions.sort((a, b) => (b.timestamp?.toMillis?.() || 0) - (a.timestamp?.toMillis?.() || 0)));
         setIsPendingActionsLoading(false);
       }, err => {
@@ -1167,6 +1161,30 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsBikeSearchLoading(true);
     try {
       if (isMecanica) {
+        if (targetStatus === 'Alterar Status') {
+          // Apenas insere na seção "Alterar Status" — NÃO move para Aguardando Manutenção.
+          // O mecânico clica no botão "Alterar Status" dentro da seção para avançar.
+          const jaExiste = mechanicsList.some(b => b.patrimonio === bikePat);
+          if (!jaExiste) {
+            setMechanicsList(prev => [...prev, {
+              patrimonio: bikePat,
+              status: 'Alterar Status',
+              dataEntrada: new Date(),
+              mecanico: driverName,
+              tratativa: 'MANUAL',
+              manual: true,
+            }]);
+          }
+          // Persiste no backend como "Alterar Status"
+          await apiCall({ action: 'insertBikeMechanics', bikeNumber: bikePat, mechanicName: driverName, targetStatus: 'Alterar Status' }, 1, true).catch(() => {});
+          setSuccessMessage(`Bike ${bikePat} adicionada em Alterar Status.`);
+          setSearchedBike(null);
+          setSearchTerm('');
+          setBikeSearchTerm('');
+          setBikeSearchResult([]);
+          return;
+        }
+        // Outros status (Aguardando Manutenção, Em Manutenção, Reserva) — envia direto ao ADM como antes
         await addDoc(collection(db, 'pending_actions'), {
           type: 'status_change',
           bikeNumber: bikePat,
@@ -1395,11 +1413,30 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicSelectionModalOpen(true);
   };
 
+  // Ref para o ID do documento agregador de "alterar status" do mecânico atual
+  const alterarStatusDocRef = useRef<string | null>(null);
+
+  // Ref para proteger atualizações otimistas da mecânica do sync do Sheets
+  // Map de patrimônio → { status, expiresAt } — protege por 30s após cada ação
+  // Plain object ref — avoids Map constructor issues in this environment
+  const mechanicOptimisticRef = useRef<Record<string, { status: string; expiresAt: number }>>({});
+
+  const protectMechanicBike = (patrimonio: string, status: string) => {
+    mechanicOptimisticRef.current[String(patrimonio)] = {
+      status,
+      expiresAt: Date.now() + 30000, // 30s de proteção
+    };
+  };
+
   const handleAlterarStatus = async (bikeId: string) => {
+    // 1. Atualiza estado local imediatamente — bike some de "Alterar Status"
+    protectMechanicBike(bikeId, 'Aguardando Manutenção');
+    setMechanicsList(prev => prev.map(b =>
+      b.patrimonio === bikeId ? { ...b, status: 'Aguardando Manutenção' } : b
+    ));
     setClickedBikesForStatus(prev => {
       const next = new Set(prev);
       next.add(bikeId);
-      try { localStorage.setItem(`status_clicked_${driverName}`, JSON.stringify([...next])); } catch {}
       return next;
     });
     setFormattedBikesForCopy(prev => {
@@ -1412,37 +1449,75 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     if (isMecanica) {
       try {
-        await addDoc(collection(db, 'pending_actions'), {
-          type: 'status_change',
-          bikeNumber: bikeId,
-          targetStatus: 'Aguardando Manutenção',
-          mechanicName: driverName,
-          status: 'pending',
-          timestamp: serverTimestamp()
-        });
-        setSuccessMessage('Solicitação de alteração de status enviada para o ADM!');
-        refreshAll(true);
+        // 1. Move no backend imediatamente — evita que o refreshAll reverta o estado
+        await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {});
+
+        // 2. Agrupa num único doc no Firebase — busca doc pendente existente antes de criar novo
+        const { arrayUnion, getDocs: _getDocs, query: _query, where: _where } = await import('firebase/firestore');
+        
+        if (!alterarStatusDocRef.current) {
+          // Busca doc pendente já existente deste mecânico para não criar duplicata
+          const existingSnap = await _getDocs(
+            _query(
+              collection(db, 'pending_actions'),
+              _where('type', '==', 'alterar_status_lote'),
+              _where('mechanicName', '==', driverName),
+              _where('status', '==', 'pending')
+            )
+          );
+          if (!existingSnap.empty) {
+            alterarStatusDocRef.current = existingSnap.docs[0].id;
+          }
+        }
+
+        if (alterarStatusDocRef.current) {
+          // Adiciona bike ao doc existente
+          await updateDoc(doc(db, 'pending_actions', alterarStatusDocRef.current), {
+            bikes: arrayUnion(bikeId),
+            timestamp: serverTimestamp(),
+          });
+        } else {
+          // Cria novo doc agregador
+          const docRef = await addDoc(collection(db, 'pending_actions'), {
+            type: 'alterar_status_lote',
+            bikes: [bikeId],
+            mechanicName: driverName,
+            status: 'pending',
+            timestamp: serverTimestamp(),
+          });
+          alterarStatusDocRef.current = docRef.id;
+        }
+
+        setSuccessMessage(`Bike ${bikeId} → Aguardando Manutenção.`);
       } catch (e: any) {
         alert('Erro ao enviar solicitação: ' + e.message);
+        // Reverte atualização otimista em caso de erro
+        setMechanicsList(prev => prev.map(b =>
+          b.patrimonio === bikeId ? { ...b, status: 'Alterar Status' } : b
+        ));
       }
       return;
     }
 
-    // Move para Aguardando Manutenção no backend
+    // ADM / perfil com acesso direto: move direto no backend
     try {
       await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true);
-      refreshAll(true);
     } catch (err: any) {
       console.error('Erro ao mover para Aguardando Manutenção:', err);
+      setMechanicsList(prev => prev.map(b =>
+        b.patrimonio === bikeId ? { ...b, status: 'Alterar Status' } : b
+      ));
     }
   };
 
   const handleMarkAsNotFound = async (bikeId: string) => {
     setIsLoading(true);
+    // Optimistic: remove from list immediately
+    setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikeId));
     try {
       await apiCall({ action: 'markAsNotFound', bikeNumber: bikeId, mechanicName: driverName }, 1, true);
-      refreshAll(true);
     } catch (err: any) {
+      refreshAll(true); // revert on error
       console.error('Erro ao processar:', err);
     } finally {
       setIsLoading(false);
@@ -1599,6 +1674,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     const bikeNumber = selectedMechanicBike.patrimonio;
     // Atualização otimista — remove da lista imediatamente
+    protectMechanicBike(bikeNumber, 'Em Manutenção');
     setMechanicsList(prev => prev.map(b =>
       b.patrimonio === bikeNumber ? { ...b, status: 'Em Manutenção', mecanico: mechanicName } : b
     ));
@@ -1609,7 +1685,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true).catch(() => {});
     } catch (err: any) {
       alert('Erro: ' + err.message);
-      refreshAll(true);
     } finally { setIsLoading(false); }
   };
 
@@ -1618,28 +1693,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     const bikeNumber = selectedMechanicBike.patrimonio;
 
-    if (isMecanica) {
-      try {
-        await addDoc(collection(db, 'pending_actions'), {
-          type: 'status_change',
-          bikeNumber,
-          targetStatus: 'Reserva',
-          treatment,
-          mechanicName: driverName,
-          status: 'pending',
-          timestamp: serverTimestamp()
-        });
-        alert('Reparo enviado para validação do ADM!');
-        setIsMechanicRepairModalOpen(false);
-      } catch (e: any) {
-        alert('Erro ao enviar reparo: ' + e.message);
-      } finally {
-        setIsLoading(false);
-      }
-      return;
-    }
-
+    // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
+    // A notificação ao ADM só ocorre ao FINALIZAR A CARRETINHA (após QR + bateria + comunicação).
     // Atualização otimista
+    protectMechanicBike(bikeNumber, 'Reserva');
     setMechanicsList(prev => prev.map(b =>
       b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', tratativa: treatment } : b
     ));
@@ -1648,56 +1705,60 @@ const MainScreen: React.FC<MainScreenProps> = ({
       updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
       addDoc(collection(db, 'reports'), { bikeNumber, status: 'Em Estação', driverName, treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(e => console.warn('[Firebase] reports write:', e.code));
       apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName: driverName, treatment }, 1, true).catch(() => {});
+      setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
     } catch (err: any) {
       alert('Erro: ' + err.message);
-      refreshAll(true);
     } finally { setIsLoading(false); }
   };
 
   const handleOrganizeTrailer = async (bikeNumbers: string[], trailerName: string) => {
     if (!trailerName) { alert('Informe o nome da carretinha.'); return; }
-    setIsLoading(true);
 
-    if (isMecanica) {
-      try {
-        await addDoc(collection(db, 'pending_actions'), {
-          type: 'trailer_validation',
-          bikes: bikeNumbers,
-          trailerName,
-          mechanicName: driverName,
-          status: 'pending',
-          timestamp: serverTimestamp()
-        });
-        alert('Carretinha enviada para validação do ADM!');
-        setIsTrailerSelectionModalOpen(false);
-      } catch (err: any) {
-        alert('Erro: ' + err.message);
-      } finally {
-        setIsLoading(false);
-      }
-      return;
-    }
-
-    // Atualização otimista
+    // Organiza localmente a carretinha
     setMechanicsList(prev => prev.map(b =>
       bikeNumbers.includes(b.patrimonio) ? { ...b, carretinha: trailerName } : b
     ));
     setIsTrailerSelectionModalOpen(false);
-    try {
-      await Promise.all(bikeNumbers.map(id => updateDoc(doc(db, 'bikes', id), { carretinha: trailerName, ultimaAtualizacao: serverTimestamp() })));
-      apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
-    } catch (err: any) {
-      alert('Erro: ' + err.message);
-      refreshAll(true);
-    } finally { setIsLoading(false); }
+
+    // Persiste no backend
+    apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
+    await Promise.all(bikeNumbers.map(id =>
+      updateDoc(doc(db, 'bikes', id), { carretinha: trailerName, ultimaAtualizacao: serverTimestamp() }).catch(() => {})
+    ));
+
+    // Abre modal de verificação QR + bateria + comunicação
+    // O envio ao ADM só ocorre após todas as bikes serem confirmadas (executeTrailerFinalization)
+    const bikesRaw = mechanicsList
+      .filter(b => bikeNumbers.includes(b.patrimonio))
+      .map(b => ({
+        patrimonio: String(b.patrimonio),
+        bateria: b.bateria !== undefined ? Number(b.bateria) : undefined,
+        ultimaInfo: b.ultimaInfo || b.ultimaAtualizacao || ''
+      }));
+
+    setTrailerQrModal({
+      isOpen: true,
+      trailerName,
+      expectedBikes: bikesRaw.length > 0 ? bikesRaw : bikeNumbers.map(p => ({ patrimonio: p, bateria: undefined, ultimaInfo: '' })),
+      confirmedBikes: new Set(),
+      batteryFailed: null,
+      scannerActive: false,
+      lastScanned: null,
+      lastError: null,
+    });
   };
 
   const handleApproveAction = async (action: any) => {
     setIsLoading(true);
     try {
-      if (action.type === 'status_change') {
+      if (action.type === 'alterar_status_lote') {
+        // Lote de bikes — confirma entrada na mecânica de todas de uma vez
+        const bikes: string[] = action.bikes || [];
+        await Promise.all(bikes.map(bikeId =>
+          apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {})
+        ));
+      } else if (action.type === 'status_change') {
         if (action.targetStatus === 'Reserva') {
-          // Caso especial de finalização de reparo
           updateDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
           addDoc(collection(db, 'reports'), { bikeNumber: action.bikeNumber, status: 'Em Estação', driverName: action.mechanicName, treatment: action.treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(() => {});
           const res = await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber: action.bikeNumber, mechanicName: action.mechanicName, treatment: action.treatment }, 1, true);
@@ -1722,7 +1783,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
         approvedBy: driverName,
         approvedAt: serverTimestamp()
       });
-      setSuccessMessage('Ação aprovada com sucesso!');
+      // Reseta ref do lote se era o doc aprovado
+      if (action.type === 'alterar_status_lote' && alterarStatusDocRef.current === action.id) {
+        alterarStatusDocRef.current = null;
+      }
+      setSuccessMessage('Confirmado! Bikes entram na mecânica.');
       refreshAll(true);
     } catch (err: any) {
       alert('Erro ao aprovar: ' + err.message);
@@ -1817,6 +1882,33 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   batteryFailed: found.patrimonio,
                 };
               }
+              // Valida comunicação — última info deve ser dentro de 5 minutos
+              if (found.ultimaInfo) {
+                const lastInfoDate = (() => {
+                  const s = String(found.ultimaInfo).trim();
+                  if (s.includes('/')) {
+                    const parts = s.split(' ');
+                    const dp = parts[0].split('/');
+                    if (dp.length === 3) {
+                      const d = new Date(`${dp[2]}-${dp[1]}-${dp[0]}${parts[1] ? 'T' + parts[1] : ''}`);
+                      return isNaN(d.getTime()) ? null : d;
+                    }
+                  }
+                  const d = new Date(s);
+                  return isNaN(d.getTime()) ? null : d;
+                })();
+                if (lastInfoDate) {
+                  const ageMin = (Date.now() - lastInfoDate.getTime()) / 60000;
+                  if (ageMin > 5) {
+                    return {
+                      ...prev,
+                      lastError: `Bike ${found.patrimonio}: comunicação desatualizada (${Math.round(ageMin)} min atrás). Aguarde atualização.`,
+                      lastScanned: null,
+                      batteryFailed: null,
+                    };
+                  }
+                }
+              }
               const newConfirmed = new Set(prev.confirmedBikes);
               newConfirmed.add(found.patrimonio);
               return { ...prev, confirmedBikes: newConfirmed, lastScanned: bikeId, lastError: null, batteryFailed: null };
@@ -1839,7 +1931,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
     const bikeObjects = bikesRaw.map(b => ({
       patrimonio: String(b.patrimonio),
-      bateria: b.bateria !== undefined ? Number(b.bateria) : undefined
+      bateria: b.bateria !== undefined ? Number(b.bateria) : undefined,
+      ultimaInfo: b.ultimaInfo || b.ultimaAtualizacao || ''
     }));
     setTrailerQrModal({
       isOpen: true,
@@ -1867,18 +1960,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
     try {
       await Promise.all(bikeIds.map(id => setDoc(doc(db, 'bikes', id), { carretinha: null, ultimaAtualizacao: serverTimestamp() }, { merge: true })));
       apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
-      await addDoc(collection(db, 'notifications'), {
+      // Notifica ADM para alterar status das bikes — só ocorre aqui, após QR + bateria + comunicação
+      const notifyMsg = `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
+      addDoc(collection(db, 'notifications'), {
         type: 'trailer_finalizado',
-        message: `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para alterar status: ${bikeIds.join(', ')}`,
-        bikes: bikeIds, trailerName, mechanic: driverName,
-        timestamp: serverTimestamp(), recipient: 'ADM'
-      });
+        message: notifyMsg,
+        bikes: bikeIds,
+        trailerName,
+        mechanic: driverName,
+        timestamp: serverTimestamp(),
+        recipient: 'ADM'
+      }).catch(() => {});
       apiCall({
         action: 'notifyAdmins',
-        message: `Carretinha "${trailerName}" finalizada por ${driverName}. Bikes para alterar status: ${bikeIds.join(', ')}`,
-        bikes: bikeIds, trailerName
+        message: notifyMsg,
+        bikes: bikeIds,
+        trailerName
       }, 1, true).catch(() => {});
-      setSuccessMessage(`Carretinha "${trailerName}" finalizada com sucesso!`);
+      setSuccessMessage(`Carretinha "${trailerName}" finalizada! ADM notificado para remanejamento.`);
     } catch (err: any) {
       setError('Erro: ' + err.message);
       refreshAll(true);
@@ -2122,7 +2221,25 @@ const MainScreen: React.FC<MainScreenProps> = ({
           return [...fbLocations, ...sheetsOnly.map((l:any) => ({ ...l, stale: true }))];
         });
       }
-      if (d.mechanicsList) setMechanicsList(d.mechanicsList);
+      if (d.mechanicsList) {
+        setMechanicsList(prev => {
+          const now = Date.now();
+          // Remove entradas expiradas do mapa de proteção
+          Object.keys(mechanicOptimisticRef.current).forEach(k => { const v = mechanicOptimisticRef.current[k];
+            if (v.expiresAt < now) delete mechanicOptimisticRef.current[k];
+          });
+          // Se não há proteções ativas, usa lista do servidor diretamente
+          if (Object.keys(mechanicOptimisticRef.current).length === 0) return d.mechanicsList;
+          // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
+          return d.mechanicsList.map((serverBike: any) => {
+            const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
+            if (protected_ && protected_.expiresAt > now) {
+              return { ...serverBike, status: protected_.status };
+            }
+            return serverBike;
+          });
+        });
+      }
       if (d.driversSummary) {
         setDriversSummary(prev => d.driversSummary.map((newD: any) => {
           const prevD = prev.find((p: any) => p.name === newD.name);
@@ -2299,7 +2416,25 @@ const MainScreen: React.FC<MainScreenProps> = ({
           return [...fbLocations, ...sheetsOnly.map((l:any) => ({ ...l, stale: true }))];
         });
       }
-      if (d.mechanicsList) setMechanicsList(d.mechanicsList);
+      if (d.mechanicsList) {
+        setMechanicsList(prev => {
+          const now = Date.now();
+          // Remove entradas expiradas do mapa de proteção
+          Object.keys(mechanicOptimisticRef.current).forEach(k => { const v = mechanicOptimisticRef.current[k];
+            if (v.expiresAt < now) delete mechanicOptimisticRef.current[k];
+          });
+          // Se não há proteções ativas, usa lista do servidor diretamente
+          if (Object.keys(mechanicOptimisticRef.current).length === 0) return d.mechanicsList;
+          // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
+          return d.mechanicsList.map((serverBike: any) => {
+            const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
+            if (protected_ && protected_.expiresAt > now) {
+              return { ...serverBike, status: protected_.status };
+            }
+            return serverBike;
+          });
+        });
+      }
       if (d.driversSummary) {
         setDriversSummary(prev => d.driversSummary.map((newD: any) => {
           const prevD = prev.find((p: any) => p.name === newD.name);
@@ -2668,35 +2803,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         </div>
       )}
 
-      {/* CAMPO DE CÓPIA PARA MECÂNICO */}
-      {isMecanica && formattedBikesForCopy && (
-        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg shadow-sm animate-fade-in-down">
-          <p className="text-[10px] font-bold text-blue-700 uppercase mb-1">Bikes para Alterar Status (Copiar):</p>
-          <div className="flex gap-2">
-            <input 
-              readOnly 
-              value={formattedBikesForCopy} 
-              className="flex-1 text-xs font-mono p-2 border rounded bg-white"
-              onClick={(e) => (e.target as HTMLInputElement).select()}
-            />
-            <button 
-              onClick={() => {
-                navigator.clipboard.writeText(formattedBikesForCopy);
-                alert('Copiado para a área de transferência!');
-              }}
-              className="px-3 py-1 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700"
-            >
-              Copiar
-            </button>
-            <button 
-              onClick={() => setIsZerarListaConfirmOpen(true)}
-              className="px-3 py-1 bg-red-100 text-red-600 text-[10px] font-bold rounded hover:bg-red-200"
-            >
-              Zerar Lista
-            </button>
-          </div>
-        </div>
-      )}
+
 
       {/* Modal de Confirmação "Zerar Lista" */}
       {isZerarListaConfirmOpen && (
@@ -2743,7 +2850,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 <div>
                   <p className="text-xs font-bold uppercase opacity-80">Verificação de Segurança</p>
                   <h2 className="text-lg font-black">{trailerName}</h2>
-                  <p className="text-[10px] opacity-70 mt-0.5">QR Code + Bateria ≥ 85%</p>
+                  <p className="text-[10px] opacity-70 mt-0.5">QR Code + Bateria ≥ 85% + Comunicação &lt; 5 min</p>
                 </div>
                 <div className="text-right">
                   <p className="text-2xl font-black">{confirmedBikes.size}<span className="text-sm font-normal opacity-70">/{expectedBikes.length}</span></p>
@@ -3525,9 +3632,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           <div className="flex flex-col gap-2 min-w-[100px]">
                             {!isNotFound ? (
                               <>
-                                {!clickedBikesForStatus.has(bike.patrimonio) && (
-                                  <button onClick={() => handleAlterarStatus(bike.patrimonio)} className="w-full px-3 py-1.5 bg-purple-600 text-white text-xs font-bold rounded hover:bg-purple-700 active:scale-95">Alterar status</button>
-                                )}
+                                <button
+                                  onClick={() => handleAlterarStatus(bike.patrimonio)}
+                                  disabled={isLoading}
+                                  className="w-full px-3 py-1.5 bg-purple-600 text-white text-xs font-bold rounded hover:bg-purple-700 active:scale-95 transition-all disabled:opacity-50"
+                                >
+                                  Alterar Status
+                                </button>
                                 <button onClick={() => setMechanicNotFoundModal({ isOpen: true, bikePat: bike.patrimonio })} className="w-full px-3 py-1.5 bg-red-500 text-white text-xs font-bold rounded hover:bg-red-600 active:scale-95">Não encontrada</button>
                               </>
                             ) : (
@@ -3669,7 +3780,26 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           ))}
                         </div>
                         {trailer === 'Sem Carretinha' && (
-                          <button onClick={() => { setSelectedBikesForTrailer((bikes as any[]).map(b => b.patrimonio)); setIsTrailerSelectionModalOpen(true); }}
+                          <button onClick={() => {
+                            // Calcula próximo número de carretinha (1→2→3→4→1...)
+                            const MAX_TRAILERS = 4;
+                            const usedNumbers = mechanicsList
+                              .filter(b => b.carretinha && b.carretinha !== 'Sem Carretinha')
+                              .map(b => {
+                                const m = String(b.carretinha).match(/(\d+)$/);
+                                return m ? parseInt(m[1]) : 0;
+                              })
+                              .filter(n => n > 0);
+                            let next = 1;
+                            for (let i = 1; i <= MAX_TRAILERS; i++) {
+                              if (!usedNumbers.includes(i)) { next = i; break; }
+                            }
+                            // Se todos ocupados, reutiliza o 1
+                            const nextName = `Carretinha ${next}`;
+                            setSelectedBikesForTrailer((bikes as any[]).map(b => b.patrimonio));
+                            // Passa direto para handleOrganizeTrailer sem abrir modal de nome
+                            handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), nextName);
+                          }}
                             className="mt-3 w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700">
                             Organizar em Carretinha
                           </button>
@@ -3793,21 +3923,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
           </div>
         )}
 
-        {/* PAINEL ADM */}
-        {isAdm && adminNotification && (
-          <div className="mx-4 mt-3 p-3 bg-green-50 border border-green-300 rounded-lg shadow-md">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-start gap-2">
-                <span className="text-2xl">🚌</span>
-                <div>
-                  <p className="font-bold text-green-800 text-sm">Carretinha Finalizada!</p>
-                  <p className="text-green-700 text-xs mt-0.5">{adminNotification.message}</p>
-                </div>
-              </div>
-              <button onClick={() => setAdminNotification(null)} className="text-green-500 hover:text-green-700 text-lg font-bold flex-shrink-0">✕</button>
-            </div>
-          </div>
-        )}
 
         {isAdm && (
           <div className="mt-6 overflow-hidden">
@@ -4132,42 +4247,87 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             <div>
                               <div className="flex items-center gap-2 mb-1">
                                 <span className={`px-2 py-0.5 text-[9px] font-black uppercase rounded ${
-                                  action.type === 'status_change' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-700'
+                                  action.type === 'alterar_status_lote' ? 'bg-purple-100 text-purple-700' :
+                                  action.type === 'status_change' ? 'bg-blue-100 text-blue-700' :
+                                  'bg-orange-100 text-orange-700'
                                 }`}>
-                                  {action.type === 'status_change' ? 'Alteração de Status' : 'Validação de Carretinha'}
+                                  {action.type === 'alterar_status_lote' ? 'Alterar Status — Lote' :
+                                   action.type === 'status_change' ? 'Alteração de Status' :
+                                   'Validação de Carretinha'}
                                 </span>
                                 <span className="text-[10px] text-gray-400 font-bold">
                                   {action.timestamp?.toDate?.()?.toLocaleString('pt-BR')}
                                 </span>
                               </div>
                               <p className="text-sm font-black text-gray-800">
-                                {action.type === 'status_change' ? `Bike ${action.bikeNumber}` : `Carretinha: ${action.trailerName}`}
+                                {action.type === 'alterar_status_lote'
+                                  ? `${action.bikes?.length || 0} bike(s) — ${action.mechanicName}`
+                                  : action.type === 'status_change'
+                                  ? `Bike ${action.bikeNumber}`
+                                  : `Carretinha: ${action.trailerName}`}
                               </p>
                               <p className="text-[10px] text-gray-500 font-bold uppercase">
                                 Solicitado por: <span className="text-blue-600">{action.mechanicName}</span>
                               </p>
                             </div>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => handleApproveAction(action)}
-                                disabled={isLoading}
-                                className="p-2 bg-green-50 text-green-600 rounded-lg border border-green-100 hover:bg-green-100 transition-colors"
-                                title="Aprovar"
-                              >
-                                <CheckCircleIcon className="w-5 h-5" />
-                              </button>
-                              <button
-                                onClick={() => handleRejectAction(action.id)}
-                                disabled={isLoading}
-                                className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
-                                title="Rejeitar"
-                              >
-                                <XIcon className="w-5 h-5" />
-                              </button>
-                            </div>
+                            {action.type !== 'alterar_status_lote' && (
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => handleApproveAction(action)}
+                                  disabled={isLoading}
+                                  className="p-2 bg-green-50 text-green-600 rounded-lg border border-green-100 hover:bg-green-100 transition-colors"
+                                  title="Aprovar"
+                                >
+                                  <CheckCircleIcon className="w-5 h-5" />
+                                </button>
+                                <button
+                                  onClick={() => handleRejectAction(action.id)}
+                                  disabled={isLoading}
+                                  className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
+                                  title="Rejeitar"
+                                >
+                                  <XIcon className="w-5 h-5" />
+                                </button>
+                              </div>
+                            )}
                           </div>
 
-                          {action.type === 'status_change' ? (
+                          {action.type === 'alterar_status_lote' ? (
+                            // Card especial — layout igual ao campo de cópia do mecânico
+                            <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                              <p className="text-[10px] font-black text-blue-700 uppercase mb-2 tracking-wide">
+                                Bikes para Alterar Status (Copiar):
+                              </p>
+                              <div className="flex gap-2 mb-2">
+                                <input
+                                  readOnly
+                                  value={(action.bikes || []).join(',')}
+                                  onClick={e => (e.target as HTMLInputElement).select()}
+                                  className="flex-1 text-xs font-mono p-2 border border-gray-200 rounded bg-white text-gray-800 cursor-text"
+                                />
+                                <button
+                                  onClick={() => {
+                                    navigator.clipboard.writeText((action.bikes || []).join(','));
+                                    setSuccessMessage('Lista copiada!');
+                                  }}
+                                  className="px-4 py-2 bg-blue-600 text-white text-xs font-black rounded hover:bg-blue-700 active:scale-95 transition-all flex-shrink-0"
+                                >
+                                  Copiar
+                                </button>
+                                <button
+                                  onClick={() => handleApproveAction(action)}
+                                  disabled={isLoading}
+                                  className="px-4 py-2 bg-green-600 text-white text-xs font-black rounded hover:bg-green-700 active:scale-95 transition-all flex-shrink-0 flex items-center gap-1"
+                                >
+                                  {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                                  Feito!
+                                </button>
+                              </div>
+                              <p className="text-[9px] text-gray-400 italic">
+                                Cole a lista no sistema, altere o status das bikes e clique em Feito! para confirmar.
+                              </p>
+                            </div>
+                          ) : action.type === 'status_change' ? (
                             <div className="bg-gray-50 p-2 rounded border border-dashed">
                               <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Status Pretendido:</p>
                               <span className="px-2 py-0.5 bg-blue-600 text-white text-[10px] font-black rounded uppercase">
@@ -4181,7 +4341,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             <div className="bg-gray-50 p-2 rounded border border-dashed">
                               <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Bikes na Carretinha ({action.bikes?.length}):</p>
                               <p className="text-xs font-mono text-gray-600 break-all leading-relaxed">
-                                {action.bikes?.join(', ')}
+                                {action.bikes?.join(',')}
                               </p>
                             </div>
                           )}
