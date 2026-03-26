@@ -13,9 +13,9 @@ import {
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
-import { signInWithPopup, GoogleAuthProvider, signInAnonymously } from 'firebase/auth';
+import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import {
-  collection, onSnapshot, doc, updateDoc, addDoc, getDocs, getDoc,
+  collection, onSnapshot, doc, updateDoc, addDoc, getDocs,
   serverTimestamp, setDoc, query, where
 } from 'firebase/firestore';
 import ScheduleModal from './ScheduleModal';
@@ -55,7 +55,7 @@ import { migrateDataToFirebase } from '../migrationService';
 
 // Janela de proteção após ação do motorista (ms).
 // Durante esse período, o sync do Sheets não sobrescreve o estado local.
-const DRIVER_ACTION_GRACE_MS = 30000; // 30 segundos — cobre latência do Apps Script em fire-and-forget
+const DRIVER_ACTION_GRACE_MS = 20000; // 20 segundos — cobre latência do Apps Script em fire-and-forget
 
 interface MainScreenProps {
   driverName: string;
@@ -302,6 +302,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
   const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
   const [mechanicSummaryPeriod, setMechanicSummaryPeriod] = useState<'diario'|'semanal'|'mensal'>('diario');
+  const [clickedBikesForStatus, setClickedBikesForStatus] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem(`status_clicked_${driverName}`);
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch { return new Set(); }
+  });
   const [bikeFoundModal, setBikeFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [mechanicNotFoundModal, setMechanicNotFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string, mechanicName?: string } | null>(null);
@@ -312,7 +318,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [trailerQrModal, setTrailerQrModal] = useState<{
     isOpen: boolean;
     trailerName: string;
-    expectedBikes: { patrimonio: string; bateria: number | undefined; ultimaInfo?: string }[];
+    expectedBikes: { patrimonio: string; bateria: number | undefined }[];
     confirmedBikes: Set<string>;
     batteryFailed: string | null; // patrimônio da bike com bateria insuficiente
     scannerActive: boolean;
@@ -322,6 +328,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const trailerScannerRef = useRef<Html5Qrcode | null>(null);
   const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
+  const [formattedBikesForCopy, setFormattedBikesForCopy] = useState<string>(() => {
+    try {
+      return localStorage.getItem(`status_copy_${driverName}`) || '';
+    } catch { return ''; }
+  });
 
   // --- Refs ---
   const scannerRef = useRef<Html5Qrcode | null>(null);
@@ -355,52 +366,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // =================================================================
   // HELPERS DE ESTADO
   // =================================================================
-
-  enum OperationType {
-    CREATE = 'create',
-    UPDATE = 'update',
-    DELETE = 'delete',
-    LIST = 'list',
-    GET = 'get',
-    WRITE = 'write',
-  }
-
-  interface FirestoreErrorInfo {
-    error: string;
-    operationType: OperationType;
-    path: string | null;
-    authInfo: {
-      userId: string | undefined;
-      email: string | null | undefined;
-      emailVerified: boolean | undefined;
-      isAnonymous: boolean | undefined;
-      tenantId: string | null | undefined;
-      providerInfo: any[];
-    }
-  }
-
-  const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
-    const errInfo: FirestoreErrorInfo = {
-      error: error instanceof Error ? error.message : String(error),
-      authInfo: {
-        userId: auth.currentUser?.uid,
-        email: auth.currentUser?.email,
-        emailVerified: auth.currentUser?.emailVerified,
-        isAnonymous: auth.currentUser?.isAnonymous,
-        tenantId: auth.currentUser?.tenantId,
-        providerInfo: auth.currentUser?.providerData.map(provider => ({
-          providerId: provider.providerId,
-          displayName: provider.displayName,
-          email: provider.email,
-          photoUrl: provider.photoURL
-        })) || []
-      },
-      operationType,
-      path
-    };
-    console.error('Firestore Error: ', JSON.stringify(errInfo));
-    throw new Error(JSON.stringify(errInfo));
-  };
 
   /**
    * Marca que o motorista acabou de executar uma ação.
@@ -534,7 +499,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           }
         }
       });
-    }, err => handleFirestoreError(err, OperationType.GET, 'requests'));
+    }, err => console.error('Listener requests:', err));
 
     // Estado do motorista
     const unsubUser = onSnapshot(doc(db, 'users', normalizeName(driverName)), (snap) => {
@@ -542,19 +507,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const data = snap.data();
       if (data.sheetsSync === true) return;
       if (isUpdatingStateRef.current) return;
-
-      // Proteção contra dados de dias anteriores
-      const lastUpdate = data.lastUpdate?.toDate?.() || new Date(0);
-      const lastUpdateStr = `${lastUpdate.getFullYear()}-${String(lastUpdate.getMonth()+1).padStart(2,'0')}-${String(lastUpdate.getDate()).padStart(2,'0')}`;
-      const today = localDateStr();
-      
-      // Se o dado no Firebase é de outro dia, e o motorista está no dia de hoje, ignora o estado antigo
-      // Isso evita que o roteiro de ontem carregue "do nada" ao abrir o app hoje
-      if (lastUpdateStr !== today && (data.routeBikes?.length > 0 || data.collectedBikes?.length > 0)) {
-        console.log('[FirebaseSync] Ignorando estado de roteiro antigo:', lastUpdateStr);
-        return;
-      }
-
       setRouteBikes(data.routeBikes || []);
       setCollectedBikes(data.collectedBikes || []);
     }, err => console.error('Listener usuário:', err));
@@ -580,7 +532,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     // Alertas (ADM)
     let unsubAlerts = () => {};
-    const unsubNotifications = () => {};
+    let unsubNotifications = () => {};
     if (isAdm) {
       unsubAlerts = onSnapshot(collection(db, 'alerts'), snapshot => {
         const updated: any[] = [];
@@ -674,24 +626,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsPendingActionsLoading(true);
       unsubPending = onSnapshot(collection(db, 'pending_actions'), snapshot => {
         const actions: any[] = [];
-        // Mapa para consolidar lotes por mecânico (pega o doc mais recente de cada)
-        const loteByMechanic: Record<string, any> = {};
         snapshot.forEach(d => {
           const data = d.data();
-          if (data.status !== 'pending') return;
-          if (data.type === 'alterar_status_lote') {
-            const key = data.mechanicName || 'desconhecido';
-            const existing = loteByMechanic[key];
-            const ts = data.timestamp?.toMillis?.() || 0;
-            if (!existing || ts > (existing.timestamp?.toMillis?.() || 0)) {
-              loteByMechanic[key] = { id: d.id, ...data };
-            }
-          } else {
+          if (data.status === 'pending') {
             actions.push({ id: d.id, ...data });
           }
         });
-        // Adiciona lotes consolidados
-        Object.values(loteByMechanic).forEach(lote => actions.push(lote));
         setPendingActions(actions.sort((a, b) => (b.timestamp?.toMillis?.() || 0) - (a.timestamp?.toMillis?.() || 0)));
         setIsPendingActionsLoading(false);
       }, err => {
@@ -1214,40 +1154,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsBikeSearchLoading(true);
     try {
       if (isMecanica) {
-        if (targetStatus === 'Alterar Status' || targetStatus === 'Reserva') {
-          // Move no backend imediatamente — evita que o refreshAll reverta o estado
-          protectMechanicBike(bikePat, targetStatus);
-
-          const jaExiste = mechanicsList.some(b => b.patrimonio === bikePat);
-          if (jaExiste) {
-            setMechanicsList(prev => prev.map(b => 
-              b.patrimonio === bikePat ? { ...b, status: targetStatus, mecanico: driverName } : b
-            ));
-          } else {
-            setMechanicsList(prev => [...prev, {
-              patrimonio: bikePat,
-              status: targetStatus,
-              dataEntrada: new Date(),
-              mecanico: driverName,
-              tratativa: 'MANUAL',
-              manual: true,
-            }]);
-          }
-          // Persiste no backend
-          await apiCall({ action: 'insertBikeMechanics', bikeNumber: bikePat, mechanicName: driverName, targetStatus }, 1, true).catch(() => {});
-          
-          setSuccessMessage(targetStatus === 'Alterar Status' 
-            ? `Bike ${bikePat} adicionada em Alterar Status.` 
-            : `Bike ${bikePat} movida para Reserva.`
-          );
-          
-          setSearchedBike(null);
-          setSearchTerm('');
-          setBikeSearchTerm('');
-          setBikeSearchResult([]);
-          return;
-        }
-        // Outros status (Aguardando Manutenção, Em Manutenção) — envia direto ao ADM como antes
         await addDoc(collection(db, 'pending_actions'), {
           type: 'status_change',
           bikeNumber: bikePat,
@@ -1476,99 +1382,54 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicSelectionModalOpen(true);
   };
 
-  // Ref para o ID do documento agregador de "alterar status" do mecânico atual
-  const alterarStatusDocRef = useRef<string | null>(null);
-
-  // Ref para proteger atualizações otimistas da mecânica do sync do Sheets
-  // Map de patrimônio → { status, expiresAt } — protege por 30s após cada ação
-  // Plain object ref — avoids Map constructor issues in this environment
-  const mechanicOptimisticRef = useRef<Record<string, { status: string; expiresAt: number }>>({});
-
-  const protectMechanicBike = (patrimonio: string, status: string) => {
-    mechanicOptimisticRef.current[String(patrimonio)] = {
-      status,
-      expiresAt: Date.now() + 30000, // 30s de proteção
-    };
-  };
-
   const handleAlterarStatus = async (bikeId: string) => {
-    // 1. Atualiza estado local imediatamente — bike some de "Alterar Status"
-    protectMechanicBike(bikeId, 'Aguardando Manutenção');
-    setMechanicsList(prev => prev.map(b =>
-      b.patrimonio === bikeId ? { ...b, status: 'Aguardando Manutenção' } : b
-    ));
+    setClickedBikesForStatus(prev => {
+      const next = new Set(prev);
+      next.add(bikeId);
+      try { localStorage.setItem(`status_clicked_${driverName}`, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+    setFormattedBikesForCopy(prev => {
+      const bikes = prev ? prev.split(',').map(b => b.trim()).filter(Boolean) : [];
+      if (!bikes.includes(bikeId)) bikes.push(bikeId);
+      const next = bikes.join(',');
+      try { localStorage.setItem(`status_copy_${driverName}`, next); } catch {}
+      return next;
+    });
 
     if (isMecanica) {
       try {
-        // 1. Move no backend imediatamente — evita que o refreshAll reverta o estado
-        await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {});
-
-        // 2. Agrupa num único doc no Firebase — busca doc pendente existente antes de criar novo
-        const { arrayUnion, getDocs: _getDocs, query: _query, where: _where } = await import('firebase/firestore');
-        
-        if (!alterarStatusDocRef.current) {
-          // Busca doc pendente já existente deste mecânico para não criar duplicata
-          const existingSnap = await _getDocs(
-            _query(
-              collection(db, 'pending_actions'),
-              _where('type', '==', 'alterar_status_lote'),
-              _where('mechanicName', '==', driverName),
-              _where('status', '==', 'pending')
-            )
-          );
-          if (!existingSnap.empty) {
-            alterarStatusDocRef.current = existingSnap.docs[0].id;
-          }
-        }
-
-        if (alterarStatusDocRef.current) {
-          // Adiciona bike ao doc existente
-          await updateDoc(doc(db, 'pending_actions', alterarStatusDocRef.current), {
-            bikes: arrayUnion(bikeId),
-            timestamp: serverTimestamp(),
-          });
-        } else {
-          // Cria novo doc agregador
-          const docRef = await addDoc(collection(db, 'pending_actions'), {
-            type: 'alterar_status_lote',
-            bikes: [bikeId],
-            mechanicName: driverName,
-            status: 'pending',
-            timestamp: serverTimestamp(),
-          });
-          alterarStatusDocRef.current = docRef.id;
-        }
-
-        setSuccessMessage(`Bike ${bikeId} → Aguardando Manutenção.`);
+        await addDoc(collection(db, 'pending_actions'), {
+          type: 'status_change',
+          bikeNumber: bikeId,
+          targetStatus: 'Aguardando Manutenção',
+          mechanicName: driverName,
+          status: 'pending',
+          timestamp: serverTimestamp()
+        });
+        setSuccessMessage('Solicitação de alteração de status enviada para o ADM!');
+        refreshAll(true);
       } catch (e: any) {
         alert('Erro ao enviar solicitação: ' + e.message);
-        // Reverte atualização otimista em caso de erro
-        setMechanicsList(prev => prev.map(b =>
-          b.patrimonio === bikeId ? { ...b, status: 'Alterar Status' } : b
-        ));
       }
       return;
     }
 
-    // ADM / perfil com acesso direto: move direto no backend
+    // Move para Aguardando Manutenção no backend
     try {
       await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true);
+      refreshAll(true);
     } catch (err: any) {
       console.error('Erro ao mover para Aguardando Manutenção:', err);
-      setMechanicsList(prev => prev.map(b =>
-        b.patrimonio === bikeId ? { ...b, status: 'Alterar Status' } : b
-      ));
     }
   };
 
   const handleMarkAsNotFound = async (bikeId: string) => {
     setIsLoading(true);
-    // Optimistic: remove from list immediately
-    setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikeId));
     try {
       await apiCall({ action: 'markAsNotFound', bikeNumber: bikeId, mechanicName: driverName }, 1, true);
+      refreshAll(true);
     } catch (err: any) {
-      refreshAll(true); // revert on error
       console.error('Erro ao processar:', err);
     } finally {
       setIsLoading(false);
@@ -1577,6 +1438,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
   };
 
   const handleZerarListaStatus = () => {
+    const currentBikes = mechanicsList
+      .filter(b => ['Alterar Status', 'Recolhida', 'Enviada para Filial', 'Vandalizada'].includes(b.status))
+      .map(b => b.patrimonio);
+    
+    setClickedBikesForStatus(prev => {
+      const next = new Set(prev);
+      currentBikes.forEach(id => next.add(id));
+      try { localStorage.setItem(`status_clicked_${driverName}`, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+    setFormattedBikesForCopy('');
+    try { localStorage.removeItem(`status_copy_${driverName}`); } catch {}
     setIsZerarListaConfirmOpen(false);
   };
 
@@ -1713,7 +1586,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     const bikeNumber = selectedMechanicBike.patrimonio;
     // Atualização otimista — remove da lista imediatamente
-    protectMechanicBike(bikeNumber, 'Em Manutenção');
     setMechanicsList(prev => prev.map(b =>
       b.patrimonio === bikeNumber ? { ...b, status: 'Em Manutenção', mecanico: mechanicName } : b
     ));
@@ -1724,6 +1596,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true).catch(() => {});
     } catch (err: any) {
       alert('Erro: ' + err.message);
+      refreshAll(true);
     } finally { setIsLoading(false); }
   };
 
@@ -1732,10 +1605,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     const bikeNumber = selectedMechanicBike.patrimonio;
 
-    // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
-    // A notificação ao ADM só ocorre ao FINALIZAR A CARRETINHA (após QR + bateria + comunicação).
+    if (isMecanica) {
+      try {
+        await addDoc(collection(db, 'pending_actions'), {
+          type: 'status_change',
+          bikeNumber,
+          targetStatus: 'Reserva',
+          treatment,
+          mechanicName: driverName,
+          status: 'pending',
+          timestamp: serverTimestamp()
+        });
+        alert('Reparo enviado para validação do ADM!');
+        setIsMechanicRepairModalOpen(false);
+      } catch (e: any) {
+        alert('Erro ao enviar reparo: ' + e.message);
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     // Atualização otimista
-    protectMechanicBike(bikeNumber, 'Reserva');
     setMechanicsList(prev => prev.map(b =>
       b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', tratativa: treatment } : b
     ));
@@ -1744,60 +1635,56 @@ const MainScreen: React.FC<MainScreenProps> = ({
       updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
       addDoc(collection(db, 'reports'), { bikeNumber, status: 'Em Estação', driverName, treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(e => console.warn('[Firebase] reports write:', e.code));
       apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName: driverName, treatment }, 1, true).catch(() => {});
-      setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
     } catch (err: any) {
       alert('Erro: ' + err.message);
+      refreshAll(true);
     } finally { setIsLoading(false); }
   };
 
   const handleOrganizeTrailer = async (bikeNumbers: string[], trailerName: string) => {
     if (!trailerName) { alert('Informe o nome da carretinha.'); return; }
+    setIsLoading(true);
 
-    // Organiza localmente a carretinha
+    if (isMecanica) {
+      try {
+        await addDoc(collection(db, 'pending_actions'), {
+          type: 'trailer_validation',
+          bikes: bikeNumbers,
+          trailerName,
+          mechanicName: driverName,
+          status: 'pending',
+          timestamp: serverTimestamp()
+        });
+        alert('Carretinha enviada para validação do ADM!');
+        setIsTrailerSelectionModalOpen(false);
+      } catch (err: any) {
+        alert('Erro: ' + err.message);
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    // Atualização otimista
     setMechanicsList(prev => prev.map(b =>
       bikeNumbers.includes(b.patrimonio) ? { ...b, carretinha: trailerName } : b
     ));
     setIsTrailerSelectionModalOpen(false);
-
-    // Persiste no backend
-    apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
-    await Promise.all(bikeNumbers.map(id =>
-      updateDoc(doc(db, 'bikes', id), { carretinha: trailerName, ultimaAtualizacao: serverTimestamp() }).catch(() => {})
-    ));
-
-    // Abre modal de verificação QR + bateria + comunicação
-    // O envio ao ADM só ocorre após todas as bikes serem confirmadas (executeTrailerFinalization)
-    const bikesRaw = mechanicsList
-      .filter(b => bikeNumbers.includes(b.patrimonio))
-      .map(b => ({
-        patrimonio: String(b.patrimonio),
-        bateria: b.bateria !== undefined ? Number(b.bateria) : undefined,
-        ultimaInfo: b.ultimaInfo || b.ultimaAtualizacao || ''
-      }));
-
-    setTrailerQrModal({
-      isOpen: true,
-      trailerName,
-      expectedBikes: bikesRaw.length > 0 ? bikesRaw : bikeNumbers.map(p => ({ patrimonio: p, bateria: undefined, ultimaInfo: '' })),
-      confirmedBikes: new Set(),
-      batteryFailed: null,
-      scannerActive: false,
-      lastScanned: null,
-      lastError: null,
-    });
+    try {
+      await Promise.all(bikeNumbers.map(id => updateDoc(doc(db, 'bikes', id), { carretinha: trailerName, ultimaAtualizacao: serverTimestamp() })));
+      apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
+    } catch (err: any) {
+      alert('Erro: ' + err.message);
+      refreshAll(true);
+    } finally { setIsLoading(false); }
   };
 
   const handleApproveAction = async (action: any) => {
     setIsLoading(true);
     try {
-      if (action.type === 'alterar_status_lote') {
-        // Lote de bikes — confirma entrada na mecânica de todas de uma vez
-        const bikes: string[] = action.bikes || [];
-        await Promise.all(bikes.map(bikeId =>
-          apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {})
-        ));
-      } else if (action.type === 'status_change') {
+      if (action.type === 'status_change') {
         if (action.targetStatus === 'Reserva') {
+          // Caso especial de finalização de reparo
           updateDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
           addDoc(collection(db, 'reports'), { bikeNumber: action.bikeNumber, status: 'Em Estação', driverName: action.mechanicName, treatment: action.treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(() => {});
           const res = await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber: action.bikeNumber, mechanicName: action.mechanicName, treatment: action.treatment }, 1, true);
@@ -1822,11 +1709,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         approvedBy: driverName,
         approvedAt: serverTimestamp()
       });
-      // Reseta ref do lote se era o doc aprovado
-      if (action.type === 'alterar_status_lote' && alterarStatusDocRef.current === action.id) {
-        alterarStatusDocRef.current = null;
-      }
-      setSuccessMessage('Confirmado! Bikes entram na mecânica.');
+      setSuccessMessage('Ação aprovada com sucesso!');
       refreshAll(true);
     } catch (err: any) {
       alert('Erro ao aprovar: ' + err.message);
@@ -1921,33 +1804,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   batteryFailed: found.patrimonio,
                 };
               }
-              // Valida comunicação — última info deve ser dentro de 5 minutos
-              if (found.ultimaInfo) {
-                const lastInfoDate = (() => {
-                  const s = String(found.ultimaInfo).trim();
-                  if (s.includes('/')) {
-                    const parts = s.split(' ');
-                    const dp = parts[0].split('/');
-                    if (dp.length === 3) {
-                      const d = new Date(`${dp[2]}-${dp[1]}-${dp[0]}${parts[1] ? 'T' + parts[1] : ''}`);
-                      return isNaN(d.getTime()) ? null : d;
-                    }
-                  }
-                  const d = new Date(s);
-                  return isNaN(d.getTime()) ? null : d;
-                })();
-                if (lastInfoDate) {
-                  const ageMin = (Date.now() - lastInfoDate.getTime()) / 60000;
-                  if (ageMin > 5) {
-                    return {
-                      ...prev,
-                      lastError: `Bike ${found.patrimonio}: comunicação desatualizada (${Math.round(ageMin)} min atrás). Aguarde atualização.`,
-                      lastScanned: null,
-                      batteryFailed: null,
-                    };
-                  }
-                }
-              }
               const newConfirmed = new Set(prev.confirmedBikes);
               newConfirmed.add(found.patrimonio);
               return { ...prev, confirmedBikes: newConfirmed, lastScanned: bikeId, lastError: null, batteryFailed: null };
@@ -1970,8 +1826,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
     const bikeObjects = bikesRaw.map(b => ({
       patrimonio: String(b.patrimonio),
-      bateria: b.bateria !== undefined ? Number(b.bateria) : undefined,
-      ultimaInfo: b.ultimaInfo || b.ultimaAtualizacao || ''
+      bateria: b.bateria !== undefined ? Number(b.bateria) : undefined
     }));
     setTrailerQrModal({
       isOpen: true,
@@ -1999,24 +1854,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     try {
       await Promise.all(bikeIds.map(id => setDoc(doc(db, 'bikes', id), { carretinha: null, ultimaAtualizacao: serverTimestamp() }, { merge: true })));
       apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
-      // Notifica ADM para alterar status das bikes — só ocorre aqui, após QR + bateria + comunicação
-      const notifyMsg = `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
-      addDoc(collection(db, 'notifications'), {
-        type: 'trailer_finalizado',
-        message: notifyMsg,
-        bikes: bikeIds,
-        trailerName,
-        mechanic: driverName,
-        timestamp: serverTimestamp(),
-        recipient: 'ADM'
-      }).catch(() => {});
-      apiCall({
-        action: 'notifyAdmins',
-        message: notifyMsg,
-        bikes: bikeIds,
-        trailerName
-      }, 1, true).catch(() => {});
-      setSuccessMessage(`Carretinha "${trailerName}" finalizada! ADM notificado para remanejamento.`);
+      setSuccessMessage(`Carretinha "${trailerName}" finalizada com sucesso!`);
     } catch (err: any) {
       setError('Erro: ' + err.message);
       refreshAll(true);
@@ -2069,46 +1907,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
   useEffect(() => { return () => { if (scannerRef.current) scannerRef.current.stop().catch(() => {}); }; }, []);
   useEffect(() => { return () => { if (trailerScannerRef.current) trailerScannerRef.current.stop().catch(() => {}); }; }, []);
 
-  const [isMigrationConfirmOpen, setIsMigrationConfirmOpen] = useState(false);
-
   // =================================================================
   // MIGRAÇÃO
   // =================================================================
   const handleMigrate = async () => {
-    console.log('[Migration] handleMigrate triggered. User:', auth.currentUser?.email, 'Category:', category);
-    setIsMigrationConfirmOpen(false);
-    
     setMigrationMessage({ text: 'Autenticando...', type: 'info' });
     setIsMigrating(true);
     try {
-      if (!auth.currentUser) {
-        console.log('[Migration] No user found, attempting sign in...');
-        try {
-          await signInWithPopup(auth, new GoogleAuthProvider());
-        } catch (popupErr: any) {
-          console.warn('[Migration] Google Sign-In failed, trying anonymous...', popupErr);
-          await signInAnonymously(auth);
-        }
-        // Aguarda 2 segundos para o token ser propagado para o Firestore
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
-      
-      console.log('[Migration] Starting data export and migration...');
-      setMigrationMessage({ text: 'Migrando dados (isso pode demorar)...', type: 'info' });
+      if (!auth.currentUser) await signInWithPopup(auth, new GoogleAuthProvider());
+      setMigrationMessage({ text: 'Migrando dados...', type: 'info' });
       const result = await migrateDataToFirebase(category);
-      
-      console.log('[Migration] Result:', result);
-      const userEmail = auth.currentUser?.email || 'Nenhum usuário logado';
       setMigrationMessage(result.success
-        ? { text: `Migração concluída! Total: ${result.total} registros.`, type: 'success' }
-        : { text: `Erro (${userEmail}): ` + result.error, type: 'error' });
+        ? { text: 'Migração concluída!', type: 'success' }
+        : { text: 'Erro: ' + result.error, type: 'error' });
     } catch (err: any) {
-      console.error('[Migration] Catch error:', err);
-      const userEmail = auth.currentUser?.email || 'Nenhum usuário logado';
-      setMigrationMessage({ text: `Erro (${userEmail}): ` + err.message, type: 'error' });
+      setMigrationMessage({ text: 'Erro: ' + err.message, type: 'error' });
     } finally {
       setIsMigrating(false);
-      setTimeout(() => setMigrationMessage(null), 15000);
+      setTimeout(() => setMigrationMessage(null), 10000);
     }
   };
 
@@ -2178,11 +1994,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     try {
       const r = await apiCall({ action: 'getDriversSummary', timeRange: range, timelineDate }, 1, true);
       if (r.success && summaryTimeRange === range) {
-        const filteredData = r.data.filter((d: any) => d.name?.toUpperCase() !== 'MECANICA');
         setDriversSummary(prev => {
           // Preserva timeline e timelineWindow anteriores se o novo dado não tem eventos
           // (garante que eventos passados não somem entre syncs)
-          return filteredData.map((newDriver: any) => {
+          return r.data.map((newDriver: any) => {
             const prevDriver = prev.find((p: any) => p.name === newDriver.name);
             const hasNewTimeline = newDriver.timeline && newDriver.timeline.length > 0;
             const hasPrevTimeline = prevDriver?.timeline && prevDriver.timeline.length > 0;
@@ -2205,7 +2020,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const range = summaryTimeRange;
     try {
       const drivers: string[] = category.includes('ADM')
-        ? ((await apiCall({ action: 'getMotoristas' })).data || []).filter((m: string) => m.toUpperCase() !== 'MECANICA')
+        ? ((await apiCall({ action: 'getMotoristas' })).data || [])
         : [driverName];
       const reqResult = await apiCall({ action: 'getRequests', driverName, category }, 1, true);
       const allPending = reqResult.success ? reqResult.data : [];
@@ -2271,10 +2086,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       if (d.bikeStatuses) setBikeConflicts(d.bikeStatuses);
       if (d.schedule) setUserSchedule(d.schedule);
-      if (d.motoristas) {
-        const filteredMotoristas = d.motoristas.filter((m: string) => m.toUpperCase() !== 'MECANICA');
-        setMotoristas(filteredMotoristas);
-      }
+      if (d.motoristas) setMotoristas(d.motoristas);
       if (d.driverLocations) {
         setDriverLocations(prev => {
           const fbLocations = prev.filter((l:any) => l.source === 'firebase');
@@ -2286,28 +2098,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
           return [...fbLocations, ...sheetsOnly.map((l:any) => ({ ...l, stale: true }))];
         });
       }
-      if (d.mechanicsList) {
-        setMechanicsList(() => {
-          const now = Date.now();
-          // Remove entradas expiradas do mapa de proteção
-          Object.keys(mechanicOptimisticRef.current).forEach(k => { const v = mechanicOptimisticRef.current[k];
-            if (v.expiresAt < now) delete mechanicOptimisticRef.current[k];
-          });
-          // Se não há proteções ativas, usa lista do servidor diretamente
-          if (Object.keys(mechanicOptimisticRef.current).length === 0) return d.mechanicsList;
-          // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
-          return d.mechanicsList.map((serverBike: any) => {
-            const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
-            if (protected_ && protected_.expiresAt > now) {
-              return { ...serverBike, status: protected_.status };
-            }
-            return serverBike;
-          });
-        });
-      }
+      if (d.mechanicsList) setMechanicsList(d.mechanicsList);
       if (d.driversSummary) {
-        const filteredSummary = d.driversSummary.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
-        setDriversSummary(prev => filteredSummary.map((newD: any) => {
+        setDriversSummary(prev => d.driversSummary.map((newD: any) => {
           const prevD = prev.find((p: any) => p.name === newD.name);
           const hasNewTL = newD.timeline && newD.timeline.length > 0;
           return {
@@ -2350,9 +2143,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
     };
 
-    const today = localDateStr();
-    const cacheKey = `cached_main_data_${driverName}_${category}_${today}`;
-
     try {
       setSyncError(null);
       syncFailCountRef.current = 0; // reset contador de falhas ao iniciar sync com sucesso
@@ -2380,14 +2170,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
         if (baseResult.status === 'fulfilled' && baseResult.value?.success) {
           applyData(baseResult.value.data);
           if (baseResult.value.version) setBackendVersion(baseResult.value.version);
-          localStorage.setItem(cacheKey, JSON.stringify(baseResult.value.data));
+          localStorage.setItem('cached_main_data', JSON.stringify(baseResult.value.data));
           setLastSyncTime(new Date().toLocaleTimeString());
           hasAnySuccess = true;
         }
 
         if (summaryResult.status === 'fulfilled' && summaryResult.value?.success) {
-          const filteredData = summaryResult.value.data.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
-          setDriversSummary(prev => filteredData.map((newD: any) => {
+          setDriversSummary(prev => summaryResult.value.data.map((newD: any) => {
             const prevD = prev.find((p: any) => p.name === newD.name);
             const hasNewTL = newD.timeline && newD.timeline.length > 0;
             return {
@@ -2408,7 +2197,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               : (baseResult.value?.error || 'Falha na sincronização.');
             setSyncError(errMsg);
           }
-          const cached = localStorage.getItem(cacheKey);
+          const cached = localStorage.getItem('cached_main_data');
           if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
         } else {
           syncFailCountRef.current = 0;
@@ -2427,7 +2216,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         if (result.success && result.data) {
           applyData(result.data);
-          localStorage.setItem(cacheKey, JSON.stringify(result.data));
+          localStorage.setItem('cached_main_data', JSON.stringify(result.data));
           if (result.version) setBackendVersion(result.version);
           setLastSyncTime(new Date().toLocaleTimeString());
           syncFailCountRef.current = 0;
@@ -2436,7 +2225,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           if (syncFailCountRef.current >= 3) {
             setSyncError(result.error || 'Falha na sincronização.');
           }
-          const cached = localStorage.getItem(cacheKey);
+          const cached = localStorage.getItem('cached_main_data');
           if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
         }
       }
@@ -2446,7 +2235,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (syncFailCountRef.current >= 3) {
         setSyncError(err.message || 'Erro de conexão.');
       }
-      const cached = localStorage.getItem(`cached_main_data_${driverName}_${category}_${localDateStr()}`);
+      const cached = localStorage.getItem('cached_main_data');
       if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
     } finally {
       setIsSyncing(false);
@@ -2454,23 +2243,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm]);
 
-  // Cache inicial por usuário e categoria e data
+  // Cache inicial
   useEffect(() => {
-    const today = localDateStr();
-    const cacheKey = `cached_main_data_${driverName}_${category}_${today}`;
-    
-    // Limpeza de caches antigos deste usuário
-    const prefix = `cached_main_data_${driverName}_${category}_`;
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith(prefix) && !key.endsWith(today)) {
-          localStorage.removeItem(key);
-        }
-      }
-    } catch {}
-
-    const cached = localStorage.getItem(cacheKey);
+    const cached = localStorage.getItem('cached_main_data');
     if (!cached) return;
     try {
       const d = JSON.parse(cached);
@@ -2485,10 +2260,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (d.driverState) { setRouteBikes(d.driverState.routeBikes || []); setCollectedBikes(d.driverState.collectedBikes || []); }
       if (d.bikeStatuses) setBikeConflicts(d.bikeStatuses);
       if (d.schedule) setUserSchedule(d.schedule);
-      if (d.motoristas) {
-        const filteredMotoristas = d.motoristas.filter((m: string) => m.toUpperCase() !== 'MECANICA');
-        setMotoristas(filteredMotoristas);
-      }
+      if (d.motoristas) setMotoristas(d.motoristas);
       if (d.driverLocations) {
         // Sheets serve como base; Firebase atualiza em cima via listener
         setDriverLocations(prev => {
@@ -2503,28 +2275,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
           return [...fbLocations, ...sheetsOnly.map((l:any) => ({ ...l, stale: true }))];
         });
       }
-      if (d.mechanicsList) {
-        setMechanicsList(() => {
-          const now = Date.now();
-          // Remove entradas expiradas do mapa de proteção
-          Object.keys(mechanicOptimisticRef.current).forEach(k => { const v = mechanicOptimisticRef.current[k];
-            if (v.expiresAt < now) delete mechanicOptimisticRef.current[k];
-          });
-          // Se não há proteções ativas, usa lista do servidor diretamente
-          if (Object.keys(mechanicOptimisticRef.current).length === 0) return d.mechanicsList;
-          // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
-          return d.mechanicsList.map((serverBike: any) => {
-            const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
-            if (protected_ && protected_.expiresAt > now) {
-              return { ...serverBike, status: protected_.status };
-            }
-            return serverBike;
-          });
-        });
-      }
+      if (d.mechanicsList) setMechanicsList(d.mechanicsList);
       if (d.driversSummary) {
-        const filteredSummary = d.driversSummary.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
-        setDriversSummary(prev => filteredSummary.map((newD: any) => {
+        setDriversSummary(prev => d.driversSummary.map((newD: any) => {
           const prevD = prev.find((p: any) => p.name === newD.name);
           const hasNewTL = newD.timeline && newD.timeline.length > 0;
           return {
@@ -2540,136 +2293,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } catch {}
   }, []);
 
-  // =================================================================
-  // REAL-TIME ADM SUMMARY (DADOS DOS MOTORISTAS)
-  // =================================================================
-  useEffect(() => {
-    if (!isAdm) return;
-
-    // Listener para o estado dos motoristas em tempo real (aba Dados)
-    const unsub = onSnapshot(collection(db, 'users'), (snap) => {
-      setDriversSummary(prev => {
-        const next = [...prev];
-        snap.docChanges().forEach(change => {
-          const data = change.doc.data();
-          const docId = change.doc.id;
-          
-          // Encontra o motorista pelo nome normalizado
-          const index = next.findIndex(d => normalizeName(d.name) === docId);
-          if (index !== -1) {
-            next[index] = {
-              ...next[index],
-              realTime: {
-                route: data.routeBikes || [],
-                collected: data.collectedBikes || []
-              }
-            };
-          }
-        });
-        return next;
-      });
-    }, err => console.error('[Firebase] ADM Summary Listener:', err));
-
-    return () => unsub();
-  }, [isAdm]);
-
-  // =================================================================
-  // REAL-TIME SYNC VIA FIREBASE (BICICLETAS E REPOR)
-  // =================================================================
-  useEffect(() => {
-    if (!driverName) return;
-
-    // 1. Listeners para dados sincronizados no Firebase
-    const unsubBikes = onSnapshot(doc(db, 'sync', 'bikeStatuses'), (snap) => {
-      if (snap.exists()) {
-        setBikeConflicts(snap.data().data || {});
-      }
-    });
-
-    const unsubRepor = onSnapshot(doc(db, 'sync', 'repor'), (snap) => {
-      if (snap.exists()) {
-        setReporData(snap.data().data || []);
-      }
-    });
-
-    // 2. Lógica de "Sync Master" para atualizar o Firebase a partir do Sheets
-    // Apenas um usuário (o primeiro a detectar que o sync está atrasado)
-    // faz a chamada ao Apps Script e atualiza o Firebase para todos.
-    const syncToFirebase = async () => {
-      try {
-        // Tenta atualizar o status do sync para se tornar o master temporário
-        const syncStatusRef = doc(db, 'sync', 'status');
-        
-        // 1. Bicicletas (Conflitos/Status)
-        const rBikes = await apiGetCall('getBikeStatuses');
-        if (rBikes.success && rBikes.data) {
-          await setDoc(doc(db, 'sync', 'bikeStatuses'), { 
-            data: rBikes.data, 
-            updatedAt: serverTimestamp(),
-            updatedBy: driverName 
-          });
-        }
-
-        // 2. Repor
-        const rRepor = await apiGetCall('getReporData');
-        if (rRepor.success && rRepor.data) {
-          await setDoc(doc(db, 'sync', 'repor'), { 
-            data: rRepor.data, 
-            updatedAt: serverTimestamp(),
-            updatedBy: driverName 
-          });
-        }
-
-        // Atualiza timestamp global do sync
-        await setDoc(syncStatusRef, { 
-          lastSync: serverTimestamp(), 
-          masterId: driverName 
-        });
-
-      } catch (err) {
-        console.warn('[FirebaseSync] Erro ao sincronizar:', err);
-      }
-    };
-
-    // Polling para verificar se o sync está atrasado (> 10s)
-    const checkSyncStatus = async () => {
-      try {
-        const syncStatusRef = doc(db, 'sync', 'status');
-        const snap = await getDoc(syncStatusRef);
-        
-        let shouldSync = true;
-        if (snap.exists()) {
-          const data = snap.data();
-          if (data.lastSync) {
-            const lastSyncTime = data.lastSync.toMillis ? data.lastSync.toMillis() : 0;
-            const now = Date.now();
-            // Se sincronizado há menos de 8 segundos, não faz nada
-            if (now - lastSyncTime < 8000) {
-              shouldSync = false;
-            }
-          }
-        }
-
-        if (shouldSync) {
-          await syncToFirebase();
-        }
-      } catch {
-        // Fallback: se falhar o check no Firebase, tenta sync direto
-        await syncToFirebase();
-      }
-    };
-
-    checkSyncStatus();
-    const interval = setInterval(checkSyncStatus, 5000);
-
-    return () => {
-      unsubBikes();
-      unsubRepor();
-      clearInterval(interval);
-    };
-  }, [driverName]);
-
-  // Sync periódico — 12s para o restante dos dados
+  // Sync periódico — 4s para reduzir delay percebido
   useEffect(() => {
     refreshAll();
     if (isTecnica) fetchTechnicaList();
@@ -2829,7 +2453,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (!navigator.geolocation) { setGpsError('Seu navegador não suporta geolocalização.'); return; }
 
     let lastSentLat = 0, lastSentLng = 0, lastSentTime = 0;
-    let lastSheetsSentTime = 0; // Controle separado para o Sheets
+    let lastSheetsSentTime = 0;
     let wakeLock: any = null;
     let watchId: number | null = null;
 
@@ -2837,22 +2461,32 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const now = Date.now();
       const movedMeters = getDistanceInMeters(latitude, longitude, lastSentLat, lastSentLng);
       const elapsed = now - lastSentTime;
-      
-      // Firebase: Mais frequente para tempo real (3s ou 2m)
-      if (force || movedMeters > 2 || elapsed >= 3000) {
-        lastSentLat = latitude;
-        lastSentLng = longitude;
-        lastSentTime = now;
-        lastLocationRef.current = { lat: latitude, lng: longitude };
 
-        setDoc(doc(db, 'locations', driverName), {
-          driverName, latitude, longitude,
-          timestamp: serverTimestamp(), category,
-          status: 'LOGADO',
-        }, { merge: true }).catch(() => {});
-      }
+      // Envia se: forçado, moveu >3m, ou passaram 10s sem envio
+      if (!force && movedMeters <= 3 && elapsed < 10000) return;
 
-      // Sheets: Menos frequente para evitar limites da API (15s)
+      // Calcula velocidade em km/h com base no deslocamento desde o último envio
+      const elapsedSec = elapsed / 1000;
+      const speedKmh = (lastSentTime > 0 && elapsedSec > 0)
+        ? Math.round((movedMeters / elapsedSec) * 3.6)
+        : 0;
+
+      lastSentLat = latitude;
+      lastSentLng = longitude;
+      lastSentTime = now;
+      lastLocationRef.current = { lat: latitude, lng: longitude };
+
+      // Firebase — tempo real
+      setDoc(doc(db, 'locations', driverName), {
+        driverName, latitude, longitude,
+        timestamp: serverTimestamp(),
+        clientTimestamp: now,
+        speedKmh,
+        category,
+        status: 'LOGADO',
+      }, { merge: true }).catch(() => {});
+
+      // Sheets — menos frequente (a cada 15s)
       const elapsedSheets = now - lastSheetsSentTime;
       if (force || elapsedSheets >= 15000) {
         lastSheetsSentTime = now;
@@ -3026,36 +2660,32 @@ const MainScreen: React.FC<MainScreenProps> = ({
         </div>
       )}
 
-
-
-      {/* Modal de Confirmação Migração */}
-      {isMigrationConfirmOpen && (
-        <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
-            <div className="flex flex-col items-center text-center">
-              <div className="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mb-4">
-                <DatabaseIcon className="w-8 h-8 text-orange-600" />
-              </div>
-              <h3 className="text-xl font-bold text-gray-900 mb-2">Migrar para Firebase</h3>
-              <p className="text-gray-600 mb-6">
-                Deseja iniciar a migração de todas as abas da planilha para o Firebase? 
-                Isso pode levar alguns minutos e estabelecerá o Firebase como fonte de dados.
-              </p>
-              <div className="grid grid-cols-2 gap-3 w-full">
-                <button
-                  onClick={() => setIsMigrationConfirmOpen(false)}
-                  className="py-3 bg-gray-100 text-gray-700 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all"
-                >
-                  Cancelar
-                </button>
-                <button
-                  onClick={handleMigrate}
-                  className="py-3 bg-orange-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-orange-200 hover:bg-orange-700 active:scale-95 transition-all"
-                >
-                  Confirmar
-                </button>
-              </div>
-            </div>
+      {/* CAMPO DE CÓPIA PARA MECÂNICO */}
+      {isMecanica && formattedBikesForCopy && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg shadow-sm animate-fade-in-down">
+          <p className="text-[10px] font-bold text-blue-700 uppercase mb-1">Bikes para Alterar Status (Copiar):</p>
+          <div className="flex gap-2">
+            <input 
+              readOnly 
+              value={formattedBikesForCopy} 
+              className="flex-1 text-xs font-mono p-2 border rounded bg-white"
+              onClick={(e) => (e.target as HTMLInputElement).select()}
+            />
+            <button 
+              onClick={() => {
+                navigator.clipboard.writeText(formattedBikesForCopy);
+                alert('Copiado para a área de transferência!');
+              }}
+              className="px-3 py-1 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700"
+            >
+              Copiar
+            </button>
+            <button 
+              onClick={() => setIsZerarListaConfirmOpen(true)}
+              className="px-3 py-1 bg-red-100 text-red-600 text-[10px] font-bold rounded hover:bg-red-200"
+            >
+              Zerar Lista
+            </button>
           </div>
         </div>
       )}
@@ -3105,7 +2735,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 <div>
                   <p className="text-xs font-bold uppercase opacity-80">Verificação de Segurança</p>
                   <h2 className="text-lg font-black">{trailerName}</h2>
-                  <p className="text-[10px] opacity-70 mt-0.5">QR Code + Bateria ≥ 85% + Comunicação &lt; 5 min</p>
+                  <p className="text-[10px] opacity-70 mt-0.5">QR Code + Bateria ≥ 85%</p>
                 </div>
                 <div className="text-right">
                   <p className="text-2xl font-black">{confirmedBikes.size}<span className="text-sm font-normal opacity-70">/{expectedBikes.length}</span></p>
@@ -3460,7 +3090,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         </div>
         <div className="flex items-center flex-wrap gap-1 mt-4 sm:mt-0">
           {isAdm && (
-            <button onClick={() => setIsMigrationConfirmOpen(true)} disabled={isMigrating} title="Migrar para Firebase"
+            <button onClick={handleMigrate} disabled={isMigrating} title="Migrar para Firebase"
               className={`p-1.5 sm:p-2 rounded-full transition-colors ${isMigrating ? 'text-orange-500 animate-spin' : 'text-gray-500 hover:bg-gray-100 hover:text-orange-600'}`}>
               <DatabaseIcon className="w-6 h-6 sm:w-7 sm:h-7" />
             </button>
@@ -3887,13 +3517,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           <div className="flex flex-col gap-2 min-w-[100px]">
                             {!isNotFound ? (
                               <>
-                                <button
-                                  onClick={() => handleAlterarStatus(bike.patrimonio)}
-                                  disabled={isLoading}
-                                  className="w-full px-3 py-1.5 bg-purple-600 text-white text-xs font-bold rounded hover:bg-purple-700 active:scale-95 transition-all disabled:opacity-50"
-                                >
-                                  Alterar Status
-                                </button>
+                                {!clickedBikesForStatus.has(bike.patrimonio) && (
+                                  <button onClick={() => handleAlterarStatus(bike.patrimonio)} className="w-full px-3 py-1.5 bg-purple-600 text-white text-xs font-bold rounded hover:bg-purple-700 active:scale-95">Alterar status</button>
+                                )}
                                 <button onClick={() => setMechanicNotFoundModal({ isOpen: true, bikePat: bike.patrimonio })} className="w-full px-3 py-1.5 bg-red-500 text-white text-xs font-bold rounded hover:bg-red-600 active:scale-95">Não encontrada</button>
                               </>
                             ) : (
@@ -4035,26 +3661,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           ))}
                         </div>
                         {trailer === 'Sem Carretinha' && (
-                          <button onClick={() => {
-                            // Calcula próximo número de carretinha (1→2→3→4→1...)
-                            const MAX_TRAILERS = 4;
-                            const usedNumbers = mechanicsList
-                              .filter(b => b.carretinha && b.carretinha !== 'Sem Carretinha')
-                              .map(b => {
-                                const m = String(b.carretinha).match(/(\d+)$/);
-                                return m ? parseInt(m[1]) : 0;
-                              })
-                              .filter(n => n > 0);
-                            let next = 1;
-                            for (let i = 1; i <= MAX_TRAILERS; i++) {
-                              if (!usedNumbers.includes(i)) { next = i; break; }
-                            }
-                            // Se todos ocupados, reutiliza o 1
-                            const nextName = `Carretinha ${next}`;
-                            setSelectedBikesForTrailer((bikes as any[]).map(b => b.patrimonio));
-                            // Passa direto para handleOrganizeTrailer sem abrir modal de nome
-                            handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), nextName);
-                          }}
+                          <button onClick={() => { setSelectedBikesForTrailer((bikes as any[]).map(b => b.patrimonio)); setIsTrailerSelectionModalOpen(true); }}
                             className="mt-3 w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700">
                             Organizar em Carretinha
                           </button>
@@ -4502,87 +4109,42 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             <div>
                               <div className="flex items-center gap-2 mb-1">
                                 <span className={`px-2 py-0.5 text-[9px] font-black uppercase rounded ${
-                                  action.type === 'alterar_status_lote' ? 'bg-purple-100 text-purple-700' :
-                                  action.type === 'status_change' ? 'bg-blue-100 text-blue-700' :
-                                  'bg-orange-100 text-orange-700'
+                                  action.type === 'status_change' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-700'
                                 }`}>
-                                  {action.type === 'alterar_status_lote' ? 'Alterar Status — Lote' :
-                                   action.type === 'status_change' ? 'Alteração de Status' :
-                                   'Validação de Carretinha'}
+                                  {action.type === 'status_change' ? 'Alteração de Status' : 'Validação de Carretinha'}
                                 </span>
                                 <span className="text-[10px] text-gray-400 font-bold">
                                   {action.timestamp?.toDate?.()?.toLocaleString('pt-BR')}
                                 </span>
                               </div>
                               <p className="text-sm font-black text-gray-800">
-                                {action.type === 'alterar_status_lote'
-                                  ? `${action.bikes?.length || 0} bike(s) — ${action.mechanicName}`
-                                  : action.type === 'status_change'
-                                  ? `Bike ${action.bikeNumber}`
-                                  : `Carretinha: ${action.trailerName}`}
+                                {action.type === 'status_change' ? `Bike ${action.bikeNumber}` : `Carretinha: ${action.trailerName}`}
                               </p>
                               <p className="text-[10px] text-gray-500 font-bold uppercase">
                                 Solicitado por: <span className="text-blue-600">{action.mechanicName}</span>
                               </p>
                             </div>
-                            {action.type !== 'alterar_status_lote' && (
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => handleApproveAction(action)}
-                                  disabled={isLoading}
-                                  className="p-2 bg-green-50 text-green-600 rounded-lg border border-green-100 hover:bg-green-100 transition-colors"
-                                  title="Aprovar"
-                                >
-                                  <CheckCircleIcon className="w-5 h-5" />
-                                </button>
-                                <button
-                                  onClick={() => handleRejectAction(action.id)}
-                                  disabled={isLoading}
-                                  className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
-                                  title="Rejeitar"
-                                >
-                                  <XIcon className="w-5 h-5" />
-                                </button>
-                              </div>
-                            )}
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleApproveAction(action)}
+                                disabled={isLoading}
+                                className="p-2 bg-green-50 text-green-600 rounded-lg border border-green-100 hover:bg-green-100 transition-colors"
+                                title="Aprovar"
+                              >
+                                <CheckCircleIcon className="w-5 h-5" />
+                              </button>
+                              <button
+                                onClick={() => handleRejectAction(action.id)}
+                                disabled={isLoading}
+                                className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
+                                title="Rejeitar"
+                              >
+                                <XIcon className="w-5 h-5" />
+                              </button>
+                            </div>
                           </div>
 
-                          {action.type === 'alterar_status_lote' ? (
-                            // Card especial — layout igual ao campo de cópia do mecânico
-                            <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                              <p className="text-[10px] font-black text-blue-700 uppercase mb-2 tracking-wide">
-                                Bikes para Alterar Status (Copiar):
-                              </p>
-                              <div className="flex gap-2 mb-2">
-                                <input
-                                  readOnly
-                                  value={(action.bikes || []).join(',')}
-                                  onClick={e => (e.target as HTMLInputElement).select()}
-                                  className="flex-1 text-xs font-mono p-2 border border-gray-200 rounded bg-white text-gray-800 cursor-text"
-                                />
-                                <button
-                                  onClick={() => {
-                                    navigator.clipboard.writeText((action.bikes || []).join(','));
-                                    setSuccessMessage('Lista copiada!');
-                                  }}
-                                  className="px-4 py-2 bg-blue-600 text-white text-xs font-black rounded hover:bg-blue-700 active:scale-95 transition-all flex-shrink-0"
-                                >
-                                  Copiar
-                                </button>
-                                <button
-                                  onClick={() => handleApproveAction(action)}
-                                  disabled={isLoading}
-                                  className="px-4 py-2 bg-green-600 text-white text-xs font-black rounded hover:bg-green-700 active:scale-95 transition-all flex-shrink-0 flex items-center gap-1"
-                                >
-                                  {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                                  Feito!
-                                </button>
-                              </div>
-                              <p className="text-[9px] text-gray-400 italic">
-                                Cole a lista no sistema, altere o status das bikes e clique em Feito! para confirmar.
-                              </p>
-                            </div>
-                          ) : action.type === 'status_change' ? (
+                          {action.type === 'status_change' ? (
                             <div className="bg-gray-50 p-2 rounded border border-dashed">
                               <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Status Pretendido:</p>
                               <span className="px-2 py-0.5 bg-blue-600 text-white text-[10px] font-black rounded uppercase">
@@ -4596,7 +4158,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             <div className="bg-gray-50 p-2 rounded border border-dashed">
                               <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Bikes na Carretinha ({action.bikes?.length}):</p>
                               <p className="text-xs font-mono text-gray-600 break-all leading-relaxed">
-                                {action.bikes?.join(',')}
+                                {action.bikes?.join(', ')}
                               </p>
                             </div>
                           )}
@@ -5063,8 +4625,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         </div>
                       </div>
                       <div className="flex gap-2 w-full">
+                        <button onClick={() => handleNaoAtendidaClick(bike)} disabled={isLoading || processingBikes.has(bike)}
+                          className="flex-1 px-2 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 active:scale-95 disabled:bg-gray-400 text-[10px] font-bold uppercase">Não Atendida</button>
                         <button onClick={() => handleSearch(bike)} disabled={isLoading || processingBikes.has(bike)}
-                          className="flex-grow px-2 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 active:scale-95 disabled:bg-gray-400 text-xs font-bold uppercase">Recolher</button>
+                          className="flex-1 px-2 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 active:scale-95 disabled:bg-gray-400 text-[10px] font-bold uppercase">Recolher</button>
                       </div>
                     </li>
                   );

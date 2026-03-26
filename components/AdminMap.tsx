@@ -22,6 +22,19 @@ const normalizeCoord = (coord: number): number => {
   return val;
 };
 
+// Interpola entre dois pontos em t (0..1)
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+// Distância aproximada em metros entre dois pontos (Haversine simplificado)
+const distMeters = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
 const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +45,42 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   const markersRef = useRef<{ [key: string]: L.Marker }>({});
   const hasCenteredRef = useRef(false);
 
-  const updateMapWithLocations = useCallback((locations: DriverLocation[]) => {
+  // Rastreia última posição e timestamp conhecidos por motorista
+  // para filtrar saltos impossíveis e updates fora de ordem
+  const lastKnownRef = useRef<Record<string, {
+    lat: number; lng: number;
+    clientTs: number;
+    speedKmh: number | null;
+  }>>({});
+
+  // Animação suave: move marcador de origem para destino em ~1s
+  const animateMarker = useCallback((
+    marker: L.Marker,
+    fromLat: number, fromLng: number,
+    toLat: number, toLng: number
+  ) => {
+    const DURATION = 1000; // ms
+    const STEPS = 30;
+    const interval = DURATION / STEPS;
+    let step = 0;
+
+    const tick = setInterval(() => {
+      step++;
+      const t = step / STEPS;
+      // Ease out cubic — desacelera no final para parecer natural
+      const eased = 1 - Math.pow(1 - t, 3);
+      marker.setLatLng([
+        lerp(fromLat, toLat, eased),
+        lerp(fromLng, toLng, eased),
+      ]);
+      if (step >= STEPS) {
+        clearInterval(tick);
+        marker.setLatLng([toLat, toLng]);
+      }
+    }, interval);
+  }, []);
+
+  const updateMapWithLocations = useCallback((locations: any[]) => {
     if (!mapContainerRef.current) return;
 
     if (!mapRef.current) {
@@ -40,10 +88,10 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
         center: [-23.1791, -45.8872],
         zoom: 12,
         zoomControl: true,
-        attributionControl: true
+        attributionControl: true,
       });
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       }).addTo(map);
       mapRef.current = map;
     }
@@ -54,28 +102,65 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
     const markerGroup: L.LatLng[] = [];
 
     locations.forEach(loc => {
-      const { driverName, latitude, longitude } = loc;
+      const { driverName, latitude, longitude, clientTimestamp } = loc;
       const isStale = (loc as any).stale === true;
       const normLat = normalizeCoord(latitude);
       const normLng = normalizeCoord(longitude);
       if (isNaN(normLat) || isNaN(normLng) || normLat === 0 || normLng === 0) return;
 
+      const last = lastKnownRef.current[driverName];
+
+      // Filtra updates fora de ordem: ignora se clientTimestamp for mais antigo
+      if (last && clientTimestamp && clientTimestamp < last.clientTs) return;
+
+      // Filtra saltos impossíveis: >500m em menos de 5 segundos
+      if (last && clientTimestamp) {
+        const elapsedSec = (clientTimestamp - last.clientTs) / 1000;
+        const dist = distMeters(last.lat, last.lng, normLat, normLng);
+        if (elapsedSec < 5 && dist > 500) return;
+      }
+
+      // Atualiza último conhecido
+      lastKnownRef.current[driverName] = {
+        lat: normLat,
+        lng: normLng,
+        clientTs: clientTimestamp || Date.now(),
+        speedKmh: (loc as any).speedKmh ?? null,
+      };
+
       const position = L.latLng(normLat, normLng);
       activeDrivers.add(driverName);
       markerGroup.push(position);
 
+      const speedKmh = (loc as any).speedKmh;
+      const speedLabel = (speedKmh !== null && speedKmh !== undefined && speedKmh >= 0)
+        ? ` ${speedKmh} km/h`
+        : '';
       const tooltipClass = isStale
         ? 'bg-orange-500 text-white font-bold px-2 py-1 rounded shadow-lg border-none'
         : 'bg-blue-600 text-white font-bold px-2 py-1 rounded shadow-lg border-none';
-      const label = isStale ? (driverName + ' ⚠️') : driverName;
+      const label = isStale
+        ? `${driverName} ⚠️${speedLabel}`
+        : `${driverName}${speedLabel}`;
 
       if (currentMarkers[driverName]) {
-        currentMarkers[driverName].setLatLng(position);
+        const current = currentMarkers[driverName].getLatLng();
+        const dist = distMeters(current.lat, current.lng, normLat, normLng);
+
+        if (dist > 2) {
+          // Move com animação suave — evita salto visual
+          animateMarker(currentMarkers[driverName], current.lat, current.lng, normLat, normLng);
+        }
+        // Atualiza tooltip sem mover (evita piscar)
         currentMarkers[driverName].unbindTooltip();
-        currentMarkers[driverName].bindTooltip(label, { permanent: true, direction: 'top', className: tooltipClass });
+        currentMarkers[driverName].bindTooltip(label, {
+          permanent: true, direction: 'top', className: tooltipClass,
+        });
       } else {
         const marker = L.marker(position, { title: driverName }).addTo(map);
-        marker.bindTooltip(label, { permanent: true, direction: 'top', className: tooltipClass });
+        marker.bindTooltip(label, {
+          permanent: true, direction: 'top', className: tooltipClass,
+        });
         currentMarkers[driverName] = marker;
       }
     });
@@ -85,15 +170,17 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       hasCenteredRef.current = true;
     }
 
+    // Remove motoristas que saíram
     Object.keys(currentMarkers).forEach(name => {
       if (!activeDrivers.has(name)) {
         map.removeLayer(currentMarkers[name]);
         delete currentMarkers[name];
+        delete lastKnownRef.current[name];
       }
     });
 
     setDriverCount(activeDrivers.size);
-  }, []);
+  }, [animateMarker]);
 
   const handleRecenter = useCallback(() => {
     if (!mapRef.current) return;
@@ -118,17 +205,27 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
           const status = (data.status || '').toString().toUpperCase();
           if (status === 'DESLOGADO') return;
           if (!data.latitude || !data.longitude) return;
-          const ts = data.timestamp?.toDate?.()?.getTime() || 0;
+
+          // Usa clientTimestamp se disponível (mais confiável que serverTimestamp para ordenação)
+          const clientTs = data.clientTimestamp || 0;
+          const serverTs = data.timestamp?.toDate?.()?.getTime() || 0;
+          const ts = clientTs || serverTs;
+
           const ageMs = ts ? (now - ts) : Infinity;
           if (ageMs > THIRTY_MIN) return;
+
           const lat = normalizeCoord(Number(data.latitude));
           const lng = normalizeCoord(Number(data.longitude));
           if (isNaN(lat) || isNaN(lng) || lat === 0 || lng === 0) return;
+
           locs.push({
             driverName: data.driverName || docSnap.id,
             latitude: lat,
             longitude: lng,
             timestamp: ts ? new Date(ts).toISOString() : '',
+            clientTimestamp: clientTs,
+            accuracy: data.accuracy || 999,
+            speedKmh: typeof data.speedKmh === 'number' ? data.speedKmh : null,
             stale: ageMs > TEN_MIN,
           });
         });
@@ -150,6 +247,7 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
         mapRef.current = null;
       }
       markersRef.current = {};
+      lastKnownRef.current = {};
       hasCenteredRef.current = false;
     };
   }, [updateMapWithLocations]);
@@ -162,7 +260,9 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
           <div>
             <h2 className="font-semibold text-gray-700">Mapa de Motoristas</h2>
             {driverCount > 0 && (
-              <p className="text-xs text-gray-400">{driverCount} motorista{driverCount > 1 ? 's' : ''} ativo{driverCount > 1 ? 's' : ''}</p>
+              <p className="text-xs text-gray-400">
+                {driverCount} motorista{driverCount > 1 ? 's' : ''} ativo{driverCount > 1 ? 's' : ''}
+              </p>
             )}
           </div>
         </div>
