@@ -93,5 +93,11 @@ service cloud.firestore {
     match /pending_actions/{id} {
       allow read, write: if isAuthenticated();
     }
+
+    // Regra genérica para permitir a migração de novas abas/coleções
+    match /{collectionName}/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
   }
 }
