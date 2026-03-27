@@ -329,6 +329,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const scannerStartPromise = useRef<Promise<any> | null>(null);
   const trailerScannerStartPromise = useRef<Promise<any> | null>(null);
   const isScannerBusy = useRef(false);
+  const pendingScannerStart = useRef<'search' | 'reserva' | null>(null);
+  const scannerDivRef = useRef<HTMLDivElement | null>(null);
+  const scannerReservaDivRef = useRef<HTMLDivElement | null>(null);
   const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
 
@@ -2053,84 +2056,50 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const startTrailerScanner = async () => {
     if (isScannerBusy.current) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Seu navegador não suporta acesso à câmera.', scannerActive: false } : null);
+      setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Câmera não suportada neste navegador.', scannerActive: false } : null);
       return;
     }
+
     isScannerBusy.current = true;
+
+    // Para tudo e aguarda estado limpo
     try {
       await internalStopScanner();
       await internalStopTrailerScanner();
-      await new Promise(r => setTimeout(r, 400));
-    } catch (e) {
-      console.warn('Error stopping existing scanners:', e);
-    }
+    } catch {}
+    await new Promise(r => setTimeout(r, 500));
 
     setTrailerQrModal(prev => prev ? { ...prev, scannerActive: true, lastError: null } : null);
-    setTimeout(async () => {
-      try {
-        const el = document.getElementById('qr-trailer-reader');
-        if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
-        
-        const checkStillActive = () => {
-          let active = false;
-          setTrailerQrModal(prev => {
-            if (prev && prev.scannerActive) active = true;
-            return prev;
-          });
-          return active;
-        };
 
-        if (!checkStillActive()) return;
+    // Aguarda DOM renderizar o elemento do modal
+    await new Promise(r => setTimeout(r, 600));
 
-        const qr = new Html5Qrcode('qr-trailer-reader');
-        trailerScannerRef.current = qr;
-        
-        const startWithRetry = async (withZoom: boolean, retries = 3): Promise<void> => {
-          if (!checkStillActive()) return;
-          try {
-            const config = withZoom 
-              ? { facingMode: 'environment', advanced: [{ zoom: 2.0 }] } as any
-              : { facingMode: 'environment' };
-            
-            const promise = qr.start(
-              config,
-              { fps: 10, qrbox: { width: 220, height: 220 } },
-              (decodedText) => handleTrailerQrSuccess(decodedText),
-              () => {}
-            );
-            trailerScannerStartPromise.current = promise;
-            await promise;
-            trailerScannerStartPromise.current = null;
-          } catch (err: any) {
-            trailerScannerStartPromise.current = null;
-            if (err?.message?.includes('already under transition') && retries > 0) {
-              console.warn('Trailer Scanner transition error, retrying...', retries);
-              await new Promise(r => setTimeout(r, 500));
-              return startWithRetry(withZoom, retries - 1);
-            }
-            throw err;
-          }
-        };
+    try {
+      const el = document.getElementById('qr-trailer-reader');
+      if (!el) throw new Error('Elemento qr-trailer-reader não encontrado no DOM.');
 
-        try {
-          await startWithRetry(true);
-        } catch (err) {
-          console.warn('Zoom not supported, retrying trailer scanner without zoom...');
-          try {
-            if (trailerScannerRef.current?.isScanning) {
-              await trailerScannerRef.current.stop();
-              await new Promise(r => setTimeout(r, 400));
-            }
-          } catch {}
-          await startWithRetry(false);
-        }
-      } catch (err: any) {
-        console.error('Trailer Scanner error:', err);
-        setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + (err.message || String(err)), scannerActive: false } : null);
-      } finally {
-        isScannerBusy.current = false;
-      }
-    }, 500);
+      // Limpa innerHTML — força estado DOM fresco, evita "already under transition"
+      el.innerHTML = '';
+
+      const qr = new Html5Qrcode('qr-trailer-reader');
+      trailerScannerRef.current = qr;
+
+      await qr.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 220, height: 220 } },
+        (decodedText) => handleTrailerQrSuccess(decodedText),
+        () => {}
+      );
+    } catch (err: any) {
+      console.error('Trailer Scanner error:', err);
+      const msg = (err.message || String(err));
+      setTrailerQrModal(prev => prev
+        ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + msg, scannerActive: false }
+        : null
+      );
+    } finally {
+      isScannerBusy.current = false;
+    }
   };
 
   const handleFinalizeTrailer = async (trailerName: string) => {
@@ -2145,16 +2114,32 @@ const MainScreen: React.FC<MainScreenProps> = ({
       bateria: b.bateria !== undefined ? Number(b.bateria) : undefined,
       ultimaInfo: b.ultimaInfo || b.ultimaAtualizacao || ''
     }));
+
+    // Aproveita bikes já escaneadas (modo reserva OU modal anterior cancelado)
+    const preConfirmed = new Set<string>();
+    bikeObjects.forEach(b => {
+      const pat = String(b.patrimonio);
+      // Do modo scan da reserva
+      if (reservaScannedBikes.has(pat)) preConfirmed.add(pat);
+    });
+    // Também preserva confirmações do modal anterior se era a mesma carretinha
+    if (trailerQrModal && trailerQrModal.trailerName === trailerName) {
+      trailerQrModal.confirmedBikes.forEach(pat => preConfirmed.add(pat));
+    }
+
     setTrailerQrModal({
       isOpen: true,
       trailerName,
       expectedBikes: bikeObjects,
-      confirmedBikes: new Set(),
+      confirmedBikes: preConfirmed, // já inicia com as bikes escaneadas confirmadas
       batteryFailed: null,
       scannerActive: false,
       lastScanned: null,
       lastError: null,
     });
+
+    // Só limpa o modo scan — mantém reservaScannedBikes para caso o modal seja cancelado e reaberto
+    setReservaScanMode(false);
   };
 
   const executeTrailerFinalization = async () => {
@@ -2163,6 +2148,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (confirmedBikes.size < expectedBikes.length) return;
     await stopTrailerScanner();
     setTrailerQrModal(null);
+    setReservaScannedBikes(new Set()); // limpa só após confirmação bem-sucedida
     setIsLoading(true);
     const bikeIds = expectedBikes.map(b => b.patrimonio);
     // Mantém status 'Reserva' para continuar exibindo na seção Reserva até aceite do motorista
@@ -2231,37 +2217,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // =================================================================
   // SCANNER QR
   // =================================================================
-  const startScanner = async () => {
-    if (isScannerBusy.current) return;
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setError('Seu navegador não suporta acesso à câmera.');
-      return;
-    }
 
-    isScannerBusy.current = true;
-
-    // Para tudo e aguarda — garante estado limpo antes de iniciar
+  // Callback ref — chamado exatamente quando o elemento é montado no DOM
+  // Isso garante que o elemento existe antes de iniciar o scanner
+  const initScannerOnMount = async (el: HTMLDivElement | null, scannerElId: string) => {
+    if (!el || !pendingScannerStart.current) return;
+    pendingScannerStart.current = null;
     try {
-      await internalStopScanner();
-      await internalStopTrailerScanner();
-    } catch {}
-    await new Promise(r => setTimeout(r, 500));
-
-    setIsScannerOpen(true);
-
-    // Aguarda DOM renderizar o elemento do scanner
-    await new Promise(r => setTimeout(r, 500));
-
-    try {
-      const el = document.getElementById('qr-reader');
-      if (!el) throw new Error('Elemento qr-reader não encontrado.');
-
-      // Limpa innerHTML para garantir estado DOM fresco — evita "already under transition"
       el.innerHTML = '';
-
-      const qr = new Html5Qrcode('qr-reader');
+      const qr = new Html5Qrcode(scannerElId);
       scannerRef.current = qr;
-
       await qr.start(
         { facingMode: 'environment' },
         { fps: 10, qrbox: { width: 250, height: 250 } },
@@ -2278,6 +2243,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally {
       isScannerBusy.current = false;
     }
+  };
+
+  const startScanner = async () => {
+    if (isScannerBusy.current) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError('Seu navegador não suporta acesso à câmera.');
+      return;
+    }
+
+    isScannerBusy.current = true;
+
+    // Para tudo primeiro
+    try {
+      await internalStopScanner();
+      await internalStopTrailerScanner();
+    } catch {}
+    await new Promise(r => setTimeout(r, 300));
+
+    // Registra qual modo vai usar — o useEffect vai iniciar após render
+    pendingScannerStart.current = reservaScanMode ? 'reserva' : 'search';
+    setIsScannerOpen(true);
+    // isScannerBusy será liberado no useEffect após iniciar
   };
 
   const internalStopScanner = async () => {
@@ -3771,7 +3758,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
               {isScannerOpen && !reservaScanMode && (
                 <div className="relative overflow-hidden rounded-lg bg-black aspect-square max-w-[300px] mx-auto w-full border-2 border-blue-500 shadow-xl">
-                  <div id="qr-reader" className="w-full h-full"/>
+                  <div id="qr-reader" ref={(el) => { scannerDivRef.current = el; initScannerOnMount(el, 'qr-reader'); }} className="w-full h-full"/>
                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center"><div className="w-48 h-48 border-2 border-blue-400/50 rounded-lg"/></div>
                   <button onClick={stopScanner} className="absolute top-2 right-2 bg-black/50 text-white p-1 rounded-full"><XIcon className="w-4 h-4"/></button>
                   <p className="absolute bottom-2 left-0 right-0 text-center text-[10px] text-white bg-black/50 py-1">Aponte para o QR Code</p>
@@ -4201,7 +4188,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   <div className="mb-4">
                     {isScannerOpen && (
                       <div className="relative overflow-hidden rounded-lg bg-black aspect-square max-w-[260px] mx-auto w-full border-2 border-green-500 shadow-xl">
-                        <div id="qr-reader" className="w-full h-full"/>
+                        <div id="qr-reader-reserva" ref={(el) => { scannerReservaDivRef.current = el; initScannerOnMount(el, 'qr-reader-reserva'); }} className="w-full h-full"/>
                         <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
                           <div className="w-44 h-44 border-2 border-green-400/60 rounded-xl"/>
                         </div>
@@ -5870,7 +5857,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
       <MechanicRepairModal isOpen={isMechanicRepairModalOpen} onClose={() => setIsMechanicRepairModalOpen(false)} onConfirm={handleFinalizeMechanicsRepair} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <MechanicSelectionModal isOpen={isMechanicSelectionModalOpen} onClose={() => setIsMechanicSelectionModalOpen(false)} onConfirm={handleMechanicSelectionConfirm} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <TrailerSelectionModal isOpen={isTrailerSelectionModalOpen} onClose={() => setIsTrailerSelectionModalOpen(false)}
-        onConfirm={name => { handleOrganizeTrailer(selectedBikesForTrailer, name); setIsTrailerSelectionModalOpen(false); }}
+        onConfirm={name => { 
+          // Mantém reservaScannedBikes para uso no handleFinalizeTrailer
+          handleOrganizeTrailer(selectedBikesForTrailer, name); 
+          setIsTrailerSelectionModalOpen(false); 
+        }}
         isLoading={isLoading} bikeNumbers={selectedBikesForTrailer}/>
 
       <DriverSelectionModal 
