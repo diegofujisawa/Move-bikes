@@ -1931,85 +1931,104 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setTrailerQrModal(prev => prev ? { ...prev, scannerActive: false } : null);
   };
 
+  const handleScannerSuccess = (text: string) => {
+    const match = text.match(/\/download\/(\d+)/);
+    const id = match ? match[1] : /^\d+$/.test(text) ? text : null;
+    if (id) { setSearchTerm(id); stopScanner(); handleSearch(id); }
+  };
+
+  const handleTrailerQrSuccess = (decodedText: string) => {
+    // Extrai número do QR: http://www.bikesjc.com.br/home/download/835 → "835"
+    const match = decodedText.match(/\/download\/(\d+)/);
+    const bikeId = match ? match[1] : (/^\d+$/.test(decodedText.trim()) ? decodedText.trim() : null);
+    if (!bikeId) {
+      setTrailerQrModal(prev => prev ? { ...prev, lastError: 'QR inválido: ' + decodedText, lastScanned: null } : null);
+      return;
+    }
+    setTrailerQrModal(prev => {
+      if (!prev) return null;
+      const normalizedId = String(parseFloat(bikeId));
+      const found = prev.expectedBikes.find(b => {
+        const nb = String(parseFloat(b.patrimonio));
+        return nb === normalizedId || b.patrimonio === bikeId;
+      });
+      if (!found) {
+        return { ...prev, lastError: `Bike ${bikeId} não pertence a esta carretinha!`, lastScanned: bikeId, batteryFailed: null };
+      }
+      if (prev.confirmedBikes.has(found.patrimonio)) {
+        return { ...prev, lastError: null, lastScanned: `${bikeId} já confirmada ✓`, batteryFailed: null };
+      }
+      // Valida bateria ≥ 85%
+      const bateriaVal = found.bateria !== undefined ? Number(found.bateria) : undefined;
+      const bateriaPct = bateriaVal !== undefined
+        ? (bateriaVal <= 1 && bateriaVal > 0 ? Math.round(bateriaVal * 100) : Math.round(bateriaVal))
+        : undefined;
+      if (bateriaPct !== undefined && bateriaPct < 85) {
+        return {
+          ...prev,
+          lastError: null,
+          lastScanned: null,
+          batteryFailed: found.patrimonio,
+        };
+      }
+      // Valida comunicação — última info deve ser dentro de 5 minutos
+      if (found.ultimaInfo) {
+        const lastInfoDate = (() => {
+          const s = String(found.ultimaInfo).trim();
+          if (s.includes('/')) {
+            const parts = s.split(' ');
+            const dp = parts[0].split('/');
+            if (dp.length === 3) {
+              const d = new Date(`${dp[2]}-${dp[1]}-${dp[0]}${parts[1] ? 'T' + parts[1] : ''}`);
+              return isNaN(d.getTime()) ? null : d;
+            }
+          }
+          const d = new Date(s);
+          return isNaN(d.getTime()) ? null : d;
+        })();
+        if (lastInfoDate) {
+          const diffMin = (Date.now() - lastInfoDate.getTime()) / 60000;
+          if (diffMin > 5) {
+            return { ...prev, lastError: `Bike ${bikeId} sem comunicação recente (${Math.round(diffMin)} min)!`, lastScanned: bikeId, batteryFailed: null };
+          }
+        }
+      }
+      const newConfirmed = new Set(prev.confirmedBikes);
+      newConfirmed.add(found.patrimonio);
+      return { ...prev, confirmedBikes: newConfirmed, lastScanned: bikeId, lastError: null, batteryFailed: null };
+    });
+  };
+
   const startTrailerScanner = async () => {
     setTrailerQrModal(prev => prev ? { ...prev, scannerActive: true, lastError: null } : null);
     setTimeout(async () => {
       try {
         const qr = new Html5Qrcode('qr-trailer-reader');
         trailerScannerRef.current = qr;
-        await qr.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 220, height: 220 } },
-          (decodedText) => {
-            // Extrai número do QR: http://www.bikesjc.com.br/home/download/835 → "835"
-            const match = decodedText.match(/\/download\/(\d+)/);
-            const bikeId = match ? match[1] : (/^\d+$/.test(decodedText.trim()) ? decodedText.trim() : null);
-            if (!bikeId) {
-              setTrailerQrModal(prev => prev ? { ...prev, lastError: 'QR inválido: ' + decodedText, lastScanned: null } : null);
-              return;
-            }
-            setTrailerQrModal(prev => {
-              if (!prev) return null;
-              const normalizedId = String(parseFloat(bikeId));
-              const found = prev.expectedBikes.find(b => {
-                const nb = String(parseFloat(b.patrimonio));
-                return nb === normalizedId || b.patrimonio === bikeId;
-              });
-              if (!found) {
-                return { ...prev, lastError: `Bike ${bikeId} não pertence a esta carretinha!`, lastScanned: bikeId, batteryFailed: null };
-              }
-              if (prev.confirmedBikes.has(found.patrimonio)) {
-                return { ...prev, lastError: null, lastScanned: `${bikeId} já confirmada ✓`, batteryFailed: null };
-              }
-              // Valida bateria ≥ 85%
-              const bateriaVal = found.bateria !== undefined ? Number(found.bateria) : undefined;
-              const bateriaPct = bateriaVal !== undefined
-                ? (bateriaVal <= 1 && bateriaVal > 0 ? Math.round(bateriaVal * 100) : Math.round(bateriaVal))
-                : undefined;
-              if (bateriaPct !== undefined && bateriaPct < 85) {
-                return {
-                  ...prev,
-                  lastError: null,
-                  lastScanned: null,
-                  batteryFailed: found.patrimonio,
-                };
-              }
-              // Valida comunicação — última info deve ser dentro de 5 minutos
-              if (found.ultimaInfo) {
-                const lastInfoDate = (() => {
-                  const s = String(found.ultimaInfo).trim();
-                  if (s.includes('/')) {
-                    const parts = s.split(' ');
-                    const dp = parts[0].split('/');
-                    if (dp.length === 3) {
-                      const d = new Date(`${dp[2]}-${dp[1]}-${dp[0]}${parts[1] ? 'T' + parts[1] : ''}`);
-                      return isNaN(d.getTime()) ? null : d;
-                    }
-                  }
-                  const d = new Date(s);
-                  return isNaN(d.getTime()) ? null : d;
-                })();
-                if (lastInfoDate) {
-                  const ageMin = (Date.now() - lastInfoDate.getTime()) / 60000;
-                  if (ageMin > 5) {
-                    return {
-                      ...prev,
-                      lastError: `Bike ${found.patrimonio}: comunicação desatualizada (${Math.round(ageMin)} min atrás). Aguarde atualização.`,
-                      lastScanned: null,
-                      batteryFailed: null,
-                    };
-                  }
-                }
-              }
-              const newConfirmed = new Set(prev.confirmedBikes);
-              newConfirmed.add(found.patrimonio);
-              return { ...prev, confirmedBikes: newConfirmed, lastScanned: bikeId, lastError: null, batteryFailed: null };
-            });
-          },
-          () => {}
-        );
+        try {
+          await qr.start(
+            { 
+              facingMode: 'environment',
+              // @ts-expect-error - zoom is not in standard types yet
+              advanced: [{ zoom: 2.0 }]
+            },
+            { fps: 10, qrbox: { width: 220, height: 220 } },
+            (decodedText) => {
+              handleTrailerQrSuccess(decodedText);
+            }, () => {}
+          );
+        } catch (err) {
+          console.warn('Zoom not supported, starting without zoom:', err);
+          await qr.start(
+            { facingMode: 'environment' },
+            { fps: 10, qrbox: { width: 220, height: 220 } },
+            (decodedText) => {
+              handleTrailerQrSuccess(decodedText);
+            }, () => {}
+          );
+        }
       } catch {
-        setTrailerQrModal(prev => prev ? { ...prev, scannerActive: false, lastError: 'Não foi possível acessar a câmera.' } : null);
+        setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Não foi possível acessar a câmera.', scannerActive: false } : null);
       }
     }, 150);
   };
@@ -2113,13 +2132,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
       try {
         const qr = new Html5Qrcode('qr-reader');
         scannerRef.current = qr;
-        await qr.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 250, height: 250 } },
-          (text) => {
-            const match = text.match(/\/download\/(\d+)/);
-            const id = match ? match[1] : /^\d+$/.test(text) ? text : null;
-            if (id) { setSearchTerm(id); stopScanner(); handleSearch(id); }
-          }, () => {}
-        );
+        try {
+          await qr.start(
+            { 
+              facingMode: 'environment',
+              // @ts-expect-error - zoom is not in standard types yet
+              advanced: [{ zoom: 2.0 }]
+            },
+            { fps: 10, qrbox: { width: 250, height: 250 } },
+            (text) => {
+              handleScannerSuccess(text);
+            }, () => {}
+          );
+        } catch (err) {
+          console.warn('Zoom not supported, starting without zoom:', err);
+          await qr.start(
+            { facingMode: 'environment' },
+            { fps: 10, qrbox: { width: 250, height: 250 } },
+            (text) => {
+              handleScannerSuccess(text);
+            }, () => {}
+          );
+        }
       } catch { setError('Não foi possível acessar a câmera.'); setIsScannerOpen(false); }
     }, 100);
   };
