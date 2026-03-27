@@ -2069,6 +2069,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
         bikes: bikeIds,
         trailerName
       }, 1, true).catch(() => {});
+
+      // Se não for ADM, envia para Validação Mecânica (pending_actions)
+      if (!isAdm) {
+        await addDoc(collection(db, 'pending_actions'), {
+          type: 'trailer_validation',
+          trailerName,
+          bikes: bikeIds,
+          mechanicName: driverName,
+          status: 'pending',
+          timestamp: serverTimestamp()
+        });
+      }
+
       setSuccessMessage(`Carretinha "${trailerName}" finalizada! ADM notificado para remanejamento.`);
     } catch (err: any) {
       setError('Erro: ' + err.message);
