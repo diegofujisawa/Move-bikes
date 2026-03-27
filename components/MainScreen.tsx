@@ -291,6 +291,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [mechanicsList, setMechanicsList] = useState<any[]>([]);
   const [selectedMechanicBike, setSelectedMechanicBike] = useState<any>(null);
   const [selectedBikesForTrailer, setSelectedBikesForTrailer] = useState<string[]>([]);
+  // Estado do fluxo "Escanear para Carretinha" — acumula bikes escaneadas antes de atribuir
+  const [reservaScanMode, setReservaScanMode] = useState(false);
+  const [reservaScannedBikes, setReservaScannedBikes] = useState<Set<string>>(new Set());
   const [reporData, setReporData] = useState<any[]>([]);
   const [isReporLoading, setIsReporLoading] = useState(false);
   const [userSchedule, setUserSchedule] = useState<Record<string, string>>({});
@@ -1964,9 +1967,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const id = match ? match[1] : /^\d+$/.test(text) ? text : null;
     if (id) { 
       if (activeMechanicCategory === 'Reserva') {
-        stopScanner();
-        setSelectedBikesForTrailer([id]);
-        setIsTrailerSelectionModalOpen(true);
+        // Modo scan reserva: acumula bikes escaneadas sem fechar o scanner
+        setReservaScannedBikes(prev => {
+          const next = new Set(prev);
+          // Só adiciona se bike está na reserva
+          const isInReserva = mechanicsList.some(b => 
+            String(b.patrimonio) === String(id) && b.status === 'Reserva'
+          );
+          if (isInReserva) {
+            next.add(String(id));
+          }
+          return next;
+        });
+        // Não fecha o scanner — deixa continuar escaneando
       } else {
         setSearchTerm(id); 
         stopScanner(); 
@@ -3756,7 +3769,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   <span>{isSearching ? 'Buscando...' : 'Consultar'}</span>
                 </button>
               </div>
-              {isScannerOpen && (
+              {isScannerOpen && !reservaScanMode && (
                 <div className="relative overflow-hidden rounded-lg bg-black aspect-square max-w-[300px] mx-auto w-full border-2 border-blue-500 shadow-xl">
                   <div id="qr-reader" className="w-full h-full"/>
                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center"><div className="w-48 h-48 border-2 border-blue-400/50 rounded-lg"/></div>
@@ -3959,7 +3972,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </span>
             </button>
             <button 
-              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Reserva' ? null : 'Reserva')}
+              onClick={() => {
+                if (activeMechanicCategory === 'Reserva') {
+                  stopScanner();
+                  setReservaScanMode(false);
+                  setReservaScannedBikes(new Set());
+                }
+                setActiveMechanicCategory(activeMechanicCategory === 'Reserva' ? null : 'Reserva');
+              }}
               className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Reserva' ? 'bg-green-600 border-green-700 text-white' : 'bg-green-50 border-green-100 hover:bg-green-100'}`}
             >
               <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Reserva' ? 'bg-white text-green-600' : 'bg-green-600 text-white'}`}>
@@ -4138,16 +4158,78 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <div id="section-reserva" className="p-4 border rounded-lg bg-green-50 shadow-sm scroll-mt-4">
                 <div className="flex justify-between items-center mb-3">
                   <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
-                  <button 
-                    onClick={() => {
-                      // Abre scanner para qualquer bike na reserva (Sem Carretinha ou não)
-                      startScanner(); // Usa o scanner geral, mas vamos tratar o sucesso
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm transition-all active:scale-95"
-                  >
-                    <QrCodeIcon className="w-4 h-4"/>Escanear para Carretinha
-                  </button>
+                  <div className="flex gap-2">
+                    {!reservaScanMode ? (
+                      <button
+                        onClick={() => {
+                          setReservaScanMode(true);
+                          setReservaScannedBikes(new Set());
+                          startScanner();
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm transition-all active:scale-95"
+                      >
+                        <QrCodeIcon className="w-4 h-4"/>Escanear para Carretinha
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => { stopScanner(); setReservaScanMode(false); setReservaScannedBikes(new Set()); }}
+                          className="px-3 py-1.5 bg-gray-200 text-gray-700 rounded-lg text-xs font-bold hover:bg-gray-300 transition-all"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          disabled={reservaScannedBikes.size === 0}
+                          onClick={() => {
+                            stopScanner();
+                            setReservaScanMode(false);
+                            setSelectedBikesForTrailer(Array.from(reservaScannedBikes));
+                            setIsTrailerSelectionModalOpen(true);
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 shadow-sm transition-all active:scale-95 disabled:bg-gray-300"
+                        >
+                          <TrailerIcon className="w-4 h-4"/>
+                          Organizar ({reservaScannedBikes.size})
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
+
+                {/* Scanner inline no modo scan */}
+                {reservaScanMode && (
+                  <div className="mb-4">
+                    {isScannerOpen && (
+                      <div className="relative overflow-hidden rounded-lg bg-black aspect-square max-w-[260px] mx-auto w-full border-2 border-green-500 shadow-xl">
+                        <div id="qr-reader" className="w-full h-full"/>
+                        <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                          <div className="w-44 h-44 border-2 border-green-400/60 rounded-xl"/>
+                        </div>
+                        <p className="absolute bottom-2 left-0 right-0 text-center text-[10px] text-white bg-black/50 py-1">
+                          Aponte para o QR Code da bike
+                        </p>
+                      </div>
+                    )}
+                    <div className="mt-2 p-3 bg-white border border-green-200 rounded-lg">
+                      <p className="text-[10px] font-black text-green-700 uppercase mb-2">
+                        Bikes escaneadas ({reservaScannedBikes.size}):
+                      </p>
+                      {reservaScannedBikes.size === 0 ? (
+                        <p className="text-[10px] text-gray-400 italic">Nenhuma ainda — escaneie as bikes da reserva</p>
+                      ) : (
+                        <div className="flex flex-wrap gap-1.5">
+                          {Array.from(reservaScannedBikes).map(pat => (
+                            <span key={pat} className="px-2 py-0.5 bg-green-100 border border-green-300 text-green-800 text-[10px] font-black rounded font-mono flex items-center gap-1">
+                              ✅ {pat}
+                              <button onClick={() => setReservaScannedBikes(prev => { const n = new Set(prev); n.delete(pat); return n; })}
+                                className="text-red-400 hover:text-red-600 ml-0.5">×</button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (
                   <div className="space-y-4">
                     {Object.entries(
@@ -4213,7 +4295,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                   <XIcon className="w-2.5 h-2.5" />
                                 </button>
                               )}
-                              <span className="font-bold">{bike.patrimonio}</span>
+                              <div className="flex items-center gap-1">
+                                {reservaScanMode && reservaScannedBikes.has(String(bike.patrimonio)) && (
+                                  <span className="text-green-600 text-sm font-black">✅</span>
+                                )}
+                                <span className="font-bold">{bike.patrimonio}</span>
+                              </div>
                               <div className="flex flex-col items-center scale-90 origin-top">
                                 {bike.bateria !== undefined && <span className="text-[8px] text-gray-500">{bike.bateria}%</span>}
                                 {bike.carregamento === 'Carregando' && <span className="text-[8px] text-green-600 font-bold">⚡</span>}
