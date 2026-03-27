@@ -23,6 +23,7 @@ import ReporModal from './ReporModal';
 import MechanicRepairModal from './MechanicRepairModal';
 import MechanicSelectionModal from './MechanicSelectionModal';
 import TrailerSelectionModal from './TrailerSelectionModal';
+import DriverSelectionModal from './DriverSelectionModal';
 import RequestModal from './RequestModal';
 import ReportModal from './ReportModal';
 import RouteModal from './RouteModal';
@@ -225,6 +226,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
   ];
   const [isMechanicSelectionModalOpen, setIsMechanicSelectionModalOpen] = useState(false);
   const [isTrailerSelectionModalOpen, setIsTrailerSelectionModalOpen] = useState(false);
+  const [isDriverSelectionModalOpen, setIsDriverSelectionModalOpen] = useState(false);
+  const [selectedActionForAssignment, setSelectedActionForAssignment] = useState<any>(null);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [destinationModal, setDestinationModal] = useState<{
     isOpen: boolean; bikeNumber: string;
@@ -1214,31 +1217,35 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsBikeSearchLoading(true);
     try {
       if (isMecanica) {
-        if (targetStatus === 'Alterar Status' || targetStatus === 'Reserva') {
+        const directStatuses = ['Alterar Status', 'Reserva', 'Aguardando Manutenção', 'Em Manutenção'];
+        if (directStatuses.includes(targetStatus)) {
           // Move no backend imediatamente — evita que o refreshAll reverta o estado
           protectMechanicBike(bikePat, targetStatus);
 
+          const finalMechanicName = mechanicName || driverName;
           const jaExiste = mechanicsList.some(b => b.patrimonio === bikePat);
           if (jaExiste) {
             setMechanicsList(prev => prev.map(b => 
-              b.patrimonio === bikePat ? { ...b, status: targetStatus, mecanico: driverName } : b
+              b.patrimonio === bikePat ? { ...b, status: targetStatus, mecanico: finalMechanicName } : b
             ));
           } else {
             setMechanicsList(prev => [...prev, {
               patrimonio: bikePat,
               status: targetStatus,
               dataEntrada: new Date(),
-              mecanico: driverName,
+              mecanico: finalMechanicName,
               tratativa: 'MANUAL',
               manual: true,
             }]);
           }
           // Persiste no backend
-          await apiCall({ action: 'insertBikeMechanics', bikeNumber: bikePat, mechanicName: driverName, targetStatus }, 1, true).catch(() => {});
+          await apiCall({ action: 'insertBikeMechanics', bikeNumber: bikePat, mechanicName: finalMechanicName, targetStatus }, 1, true).catch(() => {});
           
-          setSuccessMessage(targetStatus === 'Alterar Status' 
-            ? `Bike ${bikePat} adicionada em Alterar Status.` 
-            : `Bike ${bikePat} movida para Reserva.`
+          setSuccessMessage(
+            targetStatus === 'Alterar Status' ? `Bike ${bikePat} adicionada em Alterar Status.` :
+            targetStatus === 'Reserva' ? `Bike ${bikePat} movida para Reserva.` :
+            targetStatus === 'Aguardando Manutenção' ? `Bike ${bikePat} em Aguardando Manutenção.` :
+            `Bike ${bikePat} em Manutenção.`
           );
           
           setSearchedBike(null);
@@ -1247,7 +1254,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           setBikeSearchResult([]);
           return;
         }
-        // Outros status (Aguardando Manutenção, Em Manutenção) — envia direto ao ADM como antes
+        // Outros status — envia direto ao ADM como antes
         await addDoc(collection(db, 'pending_actions'), {
           type: 'status_change',
           bikeNumber: bikePat,
@@ -1830,6 +1837,52 @@ const MainScreen: React.FC<MainScreenProps> = ({
       refreshAll(true);
     } catch (err: any) {
       alert('Erro ao aprovar: ' + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAssignTrailerToDriver = async (targetDriverName: string) => {
+    if (!selectedActionForAssignment) return;
+    setIsLoading(true);
+    try {
+      const action = selectedActionForAssignment;
+      const bikes = action.bikes || [];
+      const trailerName = action.trailerName;
+
+      // 1. Atualiza as bikes no Firestore para entrar em posse do motorista
+      await Promise.all(bikes.map((id: string) => 
+        updateDoc(doc(db, 'bikes', id), { 
+          status: 'Em Posse', 
+          responsavel: targetDriverName,
+          carretinha: trailerName,
+          ultimaAtualizacao: serverTimestamp() 
+        })
+      ));
+
+      // 2. Cria a notificação para o motorista
+      await apiCall({
+        action: 'createRequest', 
+        patrimonio: bikes.join(', '),
+        ocorrencia: `[CARRETINHA] ${trailerName}`,
+        local: 'Atribuído via ADM', 
+        recipient: targetDriverName
+      }, 1, true);
+
+      // 3. Aprova a ação pendente
+      await updateDoc(doc(db, 'pending_actions', action.id), {
+        status: 'approved',
+        approvedBy: driverName, // Nome do ADM logado
+        approvedAt: serverTimestamp(),
+        assignedTo: targetDriverName
+      });
+
+      setSuccessMessage(`Carretinha ${trailerName} enviada para ${targetDriverName}!`);
+      setIsDriverSelectionModalOpen(false);
+      setSelectedActionForAssignment(null);
+      refreshAll(true);
+    } catch (err: any) {
+      alert('Erro ao atribuir carretinha: ' + err.message);
     } finally {
       setIsLoading(false);
     }
@@ -4412,6 +4465,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             </div>
                             {action.type !== 'alterar_status_lote' && (
                               <div className="flex gap-2">
+                                {action.type === 'trailer_validation' && (
+                                  <button
+                                    onClick={() => {
+                                      setSelectedActionForAssignment(action);
+                                      setIsDriverSelectionModalOpen(true);
+                                    }}
+                                    disabled={isLoading}
+                                    className="p-2 bg-blue-50 text-blue-600 rounded-lg border border-blue-100 hover:bg-blue-100 transition-colors"
+                                    title="Enviar para Motorista"
+                                  >
+                                    <TrailerIcon className="w-5 h-5" />
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => handleApproveAction(action)}
                                   disabled={isLoading}
@@ -5468,6 +5534,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
       <TrailerSelectionModal isOpen={isTrailerSelectionModalOpen} onClose={() => setIsTrailerSelectionModalOpen(false)}
         onConfirm={name => { handleOrganizeTrailer(selectedBikesForTrailer, name); setIsTrailerSelectionModalOpen(false); }}
         isLoading={isLoading} bikeNumbers={selectedBikesForTrailer}/>
+
+      <DriverSelectionModal 
+        isOpen={isDriverSelectionModalOpen} 
+        onClose={() => { setIsDriverSelectionModalOpen(false); setSelectedActionForAssignment(null); }}
+        onConfirm={handleAssignTrailerToDriver}
+        isLoading={isLoading}
+        drivers={driversSummary}
+      />
 
       {/* Modal Boletim */}
       {isBoletimModalOpen && (
