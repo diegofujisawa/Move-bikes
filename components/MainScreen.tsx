@@ -1086,7 +1086,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // Firebase não-bloqueante
         bikesToAdd.forEach(id => {
           setDoc(doc(db, 'bikes', id), {
-            status: 'Recolhida', responsavel: driverName, ultimaAtualizacao: serverTimestamp()
+            status: 'Recolhida', 
+            responsavel: driverName, 
+            carretinha: null,
+            trailerStatus: null,
+            ultimaAtualizacao: serverTimestamp()
           }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
         });
         // Registra apenas na timeline (Relatório removido conforme solicitação)
@@ -1760,38 +1764,32 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const handleOrganizeTrailer = async (bikeNumbers: string[], trailerName: string) => {
     if (!trailerName) { alert('Informe o nome da carretinha.'); return; }
 
-    // Organiza localmente a carretinha
-    setMechanicsList(prev => prev.map(b =>
-      bikeNumbers.includes(b.patrimonio) ? { ...b, carretinha: trailerName } : b
-    ));
-    setIsTrailerSelectionModalOpen(false);
+    setIsLoading(true);
+    try {
+      // Organiza localmente a carretinha
+      setMechanicsList(prev => prev.map(b =>
+        bikeNumbers.includes(b.patrimonio) ? { ...b, carretinha: trailerName, status: 'Reserva' } : b
+      ));
+      setIsTrailerSelectionModalOpen(false);
 
-    // Persiste no backend
-    apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
-    await Promise.all(bikeNumbers.map(id =>
-      updateDoc(doc(db, 'bikes', id), { carretinha: trailerName, ultimaAtualizacao: serverTimestamp() }).catch(() => {})
-    ));
+      // Persiste no backend
+      apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
+      await Promise.all(bikeNumbers.map(id =>
+        updateDoc(doc(db, 'bikes', id), { 
+          carretinha: trailerName, 
+          status: 'Reserva', 
+          trailerStatus: null, // Reseta status se estiver sendo re-organizada
+          ultimaAtualizacao: serverTimestamp() 
+        }, { merge: true }).catch(() => {})
+      ));
 
-    // Abre modal de verificação QR + bateria + comunicação
-    // O envio ao ADM só ocorre após todas as bikes serem confirmadas (executeTrailerFinalization)
-    const bikesRaw = mechanicsList
-      .filter(b => bikeNumbers.includes(b.patrimonio))
-      .map(b => ({
-        patrimonio: String(b.patrimonio),
-        bateria: b.bateria !== undefined ? Number(b.bateria) : undefined,
-        ultimaInfo: b.ultimaInfo || b.ultimaAtualizacao || ''
-      }));
-
-    setTrailerQrModal({
-      isOpen: true,
-      trailerName,
-      expectedBikes: bikesRaw.length > 0 ? bikesRaw : bikeNumbers.map(p => ({ patrimonio: p, bateria: undefined, ultimaInfo: '' })),
-      confirmedBikes: new Set(),
-      batteryFailed: null,
-      scannerActive: false,
-      lastScanned: null,
-      lastError: null,
-    });
+      setSuccessMessage(`Bikes organizadas na ${trailerName}!`);
+      refreshAll(true);
+    } catch (err: any) {
+      setError('Erro ao organizar carretinha: ' + err.message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleApproveAction = async (action: any) => {
@@ -1819,7 +1817,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
           if (!res.success) throw new Error(res.error || 'Erro ao aprovar status.');
         }
       } else if (action.type === 'trailer_validation') {
-        await Promise.all(action.bikes.map((id: string) => updateDoc(doc(db, 'bikes', id), { carretinha: action.trailerName, ultimaAtualizacao: serverTimestamp() })));
+        await Promise.all(action.bikes.map((id: string) => updateDoc(doc(db, 'bikes', id), { 
+          carretinha: action.trailerName, 
+          trailerStatus: 'approved',
+          ultimaAtualizacao: serverTimestamp() 
+        })));
         const res = await apiCall({ action: 'organizeTrailer', bikeNumbers: action.bikes, trailerName: action.trailerName }, 1, true);
         if (!res.success) throw new Error(res.error || 'Erro ao aprovar carretinha.');
       }
@@ -1853,9 +1855,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
       // 1. Atualiza as bikes no Firestore para entrar em posse do motorista
       await Promise.all(bikes.map((id: string) => 
         updateDoc(doc(db, 'bikes', id), { 
-          status: 'Em Posse', 
+          status: 'Reserva', // Mantém em reserva até o motorista aceitar
           responsavel: targetDriverName,
           carretinha: trailerName,
+          trailerStatus: 'assigned',
           ultimaAtualizacao: serverTimestamp() 
         })
       ));
@@ -1934,7 +1937,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const handleScannerSuccess = (text: string) => {
     const match = text.match(/\/download\/(\d+)/);
     const id = match ? match[1] : /^\d+$/.test(text) ? text : null;
-    if (id) { setSearchTerm(id); stopScanner(); handleSearch(id); }
+    if (id) { 
+      if (activeMechanicCategory === 'Reserva') {
+        stopScanner();
+        setSelectedBikesForTrailer([id]);
+        setIsTrailerSelectionModalOpen(true);
+      } else {
+        setSearchTerm(id); 
+        stopScanner(); 
+        handleSearch(id); 
+      }
+    }
   };
 
   const handleTrailerQrSuccess = (decodedText: string) => {
@@ -2065,11 +2078,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setTrailerQrModal(null);
     setIsLoading(true);
     const bikeIds = expectedBikes.map(b => b.patrimonio);
+    // Mantém status 'Reserva' para continuar exibindo na seção Reserva até aceite do motorista
     setMechanicsList(prev => prev.map(b =>
-      b.carretinha === trailerName ? { ...b, status: 'Remanejada' } : b
+      b.carretinha === trailerName ? { ...b, trailerStatus: 'finalized' } : b
     ));
     try {
-      await Promise.all(bikeIds.map(id => setDoc(doc(db, 'bikes', id), { carretinha: null, ultimaAtualizacao: serverTimestamp() }, { merge: true })));
+      // Não limpa carretinha aqui; define trailerStatus como 'finalized'
+      await Promise.all(bikeIds.map(id => setDoc(doc(db, 'bikes', id), { 
+        trailerStatus: 'finalized', 
+        ultimaAtualizacao: serverTimestamp() 
+      }, { merge: true })));
       apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
       // Notifica ADM para alterar status das bikes — só ocorre aqui, após QR + bateria + comunicação
       const notifyMsg = `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
@@ -3988,7 +4006,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
             {activeMechanicCategory === 'Reserva' && (
               <div id="section-reserva" className="p-4 border rounded-lg bg-green-50 shadow-sm scroll-mt-4">
-                <h2 className="text-lg font-bold text-green-800 mb-3 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
+                <div className="flex justify-between items-center mb-3">
+                  <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
+                  <button 
+                    onClick={() => {
+                      // Abre scanner para qualquer bike na reserva (Sem Carretinha ou não)
+                      startScanner(); // Usa o scanner geral, mas vamos tratar o sucesso
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm transition-all active:scale-95"
+                  >
+                    <QrCodeIcon className="w-4 h-4"/>Escanear para Carretinha
+                  </button>
+                </div>
                 {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (
                   <div className="space-y-4">
                     {Object.entries(
@@ -4001,14 +4030,59 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     ).map(([trailer, bikes]) => (
                       <div key={trailer} className="border border-green-200 rounded-md bg-white p-3 shadow-sm">
                         <div className="flex justify-between items-center mb-2 border-b pb-1">
-                          <h3 className="font-bold text-green-700 flex items-center gap-2"><TrailerIcon className="w-4 h-4"/>{trailer}</h3>
+                          <div className="flex flex-col">
+                            <h3 className="font-bold text-green-700 flex items-center gap-2"><TrailerIcon className="w-4 h-4"/>{trailer}</h3>
+                            {trailer !== 'Sem Carretinha' && bikes[0]?.trailerStatus === 'finalized' && (
+                              <span className="text-[8px] font-bold text-orange-600 uppercase">Aguardando Validação ADM</span>
+                            )}
+                            {trailer !== 'Sem Carretinha' && bikes[0]?.trailerStatus === 'assigned' && (
+                              <span className="text-[8px] font-bold text-blue-600 uppercase">Aguardando Aceite Motorista</span>
+                            )}
+                          </div>
                           {trailer !== 'Sem Carretinha' && (
-                            <button onClick={() => handleFinalizeTrailer(trailer)} className="text-[10px] bg-green-600 text-white px-2 py-0.5 rounded font-bold hover:bg-green-700">Finalizar Carretinha</button>
+                            <div className="flex gap-1">
+                              {(!bikes[0]?.trailerStatus || bikes[0]?.trailerStatus === 'finalized') && (
+                                <button 
+                                  onClick={() => handleFinalizeTrailer(trailer)} 
+                                  className={`text-[10px] px-2 py-0.5 rounded font-bold transition-all ${bikes[0]?.trailerStatus === 'finalized' ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700'} text-white`}
+                                >
+                                  {bikes[0]?.trailerStatus === 'finalized' ? 'Re-Finalizar' : 'Finalizar Carretinha'}
+                                </button>
+                              )}
+                              {bikes[0]?.trailerStatus === 'finalized' && (
+                                <button 
+                                  onClick={() => {
+                                    // Permite editar: remove status finalized para permitir alteração
+                                    bikes.forEach(b => {
+                                      updateDoc(doc(db, 'bikes', b.patrimonio), { trailerStatus: null, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
+                                    });
+                                    alert('Carretinha aberta para edição!');
+                                    refreshAll(true);
+                                  }}
+                                  className="text-[10px] bg-blue-500 text-white px-2 py-0.5 rounded font-bold hover:bg-blue-600"
+                                >
+                                  Editar
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
                         <div className="grid grid-cols-3 gap-2">
                           {(bikes as any[]).map((bike, i) => (
-                            <div key={`trailer-${bike.patrimonio}-${i}`} className="text-xs p-1.5 bg-gray-50 border rounded text-center font-medium text-gray-700 flex flex-col items-center gap-0.5">
+                            <div key={`trailer-${bike.patrimonio}-${i}`} className="relative text-xs p-1.5 bg-gray-50 border rounded text-center font-medium text-gray-700 flex flex-col items-center gap-0.5">
+                              {trailer !== 'Sem Carretinha' && (!bike.trailerStatus) && (
+                                <button 
+                                  onClick={async () => {
+                                    if (window.confirm(`Remover bike ${bike.patrimonio} da ${trailer}?`)) {
+                                      await updateDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, ultimaAtualizacao: serverTimestamp() });
+                                      refreshAll(true);
+                                    }
+                                  }}
+                                  className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 shadow-sm hover:bg-red-600 z-10"
+                                >
+                                  <XIcon className="w-2.5 h-2.5" />
+                                </button>
+                              )}
                               <span className="font-bold">{bike.patrimonio}</span>
                               <div className="flex flex-col items-center scale-90 origin-top">
                                 {bike.bateria !== undefined && <span className="text-[8px] text-gray-500">{bike.bateria}%</span>}
