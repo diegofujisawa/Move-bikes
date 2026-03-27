@@ -323,6 +323,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     lastError: string | null;
   } | null>(null);
   const trailerScannerRef = useRef<Html5Qrcode | null>(null);
+  const scannerStartPromise = useRef<Promise<any> | null>(null);
+  const trailerScannerStartPromise = useRef<Promise<any> | null>(null);
+  const isScannerBusy = useRef(false);
   const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
 
@@ -1926,12 +1929,34 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
-  const stopTrailerScanner = async () => {
+  const internalStopTrailerScanner = async () => {
+    if (trailerScannerStartPromise.current) {
+      try { await trailerScannerStartPromise.current; } catch { }
+      trailerScannerStartPromise.current = null;
+    }
+
     if (trailerScannerRef.current) {
-      try { await trailerScannerRef.current.stop(); await trailerScannerRef.current.clear(); } catch {}
+      const qr = trailerScannerRef.current;
       trailerScannerRef.current = null;
+      try { 
+        if (qr.isScanning) {
+          await qr.stop(); 
+          await new Promise(r => setTimeout(r, 200));
+        }
+        await qr.clear(); 
+      } catch (e) {
+        console.warn('Error stopping trailer scanner:', e);
+      }
     }
     setTrailerQrModal(prev => prev ? { ...prev, scannerActive: false } : null);
+  };
+
+  const stopTrailerScanner = async () => {
+    try {
+      await internalStopTrailerScanner();
+    } catch (e) {
+      console.warn('Error in stopTrailerScanner:', e);
+    }
   };
 
   const handleScannerSuccess = (text: string) => {
@@ -2013,37 +2038,86 @@ const MainScreen: React.FC<MainScreenProps> = ({
   };
 
   const startTrailerScanner = async () => {
+    if (isScannerBusy.current) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Seu navegador não suporta acesso à câmera.', scannerActive: false } : null);
+      return;
+    }
+    isScannerBusy.current = true;
+    try {
+      await internalStopScanner();
+      await internalStopTrailerScanner();
+      await new Promise(r => setTimeout(r, 400));
+    } catch (e) {
+      console.warn('Error stopping existing scanners:', e);
+    }
+
     setTrailerQrModal(prev => prev ? { ...prev, scannerActive: true, lastError: null } : null);
     setTimeout(async () => {
       try {
+        const el = document.getElementById('qr-trailer-reader');
+        if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
+        
+        const checkStillActive = () => {
+          let active = false;
+          setTrailerQrModal(prev => {
+            if (prev && prev.scannerActive) active = true;
+            return prev;
+          });
+          return active;
+        };
+
+        if (!checkStillActive()) return;
+
         const qr = new Html5Qrcode('qr-trailer-reader');
         trailerScannerRef.current = qr;
+        
+        const startWithRetry = async (withZoom: boolean, retries = 3): Promise<void> => {
+          if (!checkStillActive()) return;
+          try {
+            const config = withZoom 
+              ? { facingMode: 'environment', advanced: [{ zoom: 2.0 }] } as any
+              : { facingMode: 'environment' };
+            
+            const promise = qr.start(
+              config,
+              { fps: 10, qrbox: { width: 220, height: 220 } },
+              (decodedText) => handleTrailerQrSuccess(decodedText),
+              () => {}
+            );
+            trailerScannerStartPromise.current = promise;
+            await promise;
+            trailerScannerStartPromise.current = null;
+          } catch (err: any) {
+            trailerScannerStartPromise.current = null;
+            if (err?.message?.includes('already under transition') && retries > 0) {
+              console.warn('Trailer Scanner transition error, retrying...', retries);
+              await new Promise(r => setTimeout(r, 500));
+              return startWithRetry(withZoom, retries - 1);
+            }
+            throw err;
+          }
+        };
+
         try {
-          await qr.start(
-            { 
-              facingMode: 'environment',
-              // @ts-expect-error - zoom is not in standard types yet
-              advanced: [{ zoom: 2.0 }]
-            },
-            { fps: 10, qrbox: { width: 220, height: 220 } },
-            (decodedText) => {
-              handleTrailerQrSuccess(decodedText);
-            }, () => {}
-          );
+          await startWithRetry(true);
         } catch (err) {
-          console.warn('Zoom not supported, starting without zoom:', err);
-          await qr.start(
-            { facingMode: 'environment' },
-            { fps: 10, qrbox: { width: 220, height: 220 } },
-            (decodedText) => {
-              handleTrailerQrSuccess(decodedText);
-            }, () => {}
-          );
+          console.warn('Zoom not supported, retrying trailer scanner without zoom...');
+          try {
+            if (trailerScannerRef.current?.isScanning) {
+              await trailerScannerRef.current.stop();
+              await new Promise(r => setTimeout(r, 400));
+            }
+          } catch {}
+          await startWithRetry(false);
         }
-      } catch {
-        setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Não foi possível acessar a câmera.', scannerActive: false } : null);
+      } catch (err: any) {
+        console.error('Trailer Scanner error:', err);
+        setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + (err.message || String(err)), scannerActive: false } : null);
+      } finally {
+        isScannerBusy.current = false;
       }
-    }, 150);
+    }, 500);
   };
 
   const handleFinalizeTrailer = async (trailerName: string) => {
@@ -2145,47 +2219,90 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // SCANNER QR
   // =================================================================
   const startScanner = async () => {
+    if (isScannerBusy.current) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError('Seu navegador não suporta acesso à câmera.');
+      return;
+    }
+
+    isScannerBusy.current = true;
+
+    // Para tudo e aguarda — garante estado limpo antes de iniciar
+    try {
+      await internalStopScanner();
+      await internalStopTrailerScanner();
+    } catch {}
+    await new Promise(r => setTimeout(r, 500));
+
     setIsScannerOpen(true);
-    setTimeout(async () => {
-      try {
-        const qr = new Html5Qrcode('qr-reader');
-        scannerRef.current = qr;
-        try {
-          await qr.start(
-            { 
-              facingMode: 'environment',
-              // @ts-expect-error - zoom is not in standard types yet
-              advanced: [{ zoom: 2.0 }]
-            },
-            { fps: 10, qrbox: { width: 250, height: 250 } },
-            (text) => {
-              handleScannerSuccess(text);
-            }, () => {}
-          );
-        } catch (err) {
-          console.warn('Zoom not supported, starting without zoom:', err);
-          await qr.start(
-            { facingMode: 'environment' },
-            { fps: 10, qrbox: { width: 250, height: 250 } },
-            (text) => {
-              handleScannerSuccess(text);
-            }, () => {}
-          );
-        }
-      } catch { setError('Não foi possível acessar a câmera.'); setIsScannerOpen(false); }
-    }, 100);
+
+    // Aguarda DOM renderizar o elemento do scanner
+    await new Promise(r => setTimeout(r, 500));
+
+    try {
+      const el = document.getElementById('qr-reader');
+      if (!el) throw new Error('Elemento qr-reader não encontrado.');
+
+      // Limpa innerHTML para garantir estado DOM fresco — evita "already under transition"
+      el.innerHTML = '';
+
+      const qr = new Html5Qrcode('qr-reader');
+      scannerRef.current = qr;
+
+      await qr.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (text) => handleScannerSuccess(text),
+        () => {}
+      );
+    } catch (err: any) {
+      console.error('Scanner error:', err);
+      const msg = (err.message || String(err));
+      if (!msg.includes('transition') && !msg.includes('already')) {
+        setError('Não foi possível acessar a câmera: ' + msg);
+      }
+      setIsScannerOpen(false);
+    } finally {
+      isScannerBusy.current = false;
+    }
   };
 
-  const stopScanner = async () => {
+  const internalStopScanner = async () => {
+    if (scannerStartPromise.current) {
+      try { await scannerStartPromise.current; } catch { }
+      scannerStartPromise.current = null;
+    }
+
     if (scannerRef.current) {
-      try { await scannerRef.current.stop(); await scannerRef.current.clear(); } catch {}
+      const qr = scannerRef.current;
       scannerRef.current = null;
+      try { 
+        if (qr.isScanning) {
+          await qr.stop(); 
+          await new Promise(r => setTimeout(r, 200));
+        }
+        await qr.clear(); 
+      } catch (e) {
+        console.warn('Error stopping scanner:', e);
+      }
     }
     setIsScannerOpen(false);
   };
 
-  useEffect(() => { return () => { if (scannerRef.current) scannerRef.current.stop().catch(() => {}); }; }, []);
-  useEffect(() => { return () => { if (trailerScannerRef.current) trailerScannerRef.current.stop().catch(() => {}); }; }, []);
+  const stopScanner = async () => {
+    try {
+      await internalStopScanner();
+    } catch (e) {
+      console.warn('Error in stopScanner:', e);
+    }
+  };
+
+  useEffect(() => { 
+    return () => { 
+      internalStopScanner().catch(() => {});
+      internalStopTrailerScanner().catch(() => {});
+    }; 
+  }, []);
 
   const [isMigrationConfirmOpen, setIsMigrationConfirmOpen] = useState(false);
 
@@ -3165,8 +3282,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   );
                 })()}
                 {lastError && (
-                  <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-lg text-center">
-                    <p className="text-xs font-bold text-red-700">⚠️ {lastError}</p>
+                  <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-lg flex justify-between items-center">
+                    <p className="text-xs font-bold text-red-700 flex-1 text-center">⚠️ {lastError}</p>
+                    <button 
+                      onClick={() => setTrailerQrModal(prev => prev ? { ...prev, lastError: null } : null)}
+                      className="text-red-400 hover:text-red-600 flex-shrink-0"
+                    >
+                      <XIcon className="w-4 h-4"/>
+                    </button>
                   </div>
                 )}
               </div>
@@ -3645,7 +3768,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
           </div>
         )}
 
-        {error && <div className="text-red-600 bg-red-100 p-3 rounded-md text-sm mb-4">{error}</div>}
+        {error && (
+          <div className="text-red-600 bg-red-100 p-3 rounded-md text-sm mb-4 flex justify-between items-center">
+            <span>{error}</span>
+            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">
+              <XIcon className="w-4 h-4"/>
+            </button>
+          </div>
+        )}
         {successMessage && <div className="text-green-600 bg-green-100 p-3 rounded-md text-sm mb-4">{successMessage}</div>}
 
         {/* RESULTADO DA BUSCA */}
