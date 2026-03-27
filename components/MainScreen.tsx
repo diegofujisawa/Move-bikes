@@ -2699,42 +2699,62 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (category.toUpperCase() !== 'MOTORISTA') return;
     if (!navigator.geolocation) { setGpsError('Seu navegador não suporta geolocalização.'); return; }
 
-    let lastSentLat = 0, lastSentLng = 0, lastSentTime = 0;
+    let lastFirebaseLat = 0, lastFirebaseLng = 0, lastFirebaseTime = 0;
+    let lastSheetsLat = 0, lastSheetsLng = 0, lastSheetsTime = 0;
     let wakeLock: any = null;
     let watchId: number | null = null;
 
-    const sendLocation = (latitude: number, longitude: number, force = false) => {
+    const sendLocation = (latitude: number, longitude: number, speed: number | null = null, force = false) => {
       const now = Date.now();
-      const movedMeters = getDistanceInMeters(latitude, longitude, lastSentLat, lastSentLng);
-      const elapsed = now - lastSentTime;
-      if (!force && movedMeters <= 5 && elapsed < 15000) return;
+      
+      // 1. FIREBASE: Alta frequência para fluidez no mapa ADM
+      const movedFirebase = getDistanceInMeters(latitude, longitude, lastFirebaseLat, lastFirebaseLng);
+      const elapsedFirebase = now - lastFirebaseTime;
+      
+      // Atualiza Firebase se: forçado OU moveu > 2 metros OU passou 10 segundos
+      if (force || movedFirebase > 2 || elapsedFirebase > 10000) {
+        lastFirebaseLat = latitude;
+        lastFirebaseLng = longitude;
+        lastFirebaseTime = now;
+        
+        // Converte m/s para km/h
+        const speedKmh = speed !== null ? Math.round(speed * 3.6) : 0;
 
-      lastSentLat = latitude;
-      lastSentLng = longitude;
-      lastSentTime = now;
+        setDoc(doc(db, 'locations', driverName), {
+          driverName, latitude, longitude,
+          timestamp: serverTimestamp(), category,
+          status: 'LOGADO',
+          speed: speedKmh,
+        }, { merge: true }).catch(() => {});
+      }
+
+      // 2. SHEETS: Baixa frequência para persistência e economia de quota
+      const movedSheets = getDistanceInMeters(latitude, longitude, lastSheetsLat, lastSheetsLng);
+      const elapsedSheets = now - lastSheetsTime;
+      
+      // Atualiza Sheets se: forçado OU moveu > 15 metros OU passou 60 segundos
+      if (force || movedSheets > 15 || elapsedSheets > 60000) {
+        lastSheetsLat = latitude;
+        lastSheetsLng = longitude;
+        lastSheetsTime = now;
+        
+        apiGetCall('updateLocation', {
+          driverName,
+          latitude: latitude.toFixed(6),
+          longitude: longitude.toFixed(6)
+        }).catch(() => {});
+      }
+
+      setCurrentDriverLocation({ lat: latitude, lng: longitude });
       lastLocationRef.current = { lat: latitude, lng: longitude };
-
-      // Firebase tempo real — inclui status LOGADO
-      setDoc(doc(db, 'locations', driverName), {
-        driverName, latitude, longitude,
-        timestamp: serverTimestamp(), category,
-        status: 'LOGADO',
-      }, { merge: true }).catch(() => {});
-
-      // Sheets — persistência
-      apiGetCall('updateLocation', {
-        driverName,
-        latitude: latitude.toFixed(6),
-        longitude: longitude.toFixed(6)
-      }).catch(() => {});
     };
 
     const getCurrentAndSend = (force = false) => {
       navigator.geolocation.getCurrentPosition(
-        ({ coords: { latitude, longitude } }) => {
+        ({ coords: { latitude, longitude, speed } }) => {
           setGpsError(null);
           setCurrentDriverLocation({ lat: latitude, lng: longitude });
-          sendLocation(latitude, longitude, force);
+          sendLocation(latitude, longitude, speed, force);
         },
         () => {},
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
@@ -2744,10 +2764,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const startWatch = () => {
       if (watchId !== null) navigator.geolocation.clearWatch(watchId);
       watchId = navigator.geolocation.watchPosition(
-        ({ coords: { latitude, longitude } }) => {
+        ({ coords: { latitude, longitude, speed } }) => {
           setGpsError(null);
           setCurrentDriverLocation({ lat: latitude, lng: longitude });
-          sendLocation(latitude, longitude);
+          sendLocation(latitude, longitude, speed);
         },
         err => {
           if (err.code === err.PERMISSION_DENIED)

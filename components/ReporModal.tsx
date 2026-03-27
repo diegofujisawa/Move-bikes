@@ -70,7 +70,12 @@ const ReporModal: React.FC<ReporModalProps> = ({ isOpen, onClose, data, isLoadin
             "LV - Morumbi",
             "LV - Vale do Sol",
             "LV - Eldorado",
-            "LV - Sul"
+            "LV - Sul",
+            "Parque da Cidade",
+            "Sub Pref Eugênio de Melo",
+            "3 Parque da Cidade",
+            "23 Sub Pref Eugênio de Melo",
+            "11 LV - Osvaldo Cruz"
         ].map(s => s.toLowerCase().trim());
 
         // Filter: Only non-empty names, exclude header-like rows, and MUST be in the allowed list

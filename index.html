@@ -19,6 +19,10 @@
       .marker-label {
         text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
       }
+      /* Transição suave para os marcadores no mapa */
+      .leaflet-marker-icon {
+        transition: transform 1.5s linear;
+      }
     </style>
     <!-- 
       ATENÇÃO: A API do Google Maps foi removida para evitar cobranças.

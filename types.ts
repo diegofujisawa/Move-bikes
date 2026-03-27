@@ -78,4 +78,5 @@ export interface DriverLocation {
     latitude: number;
     longitude: number;
     timestamp: string;
+    speed?: number;
 }

@@ -30,10 +30,13 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<{ [key: string]: L.Marker }>({});
+  const pathsRef = useRef<{ [key: string]: L.Polyline }>({});
+  const lastLocsRef = useRef<DriverLocation[]>([]);
   const hasCenteredRef = useRef(false);
 
   const updateMapWithLocations = useCallback((locations: DriverLocation[]) => {
     if (!mapContainerRef.current) return;
+    lastLocsRef.current = locations;
 
     if (!mapRef.current) {
       const map = L.map(mapContainerRef.current, {
@@ -50,12 +53,14 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
 
     const map = mapRef.current;
     const currentMarkers = markersRef.current;
+    const currentPaths = pathsRef.current;
     const activeDrivers = new Set<string>();
     const markerGroup: L.LatLng[] = [];
 
     locations.forEach(loc => {
-      const { driverName, latitude, longitude } = loc;
-      const isStale = (loc as any).stale === true;
+      const { driverName, latitude, longitude, timestamp, speed } = loc;
+      const ts = timestamp ? new Date(timestamp).getTime() : 0;
+      const isStale = ts > 0 && (Date.now() - ts) > 120000; // 2 min
       const normLat = normalizeCoord(latitude);
       const normLng = normalizeCoord(longitude);
       if (isNaN(normLat) || isNaN(normLng) || normLat === 0 || normLng === 0) return;
@@ -64,10 +69,33 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       activeDrivers.add(driverName);
       markerGroup.push(position);
 
+      // Atualiza ou cria o rastro (polyline)
+      if (currentPaths[driverName]) {
+        const path = currentPaths[driverName];
+        const latlngs = path.getLatLngs() as L.LatLng[];
+        // Adiciona nova posição se for diferente da última
+        if (latlngs.length === 0 || !latlngs[latlngs.length - 1].equals(position)) {
+          latlngs.push(position);
+          // Mantém apenas os últimos 50 pontos para performance
+          if (latlngs.length > 50) latlngs.shift();
+          path.setLatLngs(latlngs);
+        }
+      } else {
+        const path = L.polyline([position], {
+          color: '#3b82f6',
+          weight: 3,
+          opacity: 0.5,
+          dashArray: '5, 10'
+        }).addTo(map);
+        currentPaths[driverName] = path;
+      }
+
       const tooltipClass = isStale
         ? 'bg-orange-500 text-white font-bold px-2 py-1 rounded shadow-lg border-none'
         : 'bg-blue-600 text-white font-bold px-2 py-1 rounded shadow-lg border-none';
-      const label = isStale ? (driverName + ' ⚠️') : driverName;
+      
+      const speedLabel = speed !== undefined && speed > 0 ? ` | ${speed} km/h` : ' | 0 km/h';
+      const label = `${driverName}${speedLabel}${isStale ? ' ⚠️' : ''}`;
 
       if (currentMarkers[driverName]) {
         currentMarkers[driverName].setLatLng(position);
@@ -85,10 +113,15 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       hasCenteredRef.current = true;
     }
 
+    // Remove marcadores e rastros de motoristas inativos
     Object.keys(currentMarkers).forEach(name => {
       if (!activeDrivers.has(name)) {
         map.removeLayer(currentMarkers[name]);
         delete currentMarkers[name];
+        if (currentPaths[name]) {
+          map.removeLayer(currentPaths[name]);
+          delete currentPaths[name];
+        }
       }
     });
 
@@ -103,9 +136,18 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
     }
   }, []);
 
+  // Timer para atualizar o contador de segundos nos tooltips sem precisar de novo evento do Firebase
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (lastLocsRef.current.length > 0) {
+        updateMapWithLocations(lastLocsRef.current);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [updateMapWithLocations]);
+
   useEffect(() => {
     const THIRTY_MIN = 30 * 60 * 1000;
-    const TEN_MIN = 10 * 60 * 1000;
 
     const unsubscribe = onSnapshot(
       collection(db, 'locations'),
@@ -129,7 +171,7 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
             latitude: lat,
             longitude: lng,
             timestamp: ts ? new Date(ts).toISOString() : '',
-            stale: ageMs > TEN_MIN,
+            speed: data.speed || 0,
           });
         });
 
@@ -186,11 +228,11 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       <div className="flex items-center gap-4 mb-3 px-1">
         <div className="flex items-center gap-1.5">
           <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold text-white bg-blue-600">NOME</span>
-          <span className="text-[10px] text-gray-500">GPS atualizado (últimos 10 min)</span>
+          <span className="text-[10px] text-gray-500">GPS atualizado (últimos 2 min)</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold text-white bg-orange-500">NOME</span>
-          <span className="text-[10px] text-gray-500">GPS desatualizado (&gt;10 min)</span>
+          <span className="text-[10px] text-gray-500">GPS desatualizado (&gt;2 min)</span>
         </div>
       </div>
 
