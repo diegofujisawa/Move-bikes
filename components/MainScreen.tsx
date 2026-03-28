@@ -3005,8 +3005,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const movedFirebase = getDistanceInMeters(latitude, longitude, lastFirebaseLat, lastFirebaseLng);
       const elapsedFirebase = now - lastFirebaseTime;
       
-      // Atualiza Firebase se: forçado OU moveu > 1 metro OU passou 3 segundos
-      if (force || movedFirebase > 1 || elapsedFirebase > 3000) {
+      // Atualiza Firebase: sempre que passou 3s, ou moveu >1m, ou forçado
+      // Sem checar movimento — garante heartbeat mesmo parado
+      if (force || elapsedFirebase > 3000 || movedFirebase > 1) {
         lastFirebaseLat = latitude;
         lastFirebaseLng = longitude;
         lastFirebaseTime = now;
@@ -3051,7 +3052,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           sendLocation(latitude, longitude, speed, force);
         },
         () => {},
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 } // maximumAge:0 = sempre posição fresca
       );
     };
 
@@ -3066,8 +3067,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
         err => {
           if (err.code === err.PERMISSION_DENIED)
             setGpsError('Acesso ao GPS negado. O aplicativo requer localização ativa.');
+          else {
+            // Qualquer outro erro (timeout, unavailable) — reinicia o watch
+            console.warn('[GPS] watchPosition erro, reiniciando:', err.code);
+            setTimeout(() => startWatch(), 2000);
+          }
         },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 }
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 } // maximumAge:0 = sempre fresco
       );
     };
 
@@ -3096,8 +3102,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
     };
 
-    // Intervalo de segurança a cada 5s — captura posição mesmo se watchPosition parar em background
-    const fallbackInterval = setInterval(() => getCurrentAndSend(), 5000);
+    // Intervalo de segurança a cada 3s — polling agressivo para manter GPS ativo
+    // Complementa o watchPosition que pode parar em background
+    const fallbackInterval = setInterval(() => getCurrentAndSend(), 3000);
 
     // pageshow: dispara quando volta de outra aba/app (inclui bfcache)
     const onPageShow = (e: PageTransitionEvent) => {
