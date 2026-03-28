@@ -131,7 +131,20 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
         if (!currentLocsRef.current[driverName]) {
           currentLocsRef.current[driverName] = { lat: normLat, lng: normLng };
         }
-        const marker = L.marker([currentLocsRef.current[driverName].lat, currentLocsRef.current[driverName].lng], { title: driverName }).addTo(map);
+        // DivIcon — sem dependência de imagem, nunca quebra no Vite
+        const driverIcon = L.divIcon({
+          className: '',
+          html: `<div style="
+            width: 14px; height: 14px;
+            background: #2563eb;
+            border: 3px solid white;
+            border-radius: 50%;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+          "></div>`,
+          iconSize: [14, 14],
+          iconAnchor: [7, 7],
+        });
+        const marker = L.marker([currentLocsRef.current[driverName].lat, currentLocsRef.current[driverName].lng], { title: driverName, icon: driverIcon }).addTo(map);
         markersRef.current[driverName] = marker;
       }
 

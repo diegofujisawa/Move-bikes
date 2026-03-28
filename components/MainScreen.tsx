@@ -2961,6 +2961,42 @@ const MainScreen: React.FC<MainScreenProps> = ({
     let lastSheetsLat = 0, lastSheetsLng = 0, lastSheetsTime = 0;
     let wakeLock: any = null;
     let watchId: number | null = null;
+    let audioCtx: AudioContext | null = null;
+    let silentSource: AudioBufferSourceNode | null = null;
+
+    // Toca silêncio em loop via AudioContext — engana o browser fazendo ele
+    // acreditar que há áudio ativo, impedindo suspensão do GPS em background
+    const startSilentAudio = () => {
+      try {
+        if (audioCtx && audioCtx.state !== 'closed') return; // já rodando
+        audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
+        // Buffer de silêncio de 1 segundo
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = 0;
+        const loop = () => {
+          if (!audioCtx || audioCtx.state === 'closed') return;
+          silentSource = audioCtx.createBufferSource();
+          silentSource.buffer = buffer;
+          silentSource.connect(audioCtx.destination);
+          silentSource.loop = true;
+          silentSource.start(0);
+        };
+        loop();
+        console.log('[GPS] Silent audio keepalive ativo');
+      } catch (e) {
+        console.warn('[GPS] AudioContext não suportado:', e);
+      }
+    };
+
+    const stopSilentAudio = () => {
+      try {
+        silentSource?.stop();
+        audioCtx?.close();
+        audioCtx = null;
+        silentSource = null;
+      } catch {}
+    };
 
     const sendLocation = (latitude: number, longitude: number, speed: number | null = null, force = false) => {
       const now = Date.now();
@@ -3052,18 +3088,40 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const onVisibility = () => {
       if (document.visibilityState === 'visible') {
         requestWakeLock();
+        // Retoma AudioContext se suspenso pelo browser (comum no iOS)
+        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+        if (!audioCtx || audioCtx.state === 'closed') startSilentAudio();
         startWatch();
         getCurrentAndSend(true);
       }
     };
 
-    // Intervalo de segurança a cada 20s — captura posição mesmo se watchPosition parar
-    const fallbackInterval = setInterval(() => getCurrentAndSend(), 20000);
+    // Intervalo de segurança a cada 5s — captura posição mesmo se watchPosition parar em background
+    const fallbackInterval = setInterval(() => getCurrentAndSend(), 5000);
+
+    // pageshow: dispara quando volta de outra aba/app (inclui bfcache)
+    const onPageShow = (e: PageTransitionEvent) => {
+      requestWakeLock();
+      startWatch();
+      getCurrentAndSend(true);
+    };
+
+    // focus: volta quando o usuário retorna ao app
+    const onFocus = () => {
+      requestWakeLock();
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+      if (!audioCtx || audioCtx.state === 'closed') startSilentAudio();
+      startWatch();
+      getCurrentAndSend(true);
+    };
 
     // Inicializa
     requestWakeLock();
+    startSilentAudio(); // Keepalive de áudio — previne suspensão do GPS em background
     startWatch();
     document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pageshow', onPageShow);
+    window.addEventListener('focus', onFocus);
 
     const markOffline = () => {
       // deleteDoc via fetch não funciona no beforeunload — usa setDoc com DESLOGADO
@@ -3084,9 +3142,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (watchId !== null) navigator.geolocation.clearWatch(watchId);
       clearInterval(fallbackInterval);
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pageshow', onPageShow);
+      window.removeEventListener('focus', onFocus);
       window.removeEventListener('beforeunload', markOffline);
       window.removeEventListener('pagehide', markOffline);
       if (wakeLock) wakeLock.release().catch(() => {});
+      stopSilentAudio();
       // Marca como deslogado no Firebase ao sair (botão logout)
       setDoc(doc(db, 'locations', driverName), {
         status: 'DESLOGADO',
