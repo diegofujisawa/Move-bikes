@@ -303,6 +303,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [processingBikes, setProcessingBikes] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
   const [searchedBike, setSearchedBike] = useState<BicycleData | null>(null);
+  const activeSearchTermRef = useRef('');
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    activeSearchTermRef.current = searchTerm;
+  }, [searchTerm]);
   const [isSearching, setIsSearching] = useState(false);
   const [activeMechanicCategory, setActiveMechanicCategory] = useState<string | null>(null);
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
@@ -1396,15 +1402,29 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const handleSearch = async (bikeToSearch?: string) => {
     const term = (bikeToSearch || searchTerm).trim();
-    if (!term) { setSearchedBike(null); setSearchTerm(''); return; }
-    if (bikeToSearch) setSearchTerm(bikeToSearch);
+    if (!term) { setSearchedBike(null); setSearchTerm(''); activeSearchTermRef.current = ''; return; }
+    if (bikeToSearch) {
+      setSearchTerm(bikeToSearch);
+      activeSearchTermRef.current = bikeToSearch;
+    }
+    setSearchedBike(null);
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 
     const cached = searchCacheRef.current[term];
     if (cached) {
-      setSearchedBike(cached);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      setIsSearching(true);
+      // Pequeno delay para garantir que o estado de "Buscando..." apareça
+      // e o usuário tenha feedback visual de que a busca ocorreu.
+      searchTimeoutRef.current = setTimeout(() => {
+        if (activeSearchTermRef.current === term) {
+          setSearchedBike(cached);
+          setIsSearching(false);
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      }, 300);
+      
       apiCall({ action: 'search', bikeNumber: term }, 1, true).then(r => {
-        if (r.success && r.data) {
+        if (activeSearchTermRef.current === term && r.success && r.data) {
           const s = { ...r.data, 'Patrimônio': String(r.data['Patrimônio']) };
           searchCacheRef.current[term] = s;
           setSearchedBike(s);
@@ -1417,21 +1437,30 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setError(null);
     try {
       const result = await apiCall({ action: 'search', bikeNumber: term });
-      if (result.success && result.data) {
-        const s = { ...result.data, 'Patrimônio': String(result.data['Patrimônio']) };
-        setSearchedBike(s);
-        searchCacheRef.current[term] = s;
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      } else {
-        setSearchedBike(null);
-        const errorMsg = result.error || 'Bicicleta não encontrada.';
-        setError(errorMsg);
-        
+      if (activeSearchTermRef.current === term) {
+        if (result.success && result.data) {
+          const s = { ...result.data, 'Patrimônio': String(result.data['Patrimônio']) };
+          setSearchedBike(s);
+          searchCacheRef.current[term] = s;
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else {
+          setSearchedBike(null);
+          if (result.debug) console.log('[DEBUG SEARCH]', result.debug);
+          const errorMsg = result.error || 'Bicicleta não encontrada.';
+          setError(errorMsg);
+        }
       }
     } catch (err: any) {
-      setSearchedBike(null);
-      setError(err.message);
-    } finally { setIsSearching(false); }
+      if (activeSearchTermRef.current === term) {
+        setSearchedBike(null);
+        if (err.response?.debug) console.log('[DEBUG SEARCH]', err.response.debug);
+        setError(err.message);
+      }
+    } finally { 
+      if (activeSearchTermRef.current === term) {
+        setIsSearching(false); 
+      }
+    }
   };
 
   // =================================================================
@@ -2218,10 +2247,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // SCANNER QR
   // =================================================================
 
-  // Callback ref — chamado exatamente quando o elemento é montado no DOM
-  // Isso garante que o elemento existe antes de iniciar o scanner
-  const initScannerOnMount = async (el: HTMLDivElement | null, scannerElId: string) => {
-    if (!el || !pendingScannerStart.current) return;
+  // Callback ref — chamado quando elemento é montado (el != null) ou desmontado (el = null)
+  // Só inicia o scanner se pendingScannerStart estiver definido (scanner foi solicitado)
+  const initScannerOnMount = useCallback(async (el: HTMLDivElement | null, scannerElId: string) => {
+    // el=null significa desmontagem — ignora
+    if (!el) return;
+    // Só inicia se o scanner foi explicitamente solicitado para este elemento
+    const mode = pendingScannerStart.current;
+    const expectedId = mode === 'reserva' ? 'qr-reader-reserva' : 'qr-reader';
+    if (!mode || expectedId !== scannerElId) return;
+
     pendingScannerStart.current = null;
     try {
       el.innerHTML = '';
@@ -2243,7 +2278,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally {
       isScannerBusy.current = false;
     }
-  };
+  }, []);
 
   const startScanner = async () => {
     if (isScannerBusy.current) return;
@@ -3737,12 +3772,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2">
                 <div className="relative flex-grow">
-                  <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+                  <input type="text" value={searchTerm} onChange={e => { const val = e.target.value; setSearchTerm(val); activeSearchTermRef.current = val; setSearchedBike(null); }}
                     onKeyDown={e => e.key === 'Enter' && handleSearch()}
                     placeholder="Digite o patrimônio..."
                     className="w-full p-1.5 pr-8 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm"/>
                   {searchTerm && (
-                    <button onClick={() => { setSearchTerm(''); setSearchedBike(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><XIcon className="w-4 h-4"/></button>
+                    <button onClick={() => { setSearchTerm(''); activeSearchTermRef.current = ''; setSearchedBike(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><XIcon className="w-4 h-4"/></button>
                   )}
                 </div>
                 <button onClick={() => isScannerOpen ? stopScanner() : startScanner()}
@@ -3781,7 +3816,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         {/* RESULTADO DA BUSCA */}
         {!isAdm && searchedBike && (
           <div ref={searchResultRef} className="p-4 border rounded-lg bg-green-50 animate-fade-in-down relative mb-4">
-            <button onClick={() => { setSearchedBike(null); setSearchTerm(''); }} className="absolute top-2 right-2 p-1 text-green-700 hover:bg-green-100 rounded-full"><XIcon className="w-5 h-5"/></button>
+            <button onClick={() => { setSearchedBike(null); setSearchTerm(''); activeSearchTermRef.current = ''; }} className="absolute top-2 right-2 p-1 text-green-700 hover:bg-green-100 rounded-full"><XIcon className="w-5 h-5"/></button>
             <h3 className="text-lg font-semibold text-green-800 mb-3">Resultado da Consulta</h3>
             {collectedBikes.includes(String(searchedBike['Patrimônio'])) && (
               <div className="mb-3 p-2 bg-yellow-100 border border-yellow-400 text-yellow-800 text-[10px] font-bold rounded flex items-center gap-2">

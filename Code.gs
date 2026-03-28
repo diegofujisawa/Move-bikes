@@ -917,10 +917,10 @@ function getDriverLocations(providedData) {
  * Carrega e cacheia o índice completo de bikes (patrimônio → dados da linha).
  * Fica em cache por 10 minutos. Invalidado pelo logReport quando uma bike é registrada.
  */
-function getBikeIndex() {
+function getBikeIndex(forceReload = false) {
   const cache = CacheService.getScriptCache();
   const cacheKey = 'bikes_index';
-  const cached = cache.get(cacheKey);
+  const cached = forceReload ? null : cache.get(cacheKey);
   if (cached) {
     try { return JSON.parse(cached); } catch (e) {}
   }
@@ -954,8 +954,10 @@ function getBikeIndex() {
 
 function debugSearch(bikeNumber) {
   try {
-    const sheet = getSpreadsheet().getSheetByName(BIKES_SHEET_NAME);
-    if (!sheet) return { success: false, error: 'Aba não encontrada', sheetName: BIKES_SHEET_NAME };
+    const ss = getSpreadsheet();
+    const allSheets = ss.getSheets().map(s => s.getName());
+    const sheet = ss.getSheetByName(BIKES_SHEET_NAME);
+    if (!sheet) return { success: false, error: 'Aba não encontrada', sheetName: BIKES_SHEET_NAME, allSheets };
     const lastRow = sheet.getLastRow();
     const lastCol = sheet.getLastColumn();
     // Lê primeiras 5 linhas para diagnóstico
@@ -963,14 +965,19 @@ function debugSearch(bikeNumber) {
     const colBSample = lastRow > 1
       ? sheet.getRange(2, COLUMN_INDICES.BIKES.PATRIMONIO, Math.min(5, lastRow - 1), 1).getValues().map(r => ({ val: r[0], type: typeof r[0] }))
       : [];
+    const index = getBikeIndex(true);
+    const indexKeys = Object.keys(index);
     return {
       success: true,
       sheetName: BIKES_SHEET_NAME,
+      allSheets,
       lastRow,
       lastCol,
       patrimonioColunaIndex: COLUMN_INDICES.BIKES.PATRIMONIO,
       primeiraLinhaHeaders: sample[0] || [],
       primeiros5Patrimonios: colBSample,
+      totalIndexado: indexKeys.length,
+      amostraIndexKeys: indexKeys.slice(0, 10),
       buscando: bikeNumber,
       tipoBuscado: typeof bikeNumber
     };
@@ -1035,7 +1042,14 @@ function searchBike(bikeNumber) {
       row = index[bikeNumStr];
     }
 
-    if (!row) return { success: false, error: 'Bicicleta não encontrada.' };
+    if (!row) {
+      const debugInfo = debugSearch(bikeStr);
+      return { 
+        success: false, 
+        error: `Bicicleta "${bikeStr}" não encontrada.`,
+        debug: debugInfo
+      };
+    }
 
     const bikeObject = {
       'Patrimônio':                  row[COLUMN_INDICES.BIKES.PATRIMONIO - 1],

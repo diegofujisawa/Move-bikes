@@ -258,7 +258,9 @@ export const apiGetCall = async (
       if (result.sessionExpired) {
         window.dispatchEvent(new CustomEvent('session-expired', { detail: result.error }));
       }
-      throw new Error(result.error || 'O servidor retornou uma falha.');
+      const error = new Error(result.error || 'O servidor retornou uma falha.');
+      (error as any).response = result;
+      throw error;
     }
 
     // Armazena no cache se aplicável
@@ -374,7 +376,9 @@ export const apiCall = async (
         return apiCall({ ...payload, idempotencyKey }, retries - 1, silent);
       }
 
-      throw new Error(result.error || 'O servidor retornou uma falha.');
+      const error = new Error(result.error || 'O servidor retornou uma falha.');
+      (error as any).response = result;
+      throw error;
     }
 
     // Armazena no cache se aplicável
