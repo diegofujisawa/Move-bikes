@@ -22,6 +22,9 @@ const normalizeCoord = (coord: number): number => {
   return val;
 };
 
+// Interpolação linear entre dois pontos para animação suave
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
 const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -31,12 +34,49 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<{ [key: string]: L.Marker }>({});
   const pathsRef = useRef<{ [key: string]: L.Polyline }>({});
-  const lastLocsRef = useRef<DriverLocation[]>([]);
+
+  // Posições alvo (do Firebase) e posições atuais (animadas)
+  const targetLocsRef = useRef<{ [key: string]: { lat: number; lng: number; timestamp: number; speed: number; stale: boolean } }>({});
+  const currentLocsRef = useRef<{ [key: string]: { lat: number; lng: number } }>({});
+  const animFrameRef = useRef<number | null>(null);
   const hasCenteredRef = useRef(false);
+
+  // Loop de animação — roda a ~60fps, interpola posições suavemente
+  const animationLoop = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const LERP_SPEED = 0.08; // 0.08 = ~60 frames para cobrir 100% da distância (~1s para chegada)
+
+    Object.entries(targetLocsRef.current).forEach(([name, target]) => {
+      const current = currentLocsRef.current[name];
+      if (!current) {
+        // Primeira aparição — posiciona direto sem animar
+        currentLocsRef.current[name] = { lat: target.lat, lng: target.lng };
+        return;
+      }
+
+      // Interpolação suave
+      const newLat = lerp(current.lat, target.lat, LERP_SPEED);
+      const newLng = lerp(current.lng, target.lng, LERP_SPEED);
+      currentLocsRef.current[name] = { lat: newLat, lng: newLng };
+
+      const marker = markersRef.current[name];
+      if (marker) {
+        marker.setLatLng([newLat, newLng]);
+      }
+    });
+
+    animFrameRef.current = requestAnimationFrame(animationLoop);
+  }, []);
+
+  const startAnimationLoop = useCallback(() => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    animFrameRef.current = requestAnimationFrame(animationLoop);
+  }, [animationLoop]);
 
   const updateMapWithLocations = useCallback((locations: DriverLocation[]) => {
     if (!mapContainerRef.current) return;
-    lastLocsRef.current = locations;
 
     if (!mapRef.current) {
       const map = L.map(mapContainerRef.current, {
@@ -49,11 +89,10 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       }).addTo(map);
       mapRef.current = map;
+      startAnimationLoop();
     }
 
     const map = mapRef.current;
-    const currentMarkers = markersRef.current;
-    const currentPaths = pathsRef.current;
     const activeDrivers = new Set<string>();
     const markerGroup: L.LatLng[] = [];
 
@@ -65,68 +104,70 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       const normLng = normalizeCoord(longitude);
       if (isNaN(normLat) || isNaN(normLng) || normLat === 0 || normLng === 0) return;
 
-      const position = L.latLng(normLat, normLng);
       activeDrivers.add(driverName);
-      markerGroup.push(position);
+      markerGroup.push(L.latLng(normLat, normLng));
 
-      // Atualiza ou cria o rastro (polyline)
-      if (currentPaths[driverName]) {
-        const path = currentPaths[driverName];
+      // Atualiza posição alvo — a animação vai interpolar até ela
+      targetLocsRef.current[driverName] = { lat: normLat, lng: normLng, timestamp: ts, speed: speed || 0, stale: isStale };
+
+      // Atualiza rastro (polyline) com a posição REAL (não interpolada)
+      const position = L.latLng(normLat, normLng);
+      if (pathsRef.current[driverName]) {
+        const path = pathsRef.current[driverName];
         const latlngs = path.getLatLngs() as L.LatLng[];
-        // Adiciona nova posição se for diferente da última
-        if (latlngs.length === 0 || !latlngs[latlngs.length - 1].equals(position)) {
+        if (latlngs.length === 0 || !latlngs[latlngs.length - 1].equals(position, 1e-5)) {
           latlngs.push(position);
-          // Mantém apenas os últimos 50 pontos para performance
-          if (latlngs.length > 50) latlngs.shift();
+          if (latlngs.length > 100) latlngs.shift();
           path.setLatLngs(latlngs);
         }
       } else {
-        const path = L.polyline([position], {
-          color: '#3b82f6',
-          weight: 3,
-          opacity: 0.5,
-          dashArray: '5, 10'
+        pathsRef.current[driverName] = L.polyline([position], {
+          color: '#3b82f6', weight: 3, opacity: 0.4, dashArray: '5, 10'
         }).addTo(map);
-        currentPaths[driverName] = path;
       }
 
+      // Cria marcador se não existir — posição inicial = alvo (sem anim na criação)
+      if (!markersRef.current[driverName]) {
+        if (!currentLocsRef.current[driverName]) {
+          currentLocsRef.current[driverName] = { lat: normLat, lng: normLng };
+        }
+        const marker = L.marker([currentLocsRef.current[driverName].lat, currentLocsRef.current[driverName].lng], { title: driverName }).addTo(map);
+        markersRef.current[driverName] = marker;
+      }
+
+      // Atualiza tooltip com velocidade
       const tooltipClass = isStale
         ? 'bg-orange-500 text-white font-bold px-2 py-1 rounded shadow-lg border-none'
         : 'bg-blue-600 text-white font-bold px-2 py-1 rounded shadow-lg border-none';
-      
-      const speedLabel = speed !== undefined && speed > 0 ? ` | ${speed} km/h` : ' | 0 km/h';
-      const label = `${driverName}${speedLabel}${isStale ? ' ⚠️' : ''}`;
+      const speedLabel = speed !== undefined && speed > 0 ? ` ${speed} km/h` : ' 0 km/h';
+      const label = `${driverName} ${speedLabel}${isStale ? ' ⚠️' : ''}`;
 
-      if (currentMarkers[driverName]) {
-        currentMarkers[driverName].setLatLng(position);
-        currentMarkers[driverName].unbindTooltip();
-        currentMarkers[driverName].bindTooltip(label, { permanent: true, direction: 'top', className: tooltipClass });
-      } else {
-        const marker = L.marker(position, { title: driverName }).addTo(map);
-        marker.bindTooltip(label, { permanent: true, direction: 'top', className: tooltipClass });
-        currentMarkers[driverName] = marker;
-      }
+      markersRef.current[driverName].unbindTooltip();
+      markersRef.current[driverName].bindTooltip(label, { permanent: true, direction: 'top', className: tooltipClass });
     });
 
+    // Centraliza uma vez ao carregar
     if (markerGroup.length > 0 && !hasCenteredRef.current) {
       map.fitBounds(L.latLngBounds(markerGroup), { padding: [70, 70] });
       hasCenteredRef.current = true;
     }
 
     // Remove marcadores e rastros de motoristas inativos
-    Object.keys(currentMarkers).forEach(name => {
+    Object.keys(markersRef.current).forEach(name => {
       if (!activeDrivers.has(name)) {
-        map.removeLayer(currentMarkers[name]);
-        delete currentMarkers[name];
-        if (currentPaths[name]) {
-          map.removeLayer(currentPaths[name]);
-          delete currentPaths[name];
+        map.removeLayer(markersRef.current[name]);
+        delete markersRef.current[name];
+        delete currentLocsRef.current[name];
+        delete targetLocsRef.current[name];
+        if (pathsRef.current[name]) {
+          map.removeLayer(pathsRef.current[name]);
+          delete pathsRef.current[name];
         }
       }
     });
 
     setDriverCount(activeDrivers.size);
-  }, []);
+  }, [startAnimationLoop]);
 
   const handleRecenter = useCallback(() => {
     if (!mapRef.current) return;
@@ -135,16 +176,6 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       mapRef.current.fitBounds(L.latLngBounds(markerGroup), { padding: [70, 70] });
     }
   }, []);
-
-  // Timer para atualizar o contador de segundos nos tooltips sem precisar de novo evento do Firebase
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (lastLocsRef.current.length > 0) {
-        updateMapWithLocations(lastLocsRef.current);
-      }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [updateMapWithLocations]);
 
   useEffect(() => {
     const THIRTY_MIN = 30 * 60 * 1000;
@@ -187,11 +218,14 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
 
     return () => {
       unsubscribe();
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
       }
       markersRef.current = {};
+      currentLocsRef.current = {};
+      targetLocsRef.current = {};
       hasCenteredRef.current = false;
     };
   }, [updateMapWithLocations]);

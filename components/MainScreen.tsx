@@ -291,9 +291,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [mechanicsList, setMechanicsList] = useState<any[]>([]);
   const [selectedMechanicBike, setSelectedMechanicBike] = useState<any>(null);
   const [selectedBikesForTrailer, setSelectedBikesForTrailer] = useState<string[]>([]);
-  // Estado do fluxo "Escanear para Carretinha" — acumula bikes escaneadas antes de atribuir
-  const [reservaScanMode, setReservaScanMode] = useState(false);
-  const [reservaScannedBikes, setReservaScannedBikes] = useState<Set<string>>(new Set());
   const [reporData, setReporData] = useState<any[]>([]);
   const [isReporLoading, setIsReporLoading] = useState(false);
   const [userSchedule, setUserSchedule] = useState<Record<string, string>>({});
@@ -303,12 +300,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [processingBikes, setProcessingBikes] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
   const [searchedBike, setSearchedBike] = useState<BicycleData | null>(null);
-  const activeSearchTermRef = useRef('');
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    activeSearchTermRef.current = searchTerm;
-  }, [searchTerm]);
   const [isSearching, setIsSearching] = useState(false);
   const [activeMechanicCategory, setActiveMechanicCategory] = useState<string | null>(null);
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
@@ -335,9 +326,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const scannerStartPromise = useRef<Promise<any> | null>(null);
   const trailerScannerStartPromise = useRef<Promise<any> | null>(null);
   const isScannerBusy = useRef(false);
-  const pendingScannerStart = useRef<'search' | 'reserva' | null>(null);
-  const scannerDivRef = useRef<HTMLDivElement | null>(null);
-  const scannerReservaDivRef = useRef<HTMLDivElement | null>(null);
   const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
 
@@ -1402,29 +1390,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const handleSearch = async (bikeToSearch?: string) => {
     const term = (bikeToSearch || searchTerm).trim();
-    if (!term) { setSearchedBike(null); setSearchTerm(''); activeSearchTermRef.current = ''; return; }
-    if (bikeToSearch) {
-      setSearchTerm(bikeToSearch);
-      activeSearchTermRef.current = bikeToSearch;
-    }
-    setSearchedBike(null);
-    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    if (!term) { setSearchedBike(null); setSearchTerm(''); return; }
+    if (bikeToSearch) setSearchTerm(bikeToSearch);
 
     const cached = searchCacheRef.current[term];
     if (cached) {
-      setIsSearching(true);
-      // Pequeno delay para garantir que o estado de "Buscando..." apareça
-      // e o usuário tenha feedback visual de que a busca ocorreu.
-      searchTimeoutRef.current = setTimeout(() => {
-        if (activeSearchTermRef.current === term) {
-          setSearchedBike(cached);
-          setIsSearching(false);
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }
-      }, 300);
-      
+      setSearchedBike(cached);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       apiCall({ action: 'search', bikeNumber: term }, 1, true).then(r => {
-        if (activeSearchTermRef.current === term && r.success && r.data) {
+        if (r.success && r.data) {
           const s = { ...r.data, 'Patrimônio': String(r.data['Patrimônio']) };
           searchCacheRef.current[term] = s;
           setSearchedBike(s);
@@ -1437,30 +1411,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setError(null);
     try {
       const result = await apiCall({ action: 'search', bikeNumber: term });
-      if (activeSearchTermRef.current === term) {
-        if (result.success && result.data) {
-          const s = { ...result.data, 'Patrimônio': String(result.data['Patrimônio']) };
-          setSearchedBike(s);
-          searchCacheRef.current[term] = s;
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        } else {
-          setSearchedBike(null);
-          if (result.debug) console.log('[DEBUG SEARCH]', result.debug);
-          const errorMsg = result.error || 'Bicicleta não encontrada.';
-          setError(errorMsg);
-        }
+      if (result.success && result.data) {
+        const s = { ...result.data, 'Patrimônio': String(result.data['Patrimônio']) };
+        setSearchedBike(s);
+        searchCacheRef.current[term] = s;
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } else {
+        setSearchedBike(null);
+        const errorMsg = result.error || 'Bicicleta não encontrada.';
+        setError(errorMsg);
+        
       }
     } catch (err: any) {
-      if (activeSearchTermRef.current === term) {
-        setSearchedBike(null);
-        if (err.response?.debug) console.log('[DEBUG SEARCH]', err.response.debug);
-        setError(err.message);
-      }
-    } finally { 
-      if (activeSearchTermRef.current === term) {
-        setIsSearching(false); 
-      }
-    }
+      setSearchedBike(null);
+      setError(err.message);
+    } finally { setIsSearching(false); }
   };
 
   // =================================================================
@@ -1999,19 +1964,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const id = match ? match[1] : /^\d+$/.test(text) ? text : null;
     if (id) { 
       if (activeMechanicCategory === 'Reserva') {
-        // Modo scan reserva: acumula bikes escaneadas sem fechar o scanner
-        setReservaScannedBikes(prev => {
-          const next = new Set(prev);
-          // Só adiciona se bike está na reserva
-          const isInReserva = mechanicsList.some(b => 
-            String(b.patrimonio) === String(id) && b.status === 'Reserva'
-          );
-          if (isInReserva) {
-            next.add(String(id));
-          }
-          return next;
-        });
-        // Não fecha o scanner — deixa continuar escaneando
+        stopScanner();
+        setSelectedBikesForTrailer([id]);
+        setIsTrailerSelectionModalOpen(true);
       } else {
         setSearchTerm(id); 
         stopScanner(); 
@@ -2085,50 +2040,78 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const startTrailerScanner = async () => {
     if (isScannerBusy.current) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Câmera não suportada neste navegador.', scannerActive: false } : null);
+      setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Seu navegador não suporta acesso à câmera.', scannerActive: false } : null);
       return;
     }
-
     isScannerBusy.current = true;
-
-    // Para tudo e aguarda estado limpo
     try {
       await internalStopScanner();
       await internalStopTrailerScanner();
-    } catch {}
-    await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 400));
+    } catch (e) {
+      console.warn('Error stopping existing scanners:', e);
+    }
 
     setTrailerQrModal(prev => prev ? { ...prev, scannerActive: true, lastError: null } : null);
+    setTimeout(async () => {
+      try {
+        const el = document.getElementById('qr-trailer-reader');
+        if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
+        
+        const checkStillActive = () => {
+          let active = false;
+          setTrailerQrModal(prev => {
+            if (prev && prev.scannerActive) active = true;
+            return prev;
+          });
+          return active;
+        };
 
-    // Aguarda DOM renderizar o elemento do modal
-    await new Promise(r => setTimeout(r, 600));
+        if (!checkStillActive()) return;
 
-    try {
-      const el = document.getElementById('qr-trailer-reader');
-      if (!el) throw new Error('Elemento qr-trailer-reader não encontrado no DOM.');
+        const qr = new Html5Qrcode('qr-trailer-reader');
+        trailerScannerRef.current = qr;
+        
+        const startWithRetry = async (withZoom: boolean, retries = 3): Promise<void> => {
+          if (!checkStillActive()) return;
+          try {
+            const config = withZoom 
+              ? { facingMode: 'environment', advanced: [{ zoom: 2.0 }] } as any
+              : { facingMode: 'environment' };
+            
+            const promise = qr.start(
+              config,
+              { fps: 10, qrbox: { width: 220, height: 220 } },
+              (decodedText) => handleTrailerQrSuccess(decodedText),
+              () => {}
+            );
+            trailerScannerStartPromise.current = promise;
+            await promise;
+            trailerScannerStartPromise.current = null;
+          } catch (err: any) {
+            trailerScannerStartPromise.current = null;
+            if (err?.message?.includes('already under transition') && retries > 0) {
+              console.warn('Trailer Scanner transition error, retrying...', retries);
+              await new Promise(r => setTimeout(r, 500));
+              return startWithRetry(withZoom, retries - 1);
+            }
+            throw err;
+          }
+        };
 
-      // Limpa innerHTML — força estado DOM fresco, evita "already under transition"
-      el.innerHTML = '';
-
-      const qr = new Html5Qrcode('qr-trailer-reader');
-      trailerScannerRef.current = qr;
-
-      await qr.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 220, height: 220 } },
-        (decodedText) => handleTrailerQrSuccess(decodedText),
-        () => {}
-      );
-    } catch (err: any) {
-      console.error('Trailer Scanner error:', err);
-      const msg = (err.message || String(err));
-      setTrailerQrModal(prev => prev
-        ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + msg, scannerActive: false }
-        : null
-      );
-    } finally {
-      isScannerBusy.current = false;
-    }
+        try {
+          await startWithRetry(true);
+        } catch (err) {
+          console.warn('Zoom not supported or start failed, retrying without zoom:', err);
+          await startWithRetry(false);
+        }
+      } catch (err: any) {
+        console.error('Trailer Scanner error:', err);
+        setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + (err.message || String(err)), scannerActive: false } : null);
+      } finally {
+        isScannerBusy.current = false;
+      }
+    }, 500);
   };
 
   const handleFinalizeTrailer = async (trailerName: string) => {
@@ -2143,32 +2126,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
       bateria: b.bateria !== undefined ? Number(b.bateria) : undefined,
       ultimaInfo: b.ultimaInfo || b.ultimaAtualizacao || ''
     }));
-
-    // Aproveita bikes já escaneadas (modo reserva OU modal anterior cancelado)
-    const preConfirmed = new Set<string>();
-    bikeObjects.forEach(b => {
-      const pat = String(b.patrimonio);
-      // Do modo scan da reserva
-      if (reservaScannedBikes.has(pat)) preConfirmed.add(pat);
-    });
-    // Também preserva confirmações do modal anterior se era a mesma carretinha
-    if (trailerQrModal && trailerQrModal.trailerName === trailerName) {
-      trailerQrModal.confirmedBikes.forEach(pat => preConfirmed.add(pat));
-    }
-
     setTrailerQrModal({
       isOpen: true,
       trailerName,
       expectedBikes: bikeObjects,
-      confirmedBikes: preConfirmed, // já inicia com as bikes escaneadas confirmadas
+      confirmedBikes: new Set(),
       batteryFailed: null,
       scannerActive: false,
       lastScanned: null,
       lastError: null,
     });
-
-    // Só limpa o modo scan — mantém reservaScannedBikes para caso o modal seja cancelado e reaberto
-    setReservaScanMode(false);
   };
 
   const executeTrailerFinalization = async () => {
@@ -2177,7 +2144,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (confirmedBikes.size < expectedBikes.length) return;
     await stopTrailerScanner();
     setTrailerQrModal(null);
-    setReservaScannedBikes(new Set()); // limpa só após confirmação bem-sucedida
     setIsLoading(true);
     const bikeIds = expectedBikes.map(b => b.patrimonio);
     // Mantém status 'Reserva' para continuar exibindo na seção Reserva até aceite do motorista
@@ -2246,60 +2212,82 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // =================================================================
   // SCANNER QR
   // =================================================================
-
-  // Callback ref — chamado quando elemento é montado (el != null) ou desmontado (el = null)
-  // Só inicia o scanner se pendingScannerStart estiver definido (scanner foi solicitado)
-  const initScannerOnMount = useCallback(async (el: HTMLDivElement | null, scannerElId: string) => {
-    // el=null significa desmontagem — ignora
-    if (!el) return;
-    // Só inicia se o scanner foi explicitamente solicitado para este elemento
-    const mode = pendingScannerStart.current;
-    const expectedId = mode === 'reserva' ? 'qr-reader-reserva' : 'qr-reader';
-    if (!mode || expectedId !== scannerElId) return;
-
-    pendingScannerStart.current = null;
-    try {
-      el.innerHTML = '';
-      const qr = new Html5Qrcode(scannerElId);
-      scannerRef.current = qr;
-      await qr.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        (text) => handleScannerSuccess(text),
-        () => {}
-      );
-    } catch (err: any) {
-      console.error('Scanner error:', err);
-      const msg = (err.message || String(err));
-      if (!msg.includes('transition') && !msg.includes('already')) {
-        setError('Não foi possível acessar a câmera: ' + msg);
-      }
-      setIsScannerOpen(false);
-    } finally {
-      isScannerBusy.current = false;
-    }
-  }, []);
-
   const startScanner = async () => {
     if (isScannerBusy.current) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setError('Seu navegador não suporta acesso à câmera.');
       return;
     }
-
     isScannerBusy.current = true;
-
-    // Para tudo primeiro
     try {
       await internalStopScanner();
       await internalStopTrailerScanner();
-    } catch {}
-    await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 400));
+    } catch (e) {
+      console.warn('Error stopping existing scanners:', e);
+    }
 
-    // Registra qual modo vai usar — o useEffect vai iniciar após render
-    pendingScannerStart.current = reservaScanMode ? 'reserva' : 'search';
     setIsScannerOpen(true);
-    // isScannerBusy será liberado no useEffect após iniciar
+    setTimeout(async () => {
+      try {
+        const el = document.getElementById('qr-reader');
+        if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
+        
+        const checkStillOpen = () => {
+          let open = false;
+          setIsScannerOpen(prev => {
+            open = prev;
+            return prev;
+          });
+          return open;
+        };
+
+        if (!checkStillOpen()) return;
+
+        const qr = new Html5Qrcode('qr-reader');
+        scannerRef.current = qr;
+
+        const startWithRetry = async (withZoom: boolean, retries = 3): Promise<void> => {
+          if (!checkStillOpen()) return;
+          try {
+            const config = withZoom 
+              ? { facingMode: 'environment', advanced: [{ zoom: 2.0 }] } as any
+              : { facingMode: 'environment' };
+            
+            const promise = qr.start(
+              config,
+              { fps: 10, qrbox: { width: 250, height: 250 } },
+              (text) => handleScannerSuccess(text),
+              () => {}
+            );
+            scannerStartPromise.current = promise;
+            await promise;
+            scannerStartPromise.current = null;
+          } catch (err: any) {
+            scannerStartPromise.current = null;
+            if (err?.message?.includes('already under transition') && retries > 0) {
+              console.warn('Scanner transition error, retrying...', retries);
+              await new Promise(r => setTimeout(r, 500));
+              return startWithRetry(withZoom, retries - 1);
+            }
+            throw err;
+          }
+        };
+
+        try {
+          await startWithRetry(true);
+        } catch (err) {
+          console.warn('Zoom not supported or start failed, retrying without zoom:', err);
+          await startWithRetry(false);
+        }
+      } catch (err: any) { 
+        console.error('Scanner error:', err);
+        setError('Não foi possível acessar a câmera: ' + (err.message || String(err))); 
+        setIsScannerOpen(false); 
+      } finally {
+        isScannerBusy.current = false;
+      }
+    }, 500);
   };
 
   const internalStopScanner = async () => {
@@ -2981,8 +2969,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const movedFirebase = getDistanceInMeters(latitude, longitude, lastFirebaseLat, lastFirebaseLng);
       const elapsedFirebase = now - lastFirebaseTime;
       
-      // Atualiza Firebase se: forçado OU moveu > 2 metros OU passou 10 segundos
-      if (force || movedFirebase > 2 || elapsedFirebase > 10000) {
+      // Atualiza Firebase se: forçado OU moveu > 1 metro OU passou 3 segundos
+      if (force || movedFirebase > 1 || elapsedFirebase > 3000) {
         lastFirebaseLat = latitude;
         lastFirebaseLng = longitude;
         lastFirebaseTime = now;
@@ -3772,12 +3760,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2">
                 <div className="relative flex-grow">
-                  <input type="text" value={searchTerm} onChange={e => { const val = e.target.value; setSearchTerm(val); activeSearchTermRef.current = val; setSearchedBike(null); }}
+                  <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleSearch()}
                     placeholder="Digite o patrimônio..."
                     className="w-full p-1.5 pr-8 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm"/>
                   {searchTerm && (
-                    <button onClick={() => { setSearchTerm(''); activeSearchTermRef.current = ''; setSearchedBike(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><XIcon className="w-4 h-4"/></button>
+                    <button onClick={() => { setSearchTerm(''); setSearchedBike(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><XIcon className="w-4 h-4"/></button>
                   )}
                 </div>
                 <button onClick={() => isScannerOpen ? stopScanner() : startScanner()}
@@ -3791,9 +3779,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   <span>{isSearching ? 'Buscando...' : 'Consultar'}</span>
                 </button>
               </div>
-              {isScannerOpen && !reservaScanMode && (
+              {isScannerOpen && (
                 <div className="relative overflow-hidden rounded-lg bg-black aspect-square max-w-[300px] mx-auto w-full border-2 border-blue-500 shadow-xl">
-                  <div id="qr-reader" ref={(el) => { scannerDivRef.current = el; initScannerOnMount(el, 'qr-reader'); }} className="w-full h-full"/>
+                  <div id="qr-reader" className="w-full h-full"/>
                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center"><div className="w-48 h-48 border-2 border-blue-400/50 rounded-lg"/></div>
                   <button onClick={stopScanner} className="absolute top-2 right-2 bg-black/50 text-white p-1 rounded-full"><XIcon className="w-4 h-4"/></button>
                   <p className="absolute bottom-2 left-0 right-0 text-center text-[10px] text-white bg-black/50 py-1">Aponte para o QR Code</p>
@@ -3816,7 +3804,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         {/* RESULTADO DA BUSCA */}
         {!isAdm && searchedBike && (
           <div ref={searchResultRef} className="p-4 border rounded-lg bg-green-50 animate-fade-in-down relative mb-4">
-            <button onClick={() => { setSearchedBike(null); setSearchTerm(''); activeSearchTermRef.current = ''; }} className="absolute top-2 right-2 p-1 text-green-700 hover:bg-green-100 rounded-full"><XIcon className="w-5 h-5"/></button>
+            <button onClick={() => { setSearchedBike(null); setSearchTerm(''); }} className="absolute top-2 right-2 p-1 text-green-700 hover:bg-green-100 rounded-full"><XIcon className="w-5 h-5"/></button>
             <h3 className="text-lg font-semibold text-green-800 mb-3">Resultado da Consulta</h3>
             {collectedBikes.includes(String(searchedBike['Patrimônio'])) && (
               <div className="mb-3 p-2 bg-yellow-100 border border-yellow-400 text-yellow-800 text-[10px] font-bold rounded flex items-center gap-2">
@@ -3994,14 +3982,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </span>
             </button>
             <button 
-              onClick={() => {
-                if (activeMechanicCategory === 'Reserva') {
-                  stopScanner();
-                  setReservaScanMode(false);
-                  setReservaScannedBikes(new Set());
-                }
-                setActiveMechanicCategory(activeMechanicCategory === 'Reserva' ? null : 'Reserva');
-              }}
+              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Reserva' ? null : 'Reserva')}
               className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Reserva' ? 'bg-green-600 border-green-700 text-white' : 'bg-green-50 border-green-100 hover:bg-green-100'}`}
             >
               <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Reserva' ? 'bg-white text-green-600' : 'bg-green-600 text-white'}`}>
@@ -4180,78 +4161,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <div id="section-reserva" className="p-4 border rounded-lg bg-green-50 shadow-sm scroll-mt-4">
                 <div className="flex justify-between items-center mb-3">
                   <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
-                  <div className="flex gap-2">
-                    {!reservaScanMode ? (
-                      <button
-                        onClick={() => {
-                          setReservaScanMode(true);
-                          setReservaScannedBikes(new Set());
-                          startScanner();
-                        }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm transition-all active:scale-95"
-                      >
-                        <QrCodeIcon className="w-4 h-4"/>Escanear para Carretinha
-                      </button>
-                    ) : (
-                      <>
-                        <button
-                          onClick={() => { stopScanner(); setReservaScanMode(false); setReservaScannedBikes(new Set()); }}
-                          className="px-3 py-1.5 bg-gray-200 text-gray-700 rounded-lg text-xs font-bold hover:bg-gray-300 transition-all"
-                        >
-                          Cancelar
-                        </button>
-                        <button
-                          disabled={reservaScannedBikes.size === 0}
-                          onClick={() => {
-                            stopScanner();
-                            setReservaScanMode(false);
-                            setSelectedBikesForTrailer(Array.from(reservaScannedBikes));
-                            setIsTrailerSelectionModalOpen(true);
-                          }}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 shadow-sm transition-all active:scale-95 disabled:bg-gray-300"
-                        >
-                          <TrailerIcon className="w-4 h-4"/>
-                          Organizar ({reservaScannedBikes.size})
-                        </button>
-                      </>
-                    )}
-                  </div>
+                  <button 
+                    onClick={() => {
+                      // Abre scanner para qualquer bike na reserva (Sem Carretinha ou não)
+                      startScanner(); // Usa o scanner geral, mas vamos tratar o sucesso
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm transition-all active:scale-95"
+                  >
+                    <QrCodeIcon className="w-4 h-4"/>Escanear para Carretinha
+                  </button>
                 </div>
-
-                {/* Scanner inline no modo scan */}
-                {reservaScanMode && (
-                  <div className="mb-4">
-                    {isScannerOpen && (
-                      <div className="relative overflow-hidden rounded-lg bg-black aspect-square max-w-[260px] mx-auto w-full border-2 border-green-500 shadow-xl">
-                        <div id="qr-reader-reserva" ref={(el) => { scannerReservaDivRef.current = el; initScannerOnMount(el, 'qr-reader-reserva'); }} className="w-full h-full"/>
-                        <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                          <div className="w-44 h-44 border-2 border-green-400/60 rounded-xl"/>
-                        </div>
-                        <p className="absolute bottom-2 left-0 right-0 text-center text-[10px] text-white bg-black/50 py-1">
-                          Aponte para o QR Code da bike
-                        </p>
-                      </div>
-                    )}
-                    <div className="mt-2 p-3 bg-white border border-green-200 rounded-lg">
-                      <p className="text-[10px] font-black text-green-700 uppercase mb-2">
-                        Bikes escaneadas ({reservaScannedBikes.size}):
-                      </p>
-                      {reservaScannedBikes.size === 0 ? (
-                        <p className="text-[10px] text-gray-400 italic">Nenhuma ainda — escaneie as bikes da reserva</p>
-                      ) : (
-                        <div className="flex flex-wrap gap-1.5">
-                          {Array.from(reservaScannedBikes).map(pat => (
-                            <span key={pat} className="px-2 py-0.5 bg-green-100 border border-green-300 text-green-800 text-[10px] font-black rounded font-mono flex items-center gap-1">
-                              ✅ {pat}
-                              <button onClick={() => setReservaScannedBikes(prev => { const n = new Set(prev); n.delete(pat); return n; })}
-                                className="text-red-400 hover:text-red-600 ml-0.5">×</button>
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
                 {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (
                   <div className="space-y-4">
                     {Object.entries(
@@ -4317,12 +4236,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                   <XIcon className="w-2.5 h-2.5" />
                                 </button>
                               )}
-                              <div className="flex items-center gap-1">
-                                {reservaScanMode && reservaScannedBikes.has(String(bike.patrimonio)) && (
-                                  <span className="text-green-600 text-sm font-black">✅</span>
-                                )}
-                                <span className="font-bold">{bike.patrimonio}</span>
-                              </div>
+                              <span className="font-bold">{bike.patrimonio}</span>
                               <div className="flex flex-col items-center scale-90 origin-top">
                                 {bike.bateria !== undefined && <span className="text-[8px] text-gray-500">{bike.bateria}%</span>}
                                 {bike.carregamento === 'Carregando' && <span className="text-[8px] text-green-600 font-bold">⚡</span>}
@@ -5892,11 +5806,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       <MechanicRepairModal isOpen={isMechanicRepairModalOpen} onClose={() => setIsMechanicRepairModalOpen(false)} onConfirm={handleFinalizeMechanicsRepair} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <MechanicSelectionModal isOpen={isMechanicSelectionModalOpen} onClose={() => setIsMechanicSelectionModalOpen(false)} onConfirm={handleMechanicSelectionConfirm} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <TrailerSelectionModal isOpen={isTrailerSelectionModalOpen} onClose={() => setIsTrailerSelectionModalOpen(false)}
-        onConfirm={name => { 
-          // Mantém reservaScannedBikes para uso no handleFinalizeTrailer
-          handleOrganizeTrailer(selectedBikesForTrailer, name); 
-          setIsTrailerSelectionModalOpen(false); 
-        }}
+        onConfirm={name => { handleOrganizeTrailer(selectedBikesForTrailer, name); setIsTrailerSelectionModalOpen(false); }}
         isLoading={isLoading} bikeNumbers={selectedBikesForTrailer}/>
 
       <DriverSelectionModal 
