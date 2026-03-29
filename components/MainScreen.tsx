@@ -3106,6 +3106,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     let lastFirebaseLat = 0, lastFirebaseLng = 0, lastFirebaseTime = 0;
     let lastSheetsLat = 0, lastSheetsLng = 0, lastSheetsTime = 0;
+    const locationBuffer: { latitude: number, longitude: number, timestamp: number }[] = [];
     let wakeLock: any = null;
     let watchId: number | null = null;
     let audioCtx: AudioContext | null = null;
@@ -3239,12 +3240,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
         lastFirebaseLng = longitude;
         lastFirebaseTime = now;
         
+        // Mantém buffer das últimas 15 posições para preencher buracos de conexão no mapa ADM
+        locationBuffer.push({ latitude, longitude, timestamp: now });
+        if (locationBuffer.length > 15) locationBuffer.shift();
+
         // Converte m/s para km/h
         const speedKmh = speed !== null ? Math.round(speed * 3.6) : 0;
 
         setDoc(doc(db, 'locations', driverName), {
           driverName, latitude, longitude,
           timestamp: serverTimestamp(), 
+          deviceTimestamp: now,
+          pathBuffer: locationBuffer, // Envia o rastro recente para o AdminMap reconstruir se houver falha
           lastHeartbeat: serverTimestamp(), // Heartbeat para o Admin saber que o app está vivo
           category,
           status: 'LOGADO',
@@ -3360,6 +3367,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
     }, 4000);
 
+    // Camada 4: Monitoramento do AudioContext (essencial para iOS/Safari)
+    const audioMonitorInterval = setInterval(() => {
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
+    }, 5000);
+
     // pageshow: dispara quando volta de outra aba/app (inclui bfcache)
     const onPageShow = () => {
       requestWakeLock();
@@ -3410,6 +3424,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       clearInterval(fallbackInterval);
       if (keepaliveInterval) clearInterval(keepaliveInterval);
       clearInterval(watchdogInterval);
+      clearInterval(audioMonitorInterval);
       if (worker) {
         worker.postMessage('stop');
         worker.terminate();

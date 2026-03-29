@@ -58,7 +58,7 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
 
   // Loop de animação baseado em tempo — sempre leva DURATION ms para completar
   // independente da distância, eliminando teletransporte
-  const ANIM_DURATION = 3500; // ms — igual ao intervalo de envio do GPS
+  const ANIM_DURATION = 3000; // ms — igual ao intervalo de envio do GPS
 
   const animationLoop = useCallback(() => {
     const map = mapRef.current;
@@ -68,9 +68,8 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
 
     Object.entries(animStatesRef.current).forEach(([name, anim]) => {
       const elapsed = now - anim.startTime;
-      // t vai de 0 a 1 ao longo de DURATION ms — easing ease-out
-      const raw = Math.min(elapsed / anim.duration, 1);
-      const t = 1 - Math.pow(1 - raw, 3); // ease-out cubic
+      // t vai de 0 a 1 ao longo de DURATION ms — easing linear para movimento constante
+      const t = Math.min(elapsed / anim.duration, 1);
 
       const lat = lerp(anim.fromLat, anim.toLat, t);
       const lng = lerp(anim.fromLng, anim.toLng, t);
@@ -119,8 +118,19 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       activeDrivers.add(driverName);
       markerGroup.push(L.latLng(normLat, normLng));
 
-      // Atualiza posição alvo — inicia nova animação do ponto atual ao novo alvo
+      // Atualiza posição alvo — inicia nova animação APENAS se o alvo mudou
       const prevAnim = animStatesRef.current[driverName];
+      const prevTarget = targetLocsRef.current[driverName];
+
+      // Se o alvo é o mesmo e ainda estamos animando, não faz nada
+      if (prevTarget && prevTarget.lat === normLat && prevTarget.lng === normLng && prevAnim) {
+        const elapsed = performance.now() - prevAnim.startTime;
+        if (elapsed < prevAnim.duration) {
+          // Ainda animando para o mesmo alvo, deixa continuar
+          return;
+        }
+      }
+
       // Ponto de partida = posição atual interpolada (ou alvo anterior se não há anim)
       let fromLat = normLat, fromLng = normLng;
       if (prevAnim) {
@@ -133,8 +143,12 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
 
       // Calcula distância para ajustar duração — posições muito próximas animam mais rápido
       const distM = getDistanceInMeters(fromLat, fromLng, normLat, normLng);
-      // Entre 1s (parado) e 4s (movimento longo) — proporcional à distância
-      const duration = Math.min(Math.max(distM * 200, 1000), ANIM_DURATION);
+      
+      // Se a distância for insignificante (< 0.5m) e já tivermos um alvo, não reinicia animação
+      if (distM < 0.5 && prevTarget) return;
+
+      // Entre 1s (parado) e 3s (movimento longo) — proporcional à distância
+      const duration = Math.min(Math.max(distM * 300, 1000), ANIM_DURATION);
 
       animStatesRef.current[driverName] = {
         fromLat, fromLng,
@@ -145,18 +159,27 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       targetLocsRef.current[driverName] = { lat: normLat, lng: normLng, timestamp: ts, speed: speed || 0, stale: isStale };
 
       // Atualiza rastro (polyline) com a posição REAL (não interpolada)
-      const position = L.latLng(normLat, normLng);
-      if (pathsRef.current[driverName]) {
-        const path = pathsRef.current[driverName];
+      // Processa o buffer para preencher buracos de conexão
+      const path = pathsRef.current[driverName];
+      if (path) {
         const latlngs = path.getLatLngs() as L.LatLng[];
-        if (latlngs.length === 0 || !latlngs[latlngs.length - 1].equals(position, 1e-5)) {
-          latlngs.push(position);
-          if (latlngs.length > 100) latlngs.shift();
-          path.setLatLngs(latlngs);
-        }
+        const buffer = (loc.pathBuffer || [{ latitude: normLat, longitude: normLng, timestamp: ts }])
+          .sort((a: any, b: any) => a.timestamp - b.timestamp); // Garante ordem cronológica
+        
+        buffer.forEach((p: any) => {
+          const pos = L.latLng(normalizeCoord(p.latitude), normalizeCoord(p.longitude));
+          // Só adiciona se for diferente do último ponto
+          if (latlngs.length === 0 || !latlngs[latlngs.length - 1].equals(pos, 1e-5)) {
+            latlngs.push(pos);
+          }
+        });
+
+        if (latlngs.length > 500) latlngs.splice(0, latlngs.length - 500);
+        path.setLatLngs(latlngs);
       } else {
+        const position = L.latLng(normLat, normLng);
         pathsRef.current[driverName] = L.polyline([position], {
-          color: '#3b82f6', weight: 3, opacity: 0.4, dashArray: '5, 10'
+          color: '#2563eb', weight: 4, opacity: 0.7, dashArray: '1, 10'
         }).addTo(map);
       }
 
@@ -247,6 +270,7 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
             longitude: lng,
             timestamp: ts ? new Date(ts).toISOString() : '',
             speed: data.speed || 0,
+            pathBuffer: data.pathBuffer || [],
           });
         });
 
