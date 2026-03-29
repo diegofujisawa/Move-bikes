@@ -409,6 +409,25 @@ const MainScreen: React.FC<MainScreenProps> = ({
   };
 
   /**
+   * Abre localização no Google Maps — compatível com WebView APK e browser
+   * No WebView Android usa intent:// que abre o app Maps diretamente
+   * No browser normal usa o link web padrão
+   */
+  const openMaps = (lat: string | number, lng: string | number) => {
+    const latStr = String(lat).replace(',', '.');
+    const lngStr = String(lng).replace(',', '.');
+    const isWebView = /wv|WebView/i.test(navigator.userAgent) ||
+      (navigator.userAgent.includes('Android') && !navigator.userAgent.includes('Chrome/'));
+    
+    if (isWebView) {
+      // intent:// abre o app Google Maps nativamente no Android WebView
+      window.location.href = `intent://maps.google.com/maps?q=${latStr},${lngStr}#Intent;scheme=https;package=com.google.android.apps.maps;end`;
+    } else {
+      window.open(`https://www.google.com/maps/search/?api=1&query=${latStr},${lngStr}`, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  /**
    * Marca que o motorista acabou de executar uma ação.
    * Durante DRIVER_ACTION_GRACE_MS, o sync do Sheets não sobrescreve.
    */
@@ -788,10 +807,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
       return (
         <div className="flex items-center gap-2 mt-1">
           <span className="text-sm font-semibold text-gray-700">Local:</span>
-          <a href={`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`} target="_blank" rel="noopener noreferrer"
+          <button onClick={() => openMaps(lat, lng)}
             className="flex items-center gap-1.5 px-2 py-1 bg-blue-50 text-blue-600 rounded border border-blue-100 text-[10px] font-bold hover:bg-blue-100">
             <MapIcon className="w-3 h-3" /> Ver no Mapa
-          </a>
+          </button>
         </div>
       );
     }
@@ -1393,20 +1412,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (!term) { setSearchedBike(null); setSearchTerm(''); return; }
     if (bikeToSearch) setSearchTerm(bikeToSearch);
 
-    const cached = searchCacheRef.current[term];
-    if (cached) {
-      setSearchedBike(cached);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      apiCall({ action: 'search', bikeNumber: term }, 1, true).then(r => {
-        if (r.success && r.data) {
-          const s = { ...r.data, 'Patrimônio': String(r.data['Patrimônio']) };
-          searchCacheRef.current[term] = s;
-          setSearchedBike(s);
-        }
-      }).catch(() => {});
-      return;
-    }
-
     setIsSearching(true);
     setError(null);
     try {
@@ -1414,7 +1419,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (result.success && result.data) {
         const s = { ...result.data, 'Patrimônio': String(result.data['Patrimônio']) };
         setSearchedBike(s);
-        searchCacheRef.current[term] = s;
         window.scrollTo({ top: 0, behavior: 'smooth' });
       } else {
         setSearchedBike(null);
@@ -3944,10 +3948,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
               <div>
                 <p className="font-semibold text-gray-500 text-xs uppercase">Coordenadas</p>
-                <a href={`https://www.google.com/maps/search/?api=1&query=${formatCoordinate(searchedBike['Latitude'])},${formatCoordinate(searchedBike['Longitude'])}`}
-                  target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium truncate block">
+                <button onClick={() => openMaps(searchedBike['Latitude'], searchedBike['Longitude'])}
+                  className="text-blue-600 hover:underline font-medium truncate block text-left">
                   {`${formatCoordinate(searchedBike['Latitude'])}, ${formatCoordinate(searchedBike['Longitude'])}`}
-                </a>
+                </button>
               </div>
               <div>
                 <p className="font-semibold text-gray-500 text-xs uppercase">Localidade</p>
