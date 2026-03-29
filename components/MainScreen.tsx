@@ -2963,31 +2963,51 @@ const MainScreen: React.FC<MainScreenProps> = ({
     let watchId: number | null = null;
     let audioCtx: AudioContext | null = null;
     let silentSource: AudioBufferSourceNode | null = null;
+    let keepaliveInterval: ReturnType<typeof setInterval> | null = null;
+    let watchRestartTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    // Toca silêncio em loop via AudioContext — engana o browser fazendo ele
-    // acreditar que há áudio ativo, impedindo suspensão do GPS em background
-    const startSilentAudio = () => {
+    // NoSleep — mantém app ativo no Samsung Internet e outros browsers Android
+    // Usa video element invisível em loop (método mais compatível com Samsung)
+    // + AudioContext como fallback para outros browsers
+    let noSleepVideo: HTMLVideoElement | null = null;
+
+    const startNoSleep = () => {
       try {
-        if (audioCtx && audioCtx.state !== 'closed') return; // já rodando
-        audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
-        // Buffer de silêncio de 1 segundo
-        const data = buffer.getChannelData(0);
-        for (let i = 0; i < data.length; i++) data[i] = 0;
-        const loop = () => {
-          if (!audioCtx || audioCtx.state === 'closed') return;
-          silentSource = audioCtx.createBufferSource();
-          silentSource.buffer = buffer;
-          silentSource.connect(audioCtx.destination);
-          silentSource.loop = true;
-          silentSource.start(0);
-        };
-        loop();
-        console.log('[GPS] Silent audio keepalive ativo');
+        // Método 1: Video element (Samsung Internet, Chrome Android)
+        if (!noSleepVideo) {
+          noSleepVideo = document.createElement('video');
+          noSleepVideo.setAttribute('playsinline', '');
+          noSleepVideo.setAttribute('muted', '');
+          noSleepVideo.muted = true;
+          noSleepVideo.loop = true;
+          noSleepVideo.style.cssText = 'position:fixed;top:-1px;left:-1px;width:1px;height:1px;opacity:0;pointer-events:none;';
+          // MP4 de 1 pixel de silêncio codificado em base64
+          const src = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAs1tZGF0AAACrgYF//+q3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE0MiByMjQ3OSBkZDc5YTYxIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAxNCAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiBjaHJlYWRzPTYgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAABZWxpYnJhcnkAAAAMYXZjMQMAAAA=';
+          noSleepVideo.src = src;
+          document.body.appendChild(noSleepVideo);
+        }
+        noSleepVideo.play().catch(() => {});
+
+        // Método 2: AudioContext como camada extra
+        if (!audioCtx || audioCtx.state === 'closed') {
+          try {
+            audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
+            silentSource = audioCtx.createBufferSource();
+            silentSource.buffer = buffer;
+            silentSource.loop = true;
+            silentSource.connect(audioCtx.destination);
+            silentSource.start(0);
+          } catch {}
+        }
+        console.log('[GPS] NoSleep ativo (video + audio)');
       } catch (e) {
-        console.warn('[GPS] AudioContext não suportado:', e);
+        console.warn('[GPS] NoSleep erro:', e);
       }
     };
+
+    // Alias para compatibilidade com código existente
+    const startSilentAudio = startNoSleep;
 
     const stopSilentAudio = () => {
       try {
@@ -2995,6 +3015,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
         audioCtx?.close();
         audioCtx = null;
         silentSource = null;
+      } catch {}
+      try {
+        if (noSleepVideo) {
+          noSleepVideo.pause();
+          noSleepVideo.remove();
+          noSleepVideo = null;
+        }
       } catch {}
     };
 
@@ -3102,13 +3129,41 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
     };
 
-    // Intervalo de segurança a cada 3s — polling agressivo para manter GPS ativo
-    // Complementa o watchPosition que pode parar em background
+    // =============================================================
+    // KEEPALIVE MULTI-CAMADA — garante GPS ativo mesmo em background
+    // Camada 1: fallback GPS a cada 3s
     const fallbackInterval = setInterval(() => getCurrentAndSend(), 3000);
 
+    // Camada 2: network beacon a cada 2s via fetch para HEAD no próprio app
+    // O Android não suspende apps com atividade de rede ativa
+    keepaliveInterval = setInterval(() => {
+      fetch(window.location.href, { method: 'HEAD', cache: 'no-store' }).catch(() => {});
+    }, 2000);
+
+    // Camada 3: watchPosition com auto-restart agressivo
+    // Se não receber posição por 8s, reinicia o watch
+    let lastWatchTs = Date.now();
+    const watchdogInterval = setInterval(() => {
+      if (Date.now() - lastWatchTs > 8000) {
+        console.warn('[GPS] Watchdog: watchPosition silencioso por 8s, reiniciando...');
+        startWatch();
+        getCurrentAndSend(true);
+        lastWatchTs = Date.now();
+      }
+    }, 4000);
+
+    // Atualiza o watchdog sempre que chega posição
+    const origSendLocation = sendLocation;
+    const sendLocationWithWatchdog = (lat: number, lng: number, spd: number | null = null, force = false) => {
+      lastWatchTs = Date.now();
+      origSendLocation(lat, lng, spd, force);
+    };
+
     // pageshow: dispara quando volta de outra aba/app (inclui bfcache)
-    const onPageShow = (e: PageTransitionEvent) => {
+    const onPageShow = (_e: PageTransitionEvent) => {
       requestWakeLock();
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+      if (!audioCtx || audioCtx.state === 'closed') startSilentAudio();
       startWatch();
       getCurrentAndSend(true);
     };
@@ -3124,8 +3179,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     // Inicializa
     requestWakeLock();
-    startSilentAudio(); // Keepalive de áudio — previne suspensão do GPS em background
+    startSilentAudio();
     startWatch();
+    getCurrentAndSend(true);
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('pageshow', onPageShow);
     window.addEventListener('focus', onFocus);
@@ -3148,6 +3204,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
     return () => {
       if (watchId !== null) navigator.geolocation.clearWatch(watchId);
       clearInterval(fallbackInterval);
+      if (keepaliveInterval) clearInterval(keepaliveInterval);
+      clearInterval(watchdogInterval);
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pageshow', onPageShow);
       window.removeEventListener('focus', onFocus);

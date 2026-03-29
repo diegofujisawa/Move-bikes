@@ -25,6 +25,16 @@ const normalizeCoord = (coord: number): number => {
 // Interpolação linear entre dois pontos para animação suave
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
+const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+};
+const getDistanceInMeters = (lat1: number, lon1: number, lat2: number, lon2: number) =>
+  calculateDistance(lat1, lon1, lat2, lon2) * 1000;
+
 const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -37,34 +47,36 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
 
   // Posições alvo (do Firebase) e posições atuais (animadas)
   const targetLocsRef = useRef<{ [key: string]: { lat: number; lng: number; timestamp: number; speed: number; stale: boolean } }>({});
-  const currentLocsRef = useRef<{ [key: string]: { lat: number; lng: number } }>({});
+  // Cada motorista tem: posição de origem, posição alvo, tempo de início e duração da animação
+  const animStatesRef = useRef<{ [key: string]: {
+    fromLat: number; fromLng: number;
+    toLat: number; toLng: number;
+    startTime: number; duration: number; // ms
+  } }>({});
   const animFrameRef = useRef<number | null>(null);
   const hasCenteredRef = useRef(false);
 
-  // Loop de animação — roda a ~60fps, interpola posições suavemente
+  // Loop de animação baseado em tempo — sempre leva DURATION ms para completar
+  // independente da distância, eliminando teletransporte
+  const ANIM_DURATION = 3500; // ms — igual ao intervalo de envio do GPS
+
   const animationLoop = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    const LERP_SPEED = 0.08; // 0.08 = ~60 frames para cobrir 100% da distância (~1s para chegada)
+    const now = performance.now();
 
-    Object.entries(targetLocsRef.current).forEach(([name, target]) => {
-      const current = currentLocsRef.current[name];
-      if (!current) {
-        // Primeira aparição — posiciona direto sem animar
-        currentLocsRef.current[name] = { lat: target.lat, lng: target.lng };
-        return;
-      }
+    Object.entries(animStatesRef.current).forEach(([name, anim]) => {
+      const elapsed = now - anim.startTime;
+      // t vai de 0 a 1 ao longo de DURATION ms — easing ease-out
+      const raw = Math.min(elapsed / anim.duration, 1);
+      const t = 1 - Math.pow(1 - raw, 3); // ease-out cubic
 
-      // Interpolação suave
-      const newLat = lerp(current.lat, target.lat, LERP_SPEED);
-      const newLng = lerp(current.lng, target.lng, LERP_SPEED);
-      currentLocsRef.current[name] = { lat: newLat, lng: newLng };
+      const lat = lerp(anim.fromLat, anim.toLat, t);
+      const lng = lerp(anim.fromLng, anim.toLng, t);
 
       const marker = markersRef.current[name];
-      if (marker) {
-        marker.setLatLng([newLat, newLng]);
-      }
+      if (marker) marker.setLatLng([lat, lng]);
     });
 
     animFrameRef.current = requestAnimationFrame(animationLoop);
@@ -107,7 +119,29 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       activeDrivers.add(driverName);
       markerGroup.push(L.latLng(normLat, normLng));
 
-      // Atualiza posição alvo — a animação vai interpolar até ela
+      // Atualiza posição alvo — inicia nova animação do ponto atual ao novo alvo
+      const prevAnim = animStatesRef.current[driverName];
+      // Ponto de partida = posição atual interpolada (ou alvo anterior se não há anim)
+      let fromLat = normLat, fromLng = normLng;
+      if (prevAnim) {
+        const elapsed = performance.now() - prevAnim.startTime;
+        const raw = Math.min(elapsed / prevAnim.duration, 1);
+        const t = 1 - Math.pow(1 - raw, 3);
+        fromLat = lerp(prevAnim.fromLat, prevAnim.toLat, t);
+        fromLng = lerp(prevAnim.fromLng, prevAnim.toLng, t);
+      }
+
+      // Calcula distância para ajustar duração — posições muito próximas animam mais rápido
+      const distM = getDistanceInMeters(fromLat, fromLng, normLat, normLng);
+      // Entre 1s (parado) e 4s (movimento longo) — proporcional à distância
+      const duration = Math.min(Math.max(distM * 200, 1000), ANIM_DURATION);
+
+      animStatesRef.current[driverName] = {
+        fromLat, fromLng,
+        toLat: normLat, toLng: normLng,
+        startTime: performance.now(),
+        duration,
+      };
       targetLocsRef.current[driverName] = { lat: normLat, lng: normLng, timestamp: ts, speed: speed || 0, stale: isStale };
 
       // Atualiza rastro (polyline) com a posição REAL (não interpolada)
@@ -126,11 +160,8 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
         }).addTo(map);
       }
 
-      // Cria marcador se não existir — posição inicial = alvo (sem anim na criação)
+      // Cria marcador se não existir — posição inicial = posição real (sem anim na criação)
       if (!markersRef.current[driverName]) {
-        if (!currentLocsRef.current[driverName]) {
-          currentLocsRef.current[driverName] = { lat: normLat, lng: normLng };
-        }
         // DivIcon — sem dependência de imagem, nunca quebra no Vite
         const driverIcon = L.divIcon({
           className: '',
@@ -144,7 +175,7 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
           iconSize: [14, 14],
           iconAnchor: [7, 7],
         });
-        const marker = L.marker([currentLocsRef.current[driverName].lat, currentLocsRef.current[driverName].lng], { title: driverName, icon: driverIcon }).addTo(map);
+        const marker = L.marker([normLat, normLng], { title: driverName, icon: driverIcon }).addTo(map);
         markersRef.current[driverName] = marker;
       }
 
@@ -170,7 +201,7 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       if (!activeDrivers.has(name)) {
         map.removeLayer(markersRef.current[name]);
         delete markersRef.current[name];
-        delete currentLocsRef.current[name];
+        delete animStatesRef.current[name];
         delete targetLocsRef.current[name];
         if (pathsRef.current[name]) {
           map.removeLayer(pathsRef.current[name]);
@@ -237,7 +268,7 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
         mapRef.current = null;
       }
       markersRef.current = {};
-      currentLocsRef.current = {};
+      animStatesRef.current = {};
       targetLocsRef.current = {};
       hasCenteredRef.current = false;
     };
