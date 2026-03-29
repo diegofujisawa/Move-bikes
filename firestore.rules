@@ -9,16 +9,14 @@ service cloud.firestore {
     function isAdmin() {
       return isAuthenticated() && 
              (request.auth.token.email == "diegofujisawajp@gmail.com" || 
-              request.auth.token.firebase.sign_in_provider == "anonymous");
+              request.auth.token.firebase.sign_in_provider == "anonymous" ||
+              (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.category.upper().matches('.*ADM.*')));
     }
 
     // Permissão total para o administrador em qualquer caminho
     match /{allPaths=**} {
       allow read, write: if isAdmin();
-    }
-
-    function isUserAdmin() {
-      return isAdmin() || (isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.category.toUpper().matches('.*ADM.*'));
     }
 
     function isValidBicycle(data) {
@@ -97,7 +95,7 @@ service cloud.firestore {
     }
 
     match /pending_actions/{id} {
-      allow read, write: if isAuthenticated();
+      allow get, list, create, update, delete: if isAuthenticated();
     }
     match /sync/{id} {
       allow read, write: if isAuthenticated();

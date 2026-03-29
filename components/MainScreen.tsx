@@ -331,7 +331,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   // --- Refs ---
   const scannerRef = useRef<Html5Qrcode | null>(null);
-  const searchCacheRef = useRef<Record<string, BicycleData>>({});
   const searchResultRef = useRef<HTMLDivElement>(null);
   const processingBikesRef = useRef<Set<string>>(new Set());
   // Ref para refreshAll — evita dependência circular com persistDriverState
@@ -416,11 +415,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const openMaps = (lat: string | number, lng: string | number) => {
     const latStr = String(lat).replace(',', '.');
     const lngStr = String(lng).replace(',', '.');
+    
+    // Antes de sair, garante que o NoSleep e WakeLock estão ativos
+    // e força um envio de posição
+    const forceUpdate = (window as any).__forceGpsUpdate;
+    if (typeof forceUpdate === 'function') forceUpdate();
+
     const isWebView = /wv|WebView/i.test(navigator.userAgent) ||
       (navigator.userAgent.includes('Android') && !navigator.userAgent.includes('Chrome/'));
     
     if (isWebView) {
-      // intent:// abre o app Google Maps nativamente no Android WebView
       window.location.href = `intent://maps.google.com/maps?q=${latStr},${lngStr}#Intent;scheme=https;package=com.google.android.apps.maps;end`;
     } else {
       window.open(`https://www.google.com/maps/search/?api=1&query=${latStr},${lngStr}`, '_blank', 'noopener,noreferrer');
@@ -695,7 +699,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     // Listener de ações pendentes (ADM)
     let unsubPending = () => {};
-    if (isAdm) {
+    if (isAdm && auth.currentUser) {
       setIsPendingActionsLoading(true);
       unsubPending = onSnapshot(collection(db, 'pending_actions'), snapshot => {
         const actions: any[] = [];
@@ -720,7 +724,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setPendingActions(actions.sort((a, b) => (b.timestamp?.toMillis?.() || 0) - (a.timestamp?.toMillis?.() || 0)));
         setIsPendingActionsLoading(false);
       }, err => {
-        console.error('Listener pending_actions:', err);
+        handleFirestoreError(err, OperationType.GET, 'pending_actions');
         setIsPendingActionsLoading(false);
       });
     }
@@ -1281,14 +1285,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
           return;
         }
         // Outros status — envia direto ao ADM como antes
-        await addDoc(collection(db, 'pending_actions'), {
-          type: 'status_change',
-          bikeNumber: bikePat,
-          targetStatus,
-          mechanicName: driverName,
-          status: 'pending',
-          timestamp: serverTimestamp()
-        });
+        try {
+          await addDoc(collection(db, 'pending_actions'), {
+            type: 'status_change',
+            bikeNumber: bikePat,
+            targetStatus,
+            mechanicName: driverName,
+            status: 'pending',
+            timestamp: serverTimestamp()
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, 'pending_actions');
+        }
         setSuccessMessage(`Solicitação de alteração de status para bike ${bikePat} enviada ao ADM.`);
         setBikeSearchTerm('');
         setBikeSearchResult([]);
@@ -1526,35 +1534,47 @@ const MainScreen: React.FC<MainScreenProps> = ({
         
         if (!alterarStatusDocRef.current) {
           // Busca doc pendente já existente deste mecânico para não criar duplicata
-          const existingSnap = await _getDocs(
-            _query(
-              collection(db, 'pending_actions'),
-              _where('type', '==', 'alterar_status_lote'),
-              _where('mechanicName', '==', driverName),
-              _where('status', '==', 'pending')
-            )
-          );
-          if (!existingSnap.empty) {
-            alterarStatusDocRef.current = existingSnap.docs[0].id;
+          try {
+            const existingSnap = await _getDocs(
+              _query(
+                collection(db, 'pending_actions'),
+                _where('type', '==', 'alterar_status_lote'),
+                _where('mechanicName', '==', driverName),
+                _where('status', '==', 'pending')
+              )
+            );
+            if (!existingSnap.empty) {
+              alterarStatusDocRef.current = existingSnap.docs[0].id;
+            }
+          } catch (err) {
+            handleFirestoreError(err, OperationType.GET, 'pending_actions');
           }
         }
 
         if (alterarStatusDocRef.current) {
           // Adiciona bike ao doc existente
-          await updateDoc(doc(db, 'pending_actions', alterarStatusDocRef.current), {
-            bikes: arrayUnion(bikeId),
-            timestamp: serverTimestamp(),
-          });
+          try {
+            await updateDoc(doc(db, 'pending_actions', alterarStatusDocRef.current), {
+              bikes: arrayUnion(bikeId),
+              timestamp: serverTimestamp(),
+            });
+          } catch (err) {
+            handleFirestoreError(err, OperationType.WRITE, 'pending_actions');
+          }
         } else {
           // Cria novo doc agregador
-          const docRef = await addDoc(collection(db, 'pending_actions'), {
-            type: 'alterar_status_lote',
-            bikes: [bikeId],
-            mechanicName: driverName,
-            status: 'pending',
-            timestamp: serverTimestamp(),
-          });
-          alterarStatusDocRef.current = docRef.id;
+          try {
+            const docRef = await addDoc(collection(db, 'pending_actions'), {
+              type: 'alterar_status_lote',
+              bikes: [bikeId],
+              mechanicName: driverName,
+              status: 'pending',
+              timestamp: serverTimestamp(),
+            });
+            alterarStatusDocRef.current = docRef.id;
+          } catch (err) {
+            handleFirestoreError(err, OperationType.WRITE, 'pending_actions');
+          }
         }
 
         setSuccessMessage(`Bike ${bikeId} → Aguardando Manutenção.`);
@@ -1833,11 +1853,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
         if (!res.success) throw new Error(res.error || 'Erro ao aprovar carretinha.');
       }
 
-      await updateDoc(doc(db, 'pending_actions', action.id), {
-        status: 'approved',
-        approvedBy: driverName,
-        approvedAt: serverTimestamp()
-      });
+      try {
+        await updateDoc(doc(db, 'pending_actions', action.id), {
+          status: 'approved',
+          approvedBy: driverName,
+          approvedAt: serverTimestamp()
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'pending_actions');
+      }
       // Reseta ref do lote se era o doc aprovado
       if (action.type === 'alterar_status_lote' && alterarStatusDocRef.current === action.id) {
         alterarStatusDocRef.current = null;
@@ -1880,12 +1904,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }, 1, true);
 
       // 3. Aprova a ação pendente
-      await updateDoc(doc(db, 'pending_actions', action.id), {
-        status: 'approved',
-        approvedBy: driverName, // Nome do ADM logado
-        approvedAt: serverTimestamp(),
-        assignedTo: targetDriverName
-      });
+      try {
+        await updateDoc(doc(db, 'pending_actions', action.id), {
+          status: 'approved',
+          approvedBy: driverName, // Nome do ADM logado
+          approvedAt: serverTimestamp(),
+          assignedTo: targetDriverName
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'pending_actions');
+      }
 
       setSuccessMessage(`Carretinha ${trailerName} enviada para ${targetDriverName}!`);
       setIsDriverSelectionModalOpen(false);
@@ -1902,11 +1930,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (!confirm('Deseja rejeitar esta solicitação?')) return;
     setIsLoading(true);
     try {
-      await updateDoc(doc(db, 'pending_actions', actionId), {
-        status: 'rejected',
-        rejectedBy: driverName,
-        rejectedAt: serverTimestamp()
-      });
+      try {
+        await updateDoc(doc(db, 'pending_actions', actionId), {
+          status: 'rejected',
+          rejectedBy: driverName,
+          rejectedAt: serverTimestamp()
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'pending_actions');
+      }
       setSuccessMessage('Solicitação rejeitada.');
     } catch (err: any) {
       alert('Erro ao rejeitar: ' + err.message);
@@ -2181,14 +2213,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       // Se não for ADM, envia para Validação Mecânica (pending_actions)
       if (!isAdm) {
-        await addDoc(collection(db, 'pending_actions'), {
-          type: 'trailer_validation',
-          trailerName,
-          bikes: bikeIds,
-          mechanicName: driverName,
-          status: 'pending',
-          timestamp: serverTimestamp()
-        });
+        try {
+          await addDoc(collection(db, 'pending_actions'), {
+            type: 'trailer_validation',
+            trailerName,
+            bikes: bikeIds,
+            mechanicName: driverName,
+            status: 'pending',
+            timestamp: serverTimestamp()
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, 'pending_actions');
+        }
       }
 
       setSuccessMessage(`Carretinha "${trailerName}" finalizada! ADM notificado para remanejamento.`);
@@ -2968,7 +3004,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
     let audioCtx: AudioContext | null = null;
     let silentSource: AudioBufferSourceNode | null = null;
     let keepaliveInterval: ReturnType<typeof setInterval> | null = null;
-    let watchRestartTimeout: ReturnType<typeof setTimeout> | null = null;
+    let worker: Worker | null = null;
+
+    // Web Locks API — impede que o browser suspenda a aba por inatividade
+    const requestWebLock = async () => {
+      if ('locks' in navigator) {
+        try {
+          await (navigator as any).locks.request('gps_keepalive', { mode: 'exclusive' }, async () => {
+            // Mantém o lock para sempre enquanto o app estiver rodando
+            await new Promise(() => {}); 
+          });
+        } catch {}
+      }
+    };
+    requestWebLock();
 
     // NoSleep — mantém app ativo no Samsung Internet e outros browsers Android
     // Usa video element invisível em loop (método mais compatível com Samsung)
@@ -3010,8 +3059,41 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
     };
 
-    // Alias para compatibilidade com código existente
-    const startSilentAudio = startNoSleep;
+    // Web Worker para Heartbeat — browsers suspendem setInterval em background (pode cair para 1 min)
+    // O Web Worker roda em thread separada e é menos suscetível a throttling agressivo
+    const startWorkerHeartbeat = () => {
+      try {
+        const workerCode = `
+          let interval;
+          self.onmessage = (e) => {
+            if (e.data === 'start') {
+              if (interval) clearInterval(interval);
+              interval = setInterval(() => self.postMessage('tick'), 3000);
+            } else if (e.data === 'stop') {
+              clearInterval(interval);
+            }
+          };
+        `;
+        const blob = new Blob([workerCode], { type: 'application/javascript' });
+        worker = new Worker(URL.createObjectURL(blob));
+        worker.onmessage = () => {
+          // Sempre que o worker "ticar", forçamos uma atualização de posição
+          getCurrentAndSend();
+          // E um beacon de rede
+          fetch(window.location.href, { method: 'HEAD', cache: 'no-store' }).catch(() => {});
+        };
+        worker.postMessage('start');
+        console.log('[GPS] Web Worker Heartbeat ativo');
+      } catch (e) {
+        console.warn('[GPS] Falha ao iniciar Web Worker:', e);
+      }
+    };
+
+    const startSilentAudio = () => {
+      startNoSleep();
+      startWorkerHeartbeat();
+      requestWebLock();
+    };
 
     const stopSilentAudio = () => {
       try {
@@ -3025,6 +3107,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
           noSleepVideo.pause();
           noSleepVideo.remove();
           noSleepVideo = null;
+        }
+      } catch {}
+      try {
+        if (worker) {
+          worker.postMessage('stop');
+          worker.terminate();
+          worker = null;
         }
       } catch {}
     };
@@ -3048,7 +3137,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         setDoc(doc(db, 'locations', driverName), {
           driverName, latitude, longitude,
-          timestamp: serverTimestamp(), category,
+          timestamp: serverTimestamp(), 
+          lastHeartbeat: serverTimestamp(), // Heartbeat para o Admin saber que o app está vivo
+          category,
           status: 'LOGADO',
           speed: speedKmh,
         }, { merge: true }).catch(() => {});
@@ -3075,15 +3166,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
       lastLocationRef.current = { lat: latitude, lng: longitude };
     };
 
+    // Atualiza o watchdog sempre que chega posição
+    const sendLocationWithWatchdog = (lat: number, lng: number, spd: number | null = null, force = false) => {
+      lastWatchTs = Date.now();
+      sendLocation(lat, lng, spd, force);
+    };
+
     const getCurrentAndSend = (force = false) => {
       navigator.geolocation.getCurrentPosition(
         ({ coords: { latitude, longitude, speed } }) => {
           setGpsError(null);
           setCurrentDriverLocation({ lat: latitude, lng: longitude });
-          sendLocation(latitude, longitude, speed, force);
+          sendLocationWithWatchdog(latitude, longitude, speed, force);
         },
         () => {},
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 } // maximumAge:0 = sempre posição fresca
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
       );
     };
 
@@ -3093,18 +3190,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
         ({ coords: { latitude, longitude, speed } }) => {
           setGpsError(null);
           setCurrentDriverLocation({ lat: latitude, lng: longitude });
-          sendLocation(latitude, longitude, speed);
+          sendLocationWithWatchdog(latitude, longitude, speed);
         },
         err => {
           if (err.code === err.PERMISSION_DENIED)
             setGpsError('Acesso ao GPS negado. O aplicativo requer localização ativa.');
           else {
-            // Qualquer outro erro (timeout, unavailable) — reinicia o watch
             console.warn('[GPS] watchPosition erro, reiniciando:', err.code);
             setTimeout(() => startWatch(), 2000);
           }
         },
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 } // maximumAge:0 = sempre fresco
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
       );
     };
 
@@ -3140,8 +3236,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     // Camada 2: network beacon a cada 2s via fetch para HEAD no próprio app
     // O Android não suspende apps com atividade de rede ativa
+    // Adicionamos um timestamp para evitar cache agressivo de proxies
     keepaliveInterval = setInterval(() => {
-      fetch(window.location.href, { method: 'HEAD', cache: 'no-store' }).catch(() => {});
+      fetch(`${window.location.href}?t=${Date.now()}`, { method: 'HEAD', cache: 'no-store', mode: 'no-cors' }).catch(() => {});
     }, 2000);
 
     // Camada 3: watchPosition com auto-restart agressivo
@@ -3156,15 +3253,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
     }, 4000);
 
-    // Atualiza o watchdog sempre que chega posição
-    const origSendLocation = sendLocation;
-    const sendLocationWithWatchdog = (lat: number, lng: number, spd: number | null = null, force = false) => {
-      lastWatchTs = Date.now();
-      origSendLocation(lat, lng, spd, force);
-    };
-
     // pageshow: dispara quando volta de outra aba/app (inclui bfcache)
-    const onPageShow = (_e: PageTransitionEvent) => {
+    const onPageShow = () => {
       requestWakeLock();
       if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
       if (!audioCtx || audioCtx.state === 'closed') startSilentAudio();
@@ -3180,6 +3270,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
       startWatch();
       getCurrentAndSend(true);
     };
+
+    // Exponha o force update globalmente para o openMaps
+    (window as any).__forceGpsUpdate = () => getCurrentAndSend(true);
 
     // Inicializa
     requestWakeLock();
@@ -3210,6 +3303,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
       clearInterval(fallbackInterval);
       if (keepaliveInterval) clearInterval(keepaliveInterval);
       clearInterval(watchdogInterval);
+      if (worker) {
+        worker.postMessage('stop');
+        worker.terminate();
+      }
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pageshow', onPageShow);
       window.removeEventListener('focus', onFocus);
