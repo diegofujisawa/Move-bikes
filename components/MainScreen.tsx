@@ -11,7 +11,7 @@ import {
   WifiOff, AlertCircle, RefreshCw, ChevronUp, ChevronDown, ChevronLeft, 
   ChevronRight, Circle, Play, Locate, Map, Wrench, Loader2
 } from 'lucide-react';
-import { Html5Qrcode } from 'html5-qrcode';
+import { Html5Qrcode, Html5QrcodeScannerState } from 'html5-qrcode';
 import { auth, db } from '../firebase';
 import { signInWithPopup, GoogleAuthProvider, signInAnonymously } from 'firebase/auth';
 import {
@@ -321,10 +321,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
     scannerActive: boolean;
     lastScanned: string | null;
     lastError: string | null;
+    cameras: { id: string; label: string }[];
+    currentCameraIndex: number;
   } | null>(null);
+  const [scannerCameras, setScannerCameras] = useState<{ id: string; label: string }[]>([]);
+  const [currentScannerCameraIndex, setCurrentScannerCameraIndex] = useState(0);
   const trailerScannerRef = useRef<Html5Qrcode | null>(null);
   const scannerStartPromise = useRef<Promise<any> | null>(null);
   const trailerScannerStartPromise = useRef<Promise<any> | null>(null);
+  const scannerTransitionPromise = useRef<Promise<any>>(Promise.resolve());
   const isScannerBusy = useRef(false);
   const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
@@ -1506,22 +1511,23 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const alterarStatusDocRef = useRef<string | null>(null);
 
   // Ref para proteger atualizações otimistas da mecânica do sync do Sheets
-  // Map de patrimônio → { status, expiresAt } — protege por 30s após cada ação
+  // Map de patrimônio → { ..., expiresAt } — protege por 30s após cada ação
   // Plain object ref — avoids Map constructor issues in this environment
-  const mechanicOptimisticRef = useRef<Record<string, { status: string; expiresAt: number }>>({});
+  const mechanicOptimisticRef = useRef<Record<string, any>>({});
 
-  const protectMechanicBike = (patrimonio: string, status: string) => {
+  const protectMechanicBike = (patrimonio: string, data: any) => {
+    const dataObj = typeof data === 'string' ? { status: data } : data;
     mechanicOptimisticRef.current[String(patrimonio)] = {
-      status,
+      ...dataObj,
       expiresAt: Date.now() + 30000, // 30s de proteção
     };
   };
 
   const handleAlterarStatus = async (bikeId: string) => {
     // 1. Atualiza estado local imediatamente — bike some de "Alterar Status"
-    protectMechanicBike(bikeId, 'Aguardando Manutenção');
+    protectMechanicBike(bikeId, { status: 'Aguardando Manutenção' });
     setMechanicsList(prev => prev.map(b =>
-      b.patrimonio === bikeId ? { ...b, status: 'Aguardando Manutenção' } : b
+      String(b.patrimonio) === String(bikeId) ? { ...b, status: 'Aguardando Manutenção' } : b
     ));
 
     if (isMecanica) {
@@ -1751,9 +1757,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     const bikeNumber = selectedMechanicBike.patrimonio;
     // Atualização otimista — remove da lista imediatamente
-    protectMechanicBike(bikeNumber, 'Em Manutenção');
+    protectMechanicBike(bikeNumber, { status: 'Em Manutenção', mecanico: mechanicName });
     setMechanicsList(prev => prev.map(b =>
-      b.patrimonio === bikeNumber ? { ...b, status: 'Em Manutenção', mecanico: mechanicName } : b
+      String(b.patrimonio) === String(bikeNumber) ? { ...b, status: 'Em Manutenção', mecanico: mechanicName } : b
     ));
     setIsMechanicSelectionModalOpen(false);
     try {
@@ -1773,9 +1779,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
     // A notificação ao ADM só ocorre ao FINALIZAR A CARRETINHA (após QR + bateria + comunicação).
     // Atualização otimista
-    protectMechanicBike(bikeNumber, 'Reserva');
+    protectMechanicBike(bikeNumber, { status: 'Reserva', tratativa: treatment });
     setMechanicsList(prev => prev.map(b =>
-      b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', tratativa: treatment } : b
+      String(b.patrimonio) === String(bikeNumber) ? { ...b, status: 'Reserva', tratativa: treatment } : b
     ));
     setIsMechanicRepairModalOpen(false);
     try {
@@ -1966,25 +1972,40 @@ const MainScreen: React.FC<MainScreenProps> = ({
   };
 
   const internalStopTrailerScanner = async () => {
-    if (trailerScannerStartPromise.current) {
-      try { await trailerScannerStartPromise.current; } catch { }
-      trailerScannerStartPromise.current = null;
-    }
-
-    if (trailerScannerRef.current) {
-      const qr = trailerScannerRef.current;
-      trailerScannerRef.current = null;
-      try { 
-        if (qr.isScanning) {
-          await qr.stop(); 
-          await new Promise(r => setTimeout(r, 200));
-        }
-        await qr.clear(); 
-      } catch (e) {
-        console.warn('Error stopping trailer scanner:', e);
+    return withScannerTransition(async () => {
+      if (trailerScannerStartPromise.current) {
+        try { await trailerScannerStartPromise.current; } catch { }
+        trailerScannerStartPromise.current = null;
       }
-    }
-    setTrailerQrModal(prev => prev ? { ...prev, scannerActive: false } : null);
+
+      if (trailerScannerRef.current) {
+        const qr = trailerScannerRef.current;
+        trailerScannerRef.current = null;
+        try { 
+          if (qr.getState() === Html5QrcodeScannerState.SCANNING || qr.getState() === Html5QrcodeScannerState.PAUSED) {
+            await qr.stop(); 
+            await new Promise(r => setTimeout(r, 300));
+          }
+          await qr.clear(); 
+        } catch (e) {
+          console.warn('Error stopping trailer scanner:', e);
+        }
+      }
+      setTrailerQrModal(prev => prev ? { ...prev, scannerActive: false } : null);
+    });
+  };
+
+  const withScannerTransition = async (fn: () => Promise<any>) => {
+    const nextPromise = scannerTransitionPromise.current.then(async () => {
+      try {
+        return await fn();
+      } catch (e) {
+        console.warn('Scanner transition error:', e);
+        throw e;
+      }
+    });
+    scannerTransitionPromise.current = nextPromise;
+    return nextPromise;
   };
 
   const stopTrailerScanner = async () => {
@@ -2088,66 +2109,81 @@ const MainScreen: React.FC<MainScreenProps> = ({
       console.warn('Error stopping existing scanners:', e);
     }
 
-    setTrailerQrModal(prev => prev ? { ...prev, scannerActive: true, lastError: null } : null);
+    setIsScannerOpen(true);
     setTimeout(async () => {
-      try {
-        const el = document.getElementById('qr-trailer-reader');
-        if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
-        
-        const checkStillActive = () => {
-          let active = false;
-          setTrailerQrModal(prev => {
-            if (prev && prev.scannerActive) active = true;
-            return prev;
-          });
-          return active;
-        };
+      await withScannerTransition(async () => {
+        try {
+          const el = document.getElementById('qr-trailer-reader');
+          if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
+          
+          const checkStillActive = () => {
+            let active = false;
+            setTrailerQrModal(prev => {
+              if (prev && prev.scannerActive) active = true;
+              return prev;
+            });
+            return active;
+          };
 
-        if (!checkStillActive()) return;
-
-        const qr = new Html5Qrcode('qr-trailer-reader');
-        trailerScannerRef.current = qr;
-        
-        const startWithRetry = async (withZoom: boolean, retries = 3): Promise<void> => {
           if (!checkStillActive()) return;
-          try {
-            const config = withZoom 
-              ? { facingMode: 'environment', advanced: [{ zoom: 2.0 }] } as any
-              : { facingMode: 'environment' };
-            
-            const promise = qr.start(
-              config,
-              { fps: 10, qrbox: { width: 220, height: 220 } },
-              (decodedText) => handleTrailerQrSuccess(decodedText),
-              () => {}
-            );
-            trailerScannerStartPromise.current = promise;
-            await promise;
-            trailerScannerStartPromise.current = null;
-          } catch (err: any) {
-            trailerScannerStartPromise.current = null;
-            if (err?.message?.includes('already under transition') && retries > 0) {
-              console.warn('Trailer Scanner transition error, retrying...', retries);
-              await new Promise(r => setTimeout(r, 500));
-              return startWithRetry(withZoom, retries - 1);
+
+          const qr = new Html5Qrcode('qr-trailer-reader');
+          trailerScannerRef.current = qr;
+          
+          const startWithRetry = async (withZoom: boolean, retries = 5): Promise<void> => {
+            if (!checkStillActive()) return;
+            try {
+              let cameras = scannerCameras;
+              if (cameras.length === 0) {
+                try {
+                  const devices = await Html5Qrcode.getCameras();
+                  if (devices && devices.length > 0) {
+                    cameras = devices.map(d => ({ id: d.id, label: d.label }));
+                    setScannerCameras(cameras);
+                  }
+                } catch (e) {
+                  console.warn('Error getting cameras:', e);
+                }
+              }
+
+              const config = cameras.length > 0 
+                ? { deviceId: { exact: cameras[currentScannerCameraIndex % cameras.length].id } }
+                : { facingMode: 'environment' };
+              
+              const promise = qr.start(
+                config,
+                { fps: 10, qrbox: 200, aspectRatio: 1.0 },
+                (decodedText) => handleTrailerQrSuccess(decodedText),
+                () => {}
+              );
+              trailerScannerStartPromise.current = promise;
+              await promise;
+              trailerScannerStartPromise.current = null;
+            } catch (err: any) {
+              trailerScannerStartPromise.current = null;
+              if (err?.message?.includes('already under transition') && retries > 0) {
+                console.warn('Trailer Scanner transition error, retrying...', retries);
+                await new Promise(r => setTimeout(r, 800));
+                return startWithRetry(withZoom, retries - 1);
+              }
+              throw err;
             }
+          };
+
+          try {
+            await startWithRetry(false);
+          } catch (err) {
+            console.warn('Start failed:', err);
             throw err;
           }
-        };
-
-        try {
-          await startWithRetry(true);
-        } catch (err) {
-          console.warn('Zoom not supported or start failed, retrying without zoom:', err);
-          await startWithRetry(false);
+        } catch (err: any) {
+          console.error('Trailer Scanner error:', err);
+          setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + (err.message || String(err)), scannerActive: false } : null);
+        } finally {
+          isScannerBusy.current = false;
         }
-      } catch (err: any) {
-        console.error('Trailer Scanner error:', err);
-        setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + (err.message || String(err)), scannerActive: false } : null);
-      } finally {
-        isScannerBusy.current = false;
-      }
-    }, 500);
+      });
+    }, 600);
   };
 
   const handleFinalizeTrailer = async (trailerName: string) => {
@@ -2262,94 +2298,131 @@ const MainScreen: React.FC<MainScreenProps> = ({
     try {
       await internalStopScanner();
       await internalStopTrailerScanner();
-      await new Promise(r => setTimeout(r, 400));
+      await new Promise(r => setTimeout(r, 500));
     } catch (e) {
       console.warn('Error stopping existing scanners:', e);
     }
 
     setIsScannerOpen(true);
     setTimeout(async () => {
-      try {
-        const el = document.getElementById('qr-reader');
-        if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
-        
-        const checkStillOpen = () => {
-          let open = false;
-          setIsScannerOpen(prev => {
-            open = prev;
-            return prev;
-          });
-          return open;
-        };
+      await withScannerTransition(async () => {
+        try {
+          const el = document.getElementById('qr-reader');
+          if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
+          
+          const checkStillOpen = () => {
+            let open = false;
+            setIsScannerOpen(prev => {
+              open = prev;
+              return prev;
+            });
+            return open;
+          };
 
-        if (!checkStillOpen()) return;
-
-        const qr = new Html5Qrcode('qr-reader');
-        scannerRef.current = qr;
-
-        const startWithRetry = async (withZoom: boolean, retries = 3): Promise<void> => {
           if (!checkStillOpen()) return;
-          try {
-            const config = withZoom 
-              ? { facingMode: 'environment', advanced: [{ zoom: 2.0 }] } as any
-              : { facingMode: 'environment' };
-            
-            const promise = qr.start(
-              config,
-              { fps: 10, qrbox: { width: 250, height: 250 } },
-              (text) => handleScannerSuccess(text),
-              () => {}
-            );
-            scannerStartPromise.current = promise;
-            await promise;
-            scannerStartPromise.current = null;
-          } catch (err: any) {
-            scannerStartPromise.current = null;
-            if (err?.message?.includes('already under transition') && retries > 0) {
-              console.warn('Scanner transition error, retrying...', retries);
-              await new Promise(r => setTimeout(r, 500));
-              return startWithRetry(withZoom, retries - 1);
+
+          const qr = new Html5Qrcode('qr-reader');
+          scannerRef.current = qr;
+
+          const startWithRetry = async (withZoom: boolean, retries = 5): Promise<void> => {
+            if (!checkStillOpen()) return;
+            try {
+              let cameras = scannerCameras;
+              if (cameras.length === 0) {
+                try {
+                  const devices = await Html5Qrcode.getCameras();
+                  if (devices && devices.length > 0) {
+                    cameras = devices.map(d => ({ id: d.id, label: d.label }));
+                    setScannerCameras(cameras);
+                  }
+                } catch (e) {
+                  console.warn('Error getting cameras:', e);
+                }
+              }
+
+              const config = cameras.length > 0 
+                ? { deviceId: { exact: cameras[currentScannerCameraIndex % cameras.length].id } }
+                : { facingMode: 'environment' };
+              
+              const promise = qr.start(
+                config,
+                { fps: 10, qrbox: 250, aspectRatio: 1.0 },
+                (text) => handleScannerSuccess(text),
+                () => {}
+              );
+              scannerStartPromise.current = promise;
+              await promise;
+              scannerStartPromise.current = null;
+            } catch (err: any) {
+              scannerStartPromise.current = null;
+              if (err?.message?.includes('already under transition') && retries > 0) {
+                console.warn('Scanner transition error, retrying...', retries);
+                await new Promise(r => setTimeout(r, 800));
+                return startWithRetry(withZoom, retries - 1);
+              }
+              throw err;
             }
+          };
+
+          try {
+            await startWithRetry(false);
+          } catch (err) {
+            console.warn('Start failed:', err);
             throw err;
           }
-        };
-
-        try {
-          await startWithRetry(true);
-        } catch (err) {
-          console.warn('Zoom not supported or start failed, retrying without zoom:', err);
-          await startWithRetry(false);
+        } catch (err: any) { 
+          console.error('Scanner error:', err);
+          setError('Não foi possível acessar a câmera: ' + (err.message || String(err))); 
+          setIsScannerOpen(false); 
+        } finally {
+          isScannerBusy.current = false;
         }
-      } catch (err: any) { 
-        console.error('Scanner error:', err);
-        setError('Não foi possível acessar a câmera: ' + (err.message || String(err))); 
-        setIsScannerOpen(false); 
-      } finally {
-        isScannerBusy.current = false;
-      }
-    }, 500);
+      });
+    }, 600);
   };
 
   const internalStopScanner = async () => {
-    if (scannerStartPromise.current) {
-      try { await scannerStartPromise.current; } catch { }
-      scannerStartPromise.current = null;
-    }
-
-    if (scannerRef.current) {
-      const qr = scannerRef.current;
-      scannerRef.current = null;
-      try { 
-        if (qr.isScanning) {
-          await qr.stop(); 
-          await new Promise(r => setTimeout(r, 200));
-        }
-        await qr.clear(); 
-      } catch (e) {
-        console.warn('Error stopping scanner:', e);
+    return withScannerTransition(async () => {
+      if (scannerStartPromise.current) {
+        try { await scannerStartPromise.current; } catch { }
+        scannerStartPromise.current = null;
       }
+
+      if (scannerRef.current) {
+        const qr = scannerRef.current;
+        scannerRef.current = null;
+        try { 
+          if (qr.getState() === Html5QrcodeScannerState.SCANNING || qr.getState() === Html5QrcodeScannerState.PAUSED) {
+            await qr.stop(); 
+            await new Promise(r => setTimeout(r, 300));
+          }
+          await qr.clear(); 
+        } catch (e) {
+          console.warn('Error stopping scanner:', e);
+        }
+      }
+      setIsScannerOpen(false);
+    });
+  };
+
+  const switchCamera = async () => {
+    if (scannerCameras.length <= 1) return;
+    setCurrentScannerCameraIndex(prev => (prev + 1) % scannerCameras.length);
+    // Restart scanner
+    if (isScannerOpen) {
+      await stopScanner();
+      setTimeout(() => startScanner(), 500);
     }
-    setIsScannerOpen(false);
+  };
+
+  const switchTrailerCamera = async () => {
+    if (scannerCameras.length <= 1) return;
+    setCurrentScannerCameraIndex(prev => (prev + 1) % scannerCameras.length);
+    // Restart scanner
+    if (trailerQrModal?.scannerActive) {
+      await internalStopTrailerScanner();
+      setTimeout(() => startTrailerScanner(), 500);
+    }
   };
 
   const stopScanner = async () => {
@@ -2588,19 +2661,36 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setMechanicsList(() => {
           const now = Date.now();
           // Remove entradas expiradas do mapa de proteção
-          Object.keys(mechanicOptimisticRef.current).forEach(k => { const v = mechanicOptimisticRef.current[k];
+          Object.keys(mechanicOptimisticRef.current).forEach(k => {
+            const v = mechanicOptimisticRef.current[k];
             if (v.expiresAt < now) delete mechanicOptimisticRef.current[k];
           });
-          // Se não há proteções ativas, usa lista do servidor diretamente
-          if (Object.keys(mechanicOptimisticRef.current).length === 0) return d.mechanicsList;
+          
           // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
-          return d.mechanicsList.map((serverBike: any) => {
+          const serverBikes = d.mechanicsList.map((serverBike: any) => {
             const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
             if (protected_ && protected_.expiresAt > now) {
-              return { ...serverBike, status: protected_.status };
+              const protectedData = { ...protected_ };
+              delete protectedData.expiresAt;
+              return { ...serverBike, ...protectedData };
             }
             return serverBike;
           });
+
+          // Se não há proteções ativas, usa lista do servidor diretamente
+          if (Object.keys(mechanicOptimisticRef.current).length === 0) return serverBikes;
+
+          // Adiciona bikes que estão protegidas mas não vieram na lista do servidor
+          const serverPats = new Set(d.mechanicsList.map((b: any) => String(b.patrimonio)));
+          const missingProtected = Object.keys(mechanicOptimisticRef.current)
+            .filter(pat => !serverPats.has(pat) && mechanicOptimisticRef.current[pat].expiresAt > now)
+            .map(pat => {
+              const protectedData = { ...mechanicOptimisticRef.current[pat] };
+              delete protectedData.expiresAt;
+              return { patrimonio: pat, ...protectedData };
+            });
+
+          return [...serverBikes, ...missingProtected];
         });
       }
       if (d.driversSummary) {
@@ -2805,19 +2895,36 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setMechanicsList(() => {
           const now = Date.now();
           // Remove entradas expiradas do mapa de proteção
-          Object.keys(mechanicOptimisticRef.current).forEach(k => { const v = mechanicOptimisticRef.current[k];
+          Object.keys(mechanicOptimisticRef.current).forEach(k => {
+            const v = mechanicOptimisticRef.current[k];
             if (v.expiresAt < now) delete mechanicOptimisticRef.current[k];
           });
-          // Se não há proteções ativas, usa lista do servidor diretamente
-          if (Object.keys(mechanicOptimisticRef.current).length === 0) return d.mechanicsList;
+          
           // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
-          return d.mechanicsList.map((serverBike: any) => {
+          const serverBikes = d.mechanicsList.map((serverBike: any) => {
             const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
             if (protected_ && protected_.expiresAt > now) {
-              return { ...serverBike, status: protected_.status };
+              const protectedData = { ...protected_ };
+              delete protectedData.expiresAt;
+              return { ...serverBike, ...protectedData };
             }
             return serverBike;
           });
+
+          // Se não há proteções ativas, usa lista do servidor diretamente
+          if (Object.keys(mechanicOptimisticRef.current).length === 0) return serverBikes;
+
+          // Adiciona bikes que estão protegidas mas não vieram na lista do servidor
+          const serverPats = new Set(d.mechanicsList.map((b: any) => String(b.patrimonio)));
+          const missingProtected = Object.keys(mechanicOptimisticRef.current)
+            .filter(pat => !serverPats.has(pat) && mechanicOptimisticRef.current[pat].expiresAt > now)
+            .map(pat => {
+              const protectedData = { ...mechanicOptimisticRef.current[pat] };
+              delete protectedData.expiresAt;
+              return { patrimonio: pat, ...protectedData };
+            });
+
+          return [...serverBikes, ...missingProtected];
         });
       }
       if (d.driversSummary) {
@@ -3493,13 +3600,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <div className="p-3 flex-shrink-0">
                 {scannerActive ? (
                   <div className="relative overflow-hidden rounded-xl bg-black aspect-square w-full border-2 border-green-500 shadow-lg">
-                    <div id="qr-trailer-reader" className="w-full h-full" />
+                    <div id="qr-trailer-reader" className="w-full h-full bg-black" />
                     <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
                       <div className="w-44 h-44 border-2 border-green-400/60 rounded-xl" />
                     </div>
-                    <button onClick={stopTrailerScanner} className="absolute top-2 right-2 bg-black/60 text-white p-1.5 rounded-full">
-                      <XIcon className="w-4 h-4" />
-                    </button>
+                    <div className="absolute top-2 right-2 flex gap-2">
+                      {scannerCameras.length > 1 && (
+                        <button onClick={switchTrailerCamera} className="bg-black/60 text-white p-1.5 rounded-full hover:bg-black/80 transition-colors">
+                          <RefreshCw className="w-4 h-4" />
+                        </button>
+                      )}
+                      <button onClick={stopTrailerScanner} className="bg-black/60 text-white p-1.5 rounded-full hover:bg-black/80 transition-colors">
+                        <XIcon className="w-4 h-4" />
+                      </button>
+                    </div>
                     <p className="absolute bottom-2 left-0 right-0 text-center text-[10px] text-white bg-black/50 py-1">
                       Aponte para o QR Code da bike
                     </p>
@@ -4008,9 +4122,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
               {isScannerOpen && (
                 <div className="relative overflow-hidden rounded-lg bg-black aspect-square max-w-[300px] mx-auto w-full border-2 border-blue-500 shadow-xl">
-                  <div id="qr-reader" className="w-full h-full"/>
+                  <div id="qr-reader" className="w-full h-full bg-black"/>
                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center"><div className="w-48 h-48 border-2 border-blue-400/50 rounded-lg"/></div>
-                  <button onClick={stopScanner} className="absolute top-2 right-2 bg-black/50 text-white p-1 rounded-full"><XIcon className="w-4 h-4"/></button>
+                  <div className="absolute top-2 right-2 flex gap-2">
+                    {scannerCameras.length > 1 && (
+                      <button onClick={switchCamera} className="bg-black/50 text-white p-1.5 rounded-full hover:bg-black/70 transition-colors">
+                        <RefreshCw className="w-4 h-4"/>
+                      </button>
+                    )}
+                    <button onClick={stopScanner} className="bg-black/50 text-white p-1.5 rounded-full hover:bg-black/70 transition-colors">
+                      <XIcon className="w-4 h-4"/>
+                    </button>
+                  </div>
                   <p className="absolute bottom-2 left-0 right-0 text-center text-[10px] text-white bg-black/50 py-1">Aponte para o QR Code</p>
                 </div>
               )}
