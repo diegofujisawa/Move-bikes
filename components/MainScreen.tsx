@@ -225,7 +225,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isMechanicSelectionModalOpen, setIsMechanicSelectionModalOpen] = useState(false);
   const [isDriverSelectionModalOpen, setIsDriverSelectionModalOpen] = useState(false);
   const [selectedActionForAssignment, setSelectedActionForAssignment] = useState<any>(null);
-  const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [destinationModal, setDestinationModal] = useState<{
     isOpen: boolean; bikeNumber: string;
     type: 'Estação' | 'Filial' | 'Vandalizada'; stationName?: string;
@@ -323,7 +322,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [scannerCameras, setScannerCameras] = useState<{ id: string; label: string }[]>([]);
   const [currentScannerCameraIndex, setCurrentScannerCameraIndex] = useState(0);
   const trailerScannerRef = useRef<Html5Qrcode | null>(null);
-  const scannerStartPromise = useRef<Promise<any> | null>(null);
   const trailerScannerStartPromise = useRef<Promise<any> | null>(null);
   const scannerTransitionPromise = useRef<Promise<any>>(Promise.resolve());
   const isScannerBusy = useRef(false);
@@ -331,7 +329,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
 
   // --- Refs ---
-  const scannerRef = useRef<Html5Qrcode | null>(null);
   const searchResultRef = useRef<HTMLDivElement>(null);
   const processingBikesRef = useRef<Set<string>>(new Set());
   // Ref para refreshAll — evita dependência circular com persistDriverState
@@ -732,6 +729,23 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     return () => { unsubRequests(); unsubAlerts(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); };
   }, [driverName, isAdm, timelineDate]);
+
+  // PRE-FETCH CAMERAS PARA MELHORAR PERFORMANCE DO SCANNER
+  useEffect(() => {
+    const prefetchCameras = async () => {
+      if (scannerCameras.length === 0 && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+        try {
+          const devices = await Html5Qrcode.getCameras();
+          if (devices && devices.length > 0) {
+            setScannerCameras(devices.map(d => ({ id: d.id, label: d.label })));
+          }
+        } catch (e) {
+          console.warn('Error pre-fetching cameras:', e);
+        }
+      }
+    };
+    prefetchCameras();
+  }, []);
 
   // =================================================================
   // GARANTIA DE UNICIDADE
@@ -1971,7 +1985,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
-  const internalStopTrailerScanner = async () => {
+  const internalStopTrailerScanner = async (skipStateUpdate = false) => {
     return withScannerTransition(async () => {
       if (trailerScannerStartPromise.current) {
         try { await trailerScannerStartPromise.current; } catch { }
@@ -1984,27 +1998,34 @@ const MainScreen: React.FC<MainScreenProps> = ({
         try { 
           if (qr.getState() === Html5QrcodeScannerState.SCANNING || qr.getState() === Html5QrcodeScannerState.PAUSED) {
             await qr.stop(); 
-            await new Promise(r => setTimeout(r, 300));
+            await new Promise(r => setTimeout(r, 20));
           }
           await qr.clear(); 
         } catch (e) {
           console.warn('Error stopping trailer scanner:', e);
         }
       }
-      setTrailerQrModal(prev => prev ? { ...prev, scannerActive: false } : null);
+      if (!skipStateUpdate) {
+        setTrailerQrModal(prev => prev ? { ...prev, scannerActive: false } : null);
+      }
     });
   };
 
   const withScannerTransition = async (fn: () => Promise<any>) => {
+    // Timeout de 10 segundos para não travar a fila de transições para sempre
+    const timeout = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Scanner transition timeout')), 10000)
+    );
+    
     const nextPromise = scannerTransitionPromise.current.then(async () => {
       try {
-        return await fn();
+        return await Promise.race([fn(), timeout]);
       } catch (e) {
         console.warn('Scanner transition error:', e);
         throw e;
       }
     });
-    scannerTransitionPromise.current = nextPromise;
+    scannerTransitionPromise.current = nextPromise.catch(() => {}); // Garante que a fila continue mesmo em erro
     return nextPromise;
   };
 
@@ -2013,22 +2034,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       await internalStopTrailerScanner();
     } catch (e) {
       console.warn('Error in stopTrailerScanner:', e);
-    }
-  };
-
-  const handleScannerSuccess = (text: string) => {
-    const match = text.match(/\/download\/(\d+)/);
-    const id = match ? match[1] : /^\d+$/.test(text) ? text : null;
-    if (id) { 
-      if (activeMechanicCategory === 'Reserva') {
-        stopScanner();
-        setSelectedBikesForTrailer([id]);
-        setIsTrailerSelectionModalOpen(true);
-      } else {
-        setSearchTerm(id); 
-        stopScanner(); 
-        handleSearch(id); 
-      }
     }
   };
 
@@ -2101,89 +2106,103 @@ const MainScreen: React.FC<MainScreenProps> = ({
       return;
     }
     isScannerBusy.current = true;
-    try {
-      await internalStopScanner();
-      await internalStopTrailerScanner();
-      await new Promise(r => setTimeout(r, 400));
-    } catch (e) {
-      console.warn('Error stopping existing scanners:', e);
-    }
+    
+    // Mostra o loader imediatamente
+    setTrailerQrModal(prev => prev ? { ...prev, scannerActive: true, lastError: null } : null);
 
-    setIsScannerOpen(true);
-    setTimeout(async () => {
-      await withScannerTransition(async () => {
-        try {
-          const el = document.getElementById('qr-trailer-reader');
-          if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
-          
-          const checkStillActive = () => {
-            let active = false;
-            setTrailerQrModal(prev => {
-              if (prev && prev.scannerActive) active = true;
-              return prev;
-            });
-            return active;
-          };
+    // Executa tudo em uma única transição para evitar múltiplos waits
+    await withScannerTransition(async () => {
+      try {
+        if (trailerScannerRef.current) {
+          const qr = trailerScannerRef.current;
+          trailerScannerRef.current = null;
+          if (qr.getState() === Html5QrcodeScannerState.SCANNING || qr.getState() === Html5QrcodeScannerState.PAUSED) {
+            await qr.stop();
+          }
+          await qr.clear();
+        }
 
+        const checkStillActive = () => {
+          let active = false;
+          setTrailerQrModal(prev => {
+            if (prev && prev.scannerActive) active = true;
+            return prev;
+          });
+          return active;
+        };
+
+        if (!checkStillActive()) return;
+
+        // Aguarda o elemento aparecer no DOM (o modal acabou de abrir)
+        let el = document.getElementById('qr-trailer-reader');
+        let retries = 0;
+        while (!el && retries < 10) {
+          await new Promise(r => setTimeout(r, 50)); // Check every 50ms
           if (!checkStillActive()) return;
-
-          const qr = new Html5Qrcode('qr-trailer-reader');
-          trailerScannerRef.current = qr;
-          
-          const startWithRetry = async (withZoom: boolean, retries = 5): Promise<void> => {
-            if (!checkStillActive()) return;
-            try {
-              let cameras = scannerCameras;
-              if (cameras.length === 0) {
-                try {
-                  const devices = await Html5Qrcode.getCameras();
-                  if (devices && devices.length > 0) {
-                    cameras = devices.map(d => ({ id: d.id, label: d.label }));
-                    setScannerCameras(cameras);
-                  }
-                } catch (e) {
-                  console.warn('Error getting cameras:', e);
-                }
-              }
-
-              const config = cameras.length > 0 
-                ? { deviceId: { exact: cameras[currentScannerCameraIndex % cameras.length].id } }
-                : { facingMode: 'environment' };
-              
-              const promise = qr.start(
-                config,
-                { fps: 10, qrbox: 200, aspectRatio: 1.0 },
-                (decodedText) => handleTrailerQrSuccess(decodedText),
-                () => {}
-              );
-              trailerScannerStartPromise.current = promise;
-              await promise;
-              trailerScannerStartPromise.current = null;
-            } catch (err: any) {
-              trailerScannerStartPromise.current = null;
-              if (err?.message?.includes('already under transition') && retries > 0) {
-                console.warn('Trailer Scanner transition error, retrying...', retries);
-                await new Promise(r => setTimeout(r, 800));
-                return startWithRetry(withZoom, retries - 1);
-              }
-              throw err;
-            }
-          };
-
+          el = document.getElementById('qr-trailer-reader');
+          retries++;
+        }
+        
+        if (!el) {
+          if (checkStillActive()) throw new Error('Elemento do scanner não encontrado no DOM.');
+          return;
+        }
+        
+        const qr = new Html5Qrcode('qr-trailer-reader');
+        trailerScannerRef.current = qr;
+        
+        const startWithRetry = async (retries = 3): Promise<void> => {
+          if (!checkStillActive()) return;
           try {
-            await startWithRetry(false);
-          } catch (err) {
-            console.warn('Start failed:', err);
+            // Se já temos câmeras, usamos a selecionada. 
+            // Se não, tentamos iniciar direto com 'environment' para ser mais rápido
+            const config = scannerCameras.length > 0 
+              ? { deviceId: { exact: scannerCameras[currentScannerCameraIndex % scannerCameras.length].id } }
+              : { facingMode: 'environment' };
+            
+            const promise = qr.start(
+              config,
+              { 
+                fps: 15, 
+                qrbox: (viewWidth, viewHeight) => {
+                  const min = Math.min(viewWidth, viewHeight);
+                  return { width: min * 0.7, height: min * 0.7 };
+                },
+                aspectRatio: 1.0 
+              },
+              (decodedText) => handleTrailerQrSuccess(decodedText),
+              () => {}
+            );
+            trailerScannerStartPromise.current = promise;
+            await promise;
+            trailerScannerStartPromise.current = null;
+
+            // Se iniciamos sem lista de câmeras, buscamos agora em background para futuras trocas
+            if (scannerCameras.length === 0) {
+              Html5Qrcode.getCameras().then(devices => {
+                if (devices && devices.length > 0) {
+                  setScannerCameras(devices.map(d => ({ id: d.id, label: d.label })));
+                }
+              }).catch(e => console.warn('Error fetching cameras in background:', e));
+            }
+          } catch (err: any) {
+            trailerScannerStartPromise.current = null;
+            if (retries > 0) {
+              await new Promise(r => setTimeout(r, 500));
+              return startWithRetry(retries - 1);
+            }
             throw err;
           }
-        } catch (err: any) {
-          console.error('Trailer Scanner error:', err);
-          setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + (err.message || String(err)), scannerActive: false } : null);
-        } finally {
-          isScannerBusy.current = false;
-        }
-      });
-    }, 600);
+        };
+
+        await startWithRetry();
+      } catch (err: any) {
+        console.error('Trailer Scanner error:', err);
+        setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Erro na câmera: ' + (err.message || String(err)), scannerActive: false } : null);
+      } finally {
+        isScannerBusy.current = false;
+      }
+    });
   };
 
   const handleFinalizeTrailer = async (trailerName: string) => {
@@ -2288,133 +2307,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // =================================================================
   // SCANNER QR
   // =================================================================
-  const startScanner = async () => {
-    if (isScannerBusy.current) return;
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setError('Seu navegador não suporta acesso à câmera.');
-      return;
-    }
-    isScannerBusy.current = true;
-    try {
-      await internalStopScanner();
-      await internalStopTrailerScanner();
-      await new Promise(r => setTimeout(r, 500));
-    } catch (e) {
-      console.warn('Error stopping existing scanners:', e);
-    }
-
-    setIsScannerOpen(true);
-    setTimeout(async () => {
-      await withScannerTransition(async () => {
-        try {
-          const el = document.getElementById('qr-reader');
-          if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
-          
-          const checkStillOpen = () => {
-            let open = false;
-            setIsScannerOpen(prev => {
-              open = prev;
-              return prev;
-            });
-            return open;
-          };
-
-          if (!checkStillOpen()) return;
-
-          const qr = new Html5Qrcode('qr-reader');
-          scannerRef.current = qr;
-
-          const startWithRetry = async (withZoom: boolean, retries = 5): Promise<void> => {
-            if (!checkStillOpen()) return;
-            try {
-              let cameras = scannerCameras;
-              if (cameras.length === 0) {
-                try {
-                  const devices = await Html5Qrcode.getCameras();
-                  if (devices && devices.length > 0) {
-                    cameras = devices.map(d => ({ id: d.id, label: d.label }));
-                    setScannerCameras(cameras);
-                  }
-                } catch (e) {
-                  console.warn('Error getting cameras:', e);
-                }
-              }
-
-              const config = cameras.length > 0 
-                ? { deviceId: { exact: cameras[currentScannerCameraIndex % cameras.length].id } }
-                : { facingMode: 'environment' };
-              
-              const promise = qr.start(
-                config,
-                { fps: 10, qrbox: 250, aspectRatio: 1.0 },
-                (text) => handleScannerSuccess(text),
-                () => {}
-              );
-              scannerStartPromise.current = promise;
-              await promise;
-              scannerStartPromise.current = null;
-            } catch (err: any) {
-              scannerStartPromise.current = null;
-              if (err?.message?.includes('already under transition') && retries > 0) {
-                console.warn('Scanner transition error, retrying...', retries);
-                await new Promise(r => setTimeout(r, 800));
-                return startWithRetry(withZoom, retries - 1);
-              }
-              throw err;
-            }
-          };
-
-          try {
-            await startWithRetry(false);
-          } catch (err) {
-            console.warn('Start failed:', err);
-            throw err;
-          }
-        } catch (err: any) { 
-          console.error('Scanner error:', err);
-          setError('Não foi possível acessar a câmera: ' + (err.message || String(err))); 
-          setIsScannerOpen(false); 
-        } finally {
-          isScannerBusy.current = false;
-        }
-      });
-    }, 600);
-  };
-
-  const internalStopScanner = async () => {
-    return withScannerTransition(async () => {
-      if (scannerStartPromise.current) {
-        try { await scannerStartPromise.current; } catch { }
-        scannerStartPromise.current = null;
-      }
-
-      if (scannerRef.current) {
-        const qr = scannerRef.current;
-        scannerRef.current = null;
-        try { 
-          if (qr.getState() === Html5QrcodeScannerState.SCANNING || qr.getState() === Html5QrcodeScannerState.PAUSED) {
-            await qr.stop(); 
-            await new Promise(r => setTimeout(r, 300));
-          }
-          await qr.clear(); 
-        } catch (e) {
-          console.warn('Error stopping scanner:', e);
-        }
-      }
-      setIsScannerOpen(false);
-    });
-  };
-
-  const switchCamera = async () => {
-    if (scannerCameras.length <= 1) return;
-    setCurrentScannerCameraIndex(prev => (prev + 1) % scannerCameras.length);
-    // Restart scanner
-    if (isScannerOpen) {
-      await stopScanner();
-      setTimeout(() => startScanner(), 500);
-    }
-  };
-
   const switchTrailerCamera = async () => {
     if (scannerCameras.length <= 1) return;
     setCurrentScannerCameraIndex(prev => (prev + 1) % scannerCameras.length);
@@ -2425,17 +2317,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
-  const stopScanner = async () => {
-    try {
-      await internalStopScanner();
-    } catch (e) {
-      console.warn('Error in stopScanner:', e);
-    }
-  };
-
   useEffect(() => { 
     return () => { 
-      internalStopScanner().catch(() => {});
       internalStopTrailerScanner().catch(() => {});
     }; 
   }, []);
@@ -3616,8 +3499,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 {scannerActive ? (
                   <div className="relative overflow-hidden rounded-xl bg-black aspect-square w-full border-2 border-green-500 shadow-lg">
                     <div id="qr-trailer-reader" className="w-full h-full bg-black" />
-                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                      <div className="w-44 h-44 border-2 border-green-400/60 rounded-xl" />
+                    <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+                      <div className="w-44 h-44 border-2 border-green-400/60 rounded-xl mb-4" />
+                      <div className="flex flex-col items-center bg-black/40 p-2 rounded-lg backdrop-blur-sm">
+                        <Loader2 className="w-6 h-6 text-green-400 animate-spin mb-1" />
+                        <span className="text-[10px] text-white font-bold">Iniciando câmera...</span>
+                      </div>
                     </div>
                     <div className="absolute top-2 right-2 flex gap-2">
                       {scannerCameras.length > 1 && (
@@ -4122,34 +4009,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <button onClick={() => { setSearchTerm(''); setSearchedBike(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><XIcon className="w-4 h-4"/></button>
                   )}
                 </div>
-                <button onClick={() => isScannerOpen ? stopScanner() : startScanner()}
-                  className={`p-1.5 rounded-md border ${isScannerOpen ? 'bg-red-50 border-red-200 text-red-600' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
-                  title={isScannerOpen ? 'Fechar Scanner' : 'QR Code'}>
-                  <QrCodeIcon className="w-5 h-5"/>
-                </button>
-                <button onClick={() => handleSearch()} disabled={isSearching || isScannerOpen}
+                <button onClick={() => handleSearch()} disabled={isSearching}
                   className="px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 active:scale-95 disabled:bg-gray-400 flex items-center gap-2 text-sm">
                   {isSearching ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/> : <SearchIcon className="w-4 h-4"/>}
                   <span>{isSearching ? 'Buscando...' : 'Consultar'}</span>
                 </button>
               </div>
-              {isScannerOpen && (
-                <div className="relative overflow-hidden rounded-lg bg-black aspect-square max-w-[300px] mx-auto w-full border-2 border-blue-500 shadow-xl">
-                  <div id="qr-reader" className="w-full h-full bg-black"/>
-                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center"><div className="w-48 h-48 border-2 border-blue-400/50 rounded-lg"/></div>
-                  <div className="absolute top-2 right-2 flex gap-2">
-                    {scannerCameras.length > 1 && (
-                      <button onClick={switchCamera} className="bg-black/50 text-white p-1.5 rounded-full hover:bg-black/70 transition-colors">
-                        <RefreshCw className="w-4 h-4"/>
-                      </button>
-                    )}
-                    <button onClick={stopScanner} className="bg-black/50 text-white p-1.5 rounded-full hover:bg-black/70 transition-colors">
-                      <XIcon className="w-4 h-4"/>
-                    </button>
-                  </div>
-                  <p className="absolute bottom-2 left-0 right-0 text-center text-[10px] text-white bg-black/50 py-1">Aponte para o QR Code</p>
-                </div>
-              )}
             </div>
           </div>
         )}
@@ -4524,15 +4389,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <div id="section-reserva" className="p-4 border rounded-lg bg-green-50 shadow-sm scroll-mt-4">
                 <div className="flex justify-between items-center mb-3">
                   <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><CarIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
-                  <button 
-                    onClick={() => {
-                      // Abre scanner para qualquer bike na reserva (Sem Carretinha ou não)
-                      startScanner(); // Usa o scanner geral, mas vamos tratar o sucesso
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm transition-all active:scale-95"
-                  >
-                    <QrCodeIcon className="w-4 h-4"/>Escanear para Carretinha
-                  </button>
                 </div>
                 {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (
                   <div className="space-y-4">
