@@ -2853,9 +2853,20 @@ function getMechanicsList() {
         }
 
         // Última ocorrência de Recolhida/Vandalizada — guarda motorista e observação
+        // Se houver conflito, considera o mais recente (tsMs maior).
+        // Se o mais recente vier sem info, mas um anterior (do mesmo ciclo) tiver, mantemos a info?
+        // O usuário pediu: "considere sempre o mais recente". 
+        // Vamos garantir que pegamos o registro mais recente, mas se motorista/observacao estiverem vazios
+        // e já tivermos um registro anterior com info, podemos manter a info para evitar campos vazios.
         if (status === 'recolhida' || status === 'vandalizada') {
           if (!reportEntries[pat] || tsMs > reportEntries[pat].tsMs) {
-            reportEntries[pat] = { tsMs, status, motorista, observacao };
+            const prev = reportEntries[pat] || {};
+            reportEntries[pat] = { 
+              tsMs, 
+              status, 
+              motorista: motorista || prev.motorista || '', 
+              observacao: observacao || prev.observacao || '' 
+            };
           }
         }
       });
@@ -3032,12 +3043,28 @@ function moveToAguardandoManutencao(bikeNumber) {
   const data = sheet.getDataRange().getValues();
   const pStr = String(bikeNumber).trim().replace(/^0+/, '');
   
+  let foundIndex = -1;
+  let currentStatus = '';
+
   for (let i = 1; i < data.length; i++) {
-    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr
-        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] === 'Alterar Status') {
-      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Aguardando Manutenção');
-      return { success: true };
+    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr) {
+      const status = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
+      // Se já estiver em um status "avançado", não retrocede nem duplica
+      if (status === 'Em Manutenção' || status === 'Reserva' || status === 'Aguardando Técnica' || status === 'Em Técnica') {
+        return { success: true, message: 'Bicicleta já está em processo avançado.' };
+      }
+      if (status !== 'Remanejada' && status !== 'Não encontrada') {
+        foundIndex = i;
+        currentStatus = status;
+      }
     }
+  }
+  
+  if (foundIndex !== -1) {
+    if (currentStatus === 'Alterar Status') {
+      sheet.getRange(foundIndex + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Aguardando Manutenção');
+    }
+    return { success: true };
   }
   
   sheet.appendRow([bikeNumber, 'Aguardando Manutenção', new Date(), '', '', '', '']);

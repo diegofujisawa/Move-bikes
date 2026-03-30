@@ -5229,7 +5229,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div className="grid grid-cols-4 gap-1.5">
                       {[
                         { l: 'Alterar status', v: mechanicsList.filter(b => b.status === 'Alterar Status').length, c: 'purple' },
-                        { l: 'Aguardando', v: mechanicsList.filter(b => b.status === 'Aguardando Confirmação').length, c: 'blue' },
+                        { l: 'Aguardando', v: mechanicsList.filter(b => b.status === 'Aguardando Manutenção').length, c: 'blue' },
                         { l: 'Manutenção', v: mechanicsList.filter(b => b.status === 'Em Manutenção').length, c: 'orange' },
                         { l: 'Reserva', v: mechanicsList.filter(b => b.status === 'Reserva').length, c: 'green' },
                       ].map(item => (
