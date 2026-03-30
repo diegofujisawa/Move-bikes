@@ -3,7 +3,7 @@ import { BicycleData, PickupRequest, DriverLocation } from '../types';
 import {
   LogoutIcon, PlusIcon, PlusPlusIcon, MapIcon, SheetIcon, SearchIcon,
   AlertIcon, CalendarIcon, CarIcon, XIcon, BicycleIcon, MovingIcon,
-  UserIcon, AlertTriangleIcon, QrCodeIcon, TrailerIcon, SwitchIcon,
+  UserIcon, AlertTriangleIcon, QrCodeIcon, SwitchIcon,
   RefreshIcon, DatabaseIcon, CheckCircleIcon, DocumentTextIcon
 } from './icons';
 import { 
@@ -22,7 +22,6 @@ import ScheduleModal from './ScheduleModal';
 import ReporModal from './ReporModal';
 import MechanicRepairModal from './MechanicRepairModal';
 import MechanicSelectionModal from './MechanicSelectionModal';
-import TrailerSelectionModal from './TrailerSelectionModal';
 import DriverSelectionModal from './DriverSelectionModal';
 import RequestModal from './RequestModal';
 import ReportModal from './ReportModal';
@@ -202,7 +201,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // --- Modais ---
   const [isRequestModalOpen, setRequestModalOpen] = useState(false);
   const [isRouteModalOpen, setRouteModalOpen] = useState(false);
-  const [isTrailerModalOpen, setTrailerModalOpen] = useState(false);
   const [isReportModalOpen, setReportModalOpen] = useState(false);
   const [isVehicleModalOpen, setIsVehicleModalOpen] = useState(false);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
@@ -225,7 +223,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     'ATUALIZAÇÃO DE SOFTWARE', 'RESET DO LOCKER', 'PROTEÇÃO COMPLETA', 'QRCODE'
   ];
   const [isMechanicSelectionModalOpen, setIsMechanicSelectionModalOpen] = useState(false);
-  const [isTrailerSelectionModalOpen, setIsTrailerSelectionModalOpen] = useState(false);
   const [isDriverSelectionModalOpen, setIsDriverSelectionModalOpen] = useState(false);
   const [selectedActionForAssignment, setSelectedActionForAssignment] = useState<any>(null);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -290,7 +287,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // --- Dados auxiliares ---
   const [mechanicsList, setMechanicsList] = useState<any[]>([]);
   const [selectedMechanicBike, setSelectedMechanicBike] = useState<any>(null);
-  const [selectedBikesForTrailer, setSelectedBikesForTrailer] = useState<string[]>([]);
   const [reporData, setReporData] = useState<any[]>([]);
   const [isReporLoading, setIsReporLoading] = useState(false);
   const [userSchedule, setUserSchedule] = useState<Record<string, string>>({});
@@ -712,7 +708,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         const loteByMechanic: Record<string, any> = {};
         snapshot.forEach(d => {
           const data = d.data();
-          if (data.status !== 'pending') return;
+          if (data.status !== 'pending' && data.status !== 'assigned') return;
           if (data.type === 'alterar_status_lote') {
             const key = data.mechanicName || 'desconhecido';
             const existing = loteByMechanic[key];
@@ -1124,6 +1120,26 @@ const MainScreen: React.FC<MainScreenProps> = ({
             ultimaAtualizacao: serverTimestamp()
           }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
         });
+
+        // Atualiza status da ação pendente para 'approved' (remove do ADM)
+        const q = query(collection(db, 'pending_actions'), 
+          where('type', '==', 'trailer_validation'),
+          where('status', '==', 'assigned'),
+          where('assignedTo', '==', driverName)
+        );
+        getDocs(q).then(snap => {
+          snap.forEach(d => {
+            const data = d.data();
+            // Se pelo menos uma bike da carretinha bater com o que o motorista aceitou
+            if (data.bikes?.some((b: string) => bikesToAdd.includes(b))) {
+              updateDoc(d.ref, { 
+                status: 'approved', 
+                acceptedAt: serverTimestamp(),
+                finalAcceptedBy: driverName 
+              }).catch(() => {});
+            }
+          });
+        }).catch(() => {});
         // Registra apenas na timeline (Relatório removido conforme solicitação)
         bikesToAdd.forEach(id => {
           addDoc(collection(db, 'timeline_events'), {
@@ -1211,22 +1227,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
         recipient: details.recipient || 'Todos'
       });
       if (result.success) { alert('Roteiro enviado!'); setRouteModalOpen(false); refreshAll(true); }
-      else throw new Error(result.error);
-    } catch (err: any) {
-      alert(`Erro: ${err.message}`);
-    } finally { setIsLoading(false); }
-  };
-
-  const handleCreateTrailer = async (details: { routeName: string; bikeNumbers: string[]; recipient: string }) => {
-    if (!details.bikeNumbers?.length) { alert('Insira ao menos uma bicicleta.'); return; }
-    setIsLoading(true);
-    try {
-      const result = await apiCall({
-        action: 'createRequest', patrimonio: details.bikeNumbers.join(', '),
-        ocorrencia: `[CARRETINHA] ${details.routeName || 'Sem Nome'}`,
-        local: 'Criado via Carretinha App', recipient: details.recipient || 'Todos'
-      });
-      if (result.success) { alert('Carretinha enviada!'); setTrailerModalOpen(false); refreshAll(true); }
       else throw new Error(result.error);
     } catch (err: any) {
       alert(`Erro: ${err.message}`);
@@ -1909,10 +1909,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
         recipient: targetDriverName
       }, 1, true);
 
-      // 3. Aprova a ação pendente
+      // 3. Aprova a ação pendente (mas mantém visível como 'assigned')
       try {
         await updateDoc(doc(db, 'pending_actions', action.id), {
-          status: 'approved',
+          status: 'assigned',
           approvedBy: driverName, // Nome do ADM logado
           approvedAt: serverTimestamp(),
           assignedTo: targetDriverName
@@ -3973,7 +3973,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
           {!isMecanica && !isTecnica && <>
             <button onClick={() => setRequestModalOpen(true)} disabled={isLoading} title="Nova Solicitação" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             <button onClick={() => setRouteModalOpen(true)} disabled={isLoading} title="Criar Roteiro" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusPlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
-            <button onClick={() => setTrailerModalOpen(true)} disabled={isLoading} title="Carretinha" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><TrailerIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             <button onClick={() => {
               setIsAdminAlertsOpen(true);
               setHasNewAlerts(false);
@@ -4351,7 +4350,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Reserva' ? 'bg-green-600 border-green-700 text-white' : 'bg-green-50 border-green-100 hover:bg-green-100'}`}
             >
               <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Reserva' ? 'bg-white text-green-600' : 'bg-green-600 text-white'}`}>
-                <TrailerIcon className="w-4 h-4" />
+                <CarIcon className="w-4 h-4" />
               </div>
               <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Reserva' ? 'text-white' : 'text-green-800'}`}>Reserva</span>
               <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Reserva' ? 'text-white' : 'text-green-600'}`}>
@@ -4525,7 +4524,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             {activeMechanicCategory === 'Reserva' && (
               <div id="section-reserva" className="p-4 border rounded-lg bg-green-50 shadow-sm scroll-mt-4">
                 <div className="flex justify-between items-center mb-3">
-                  <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
+                  <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><CarIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
                   <button 
                     onClick={() => {
                       // Abre scanner para qualquer bike na reserva (Sem Carretinha ou não)
@@ -4549,7 +4548,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       <div key={trailer} className="border border-green-200 rounded-md bg-white p-3 shadow-sm">
                         <div className="flex justify-between items-center mb-2 border-b pb-1">
                           <div className="flex flex-col">
-                            <h3 className="font-bold text-green-700 flex items-center gap-2"><TrailerIcon className="w-4 h-4"/>{trailer}</h3>
+                            <h3 className="font-bold text-green-700 flex items-center gap-2"><CarIcon className="w-4 h-4"/>{trailer}</h3>
                             {trailer !== 'Sem Carretinha' && bikes[0]?.trailerStatus === 'finalized' && (
                               <span className="text-[8px] font-bold text-orange-600 uppercase">Aguardando Validação ADM</span>
                             )}
@@ -4628,7 +4627,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             }
                             // Se todos ocupados, reutiliza o 1
                             const nextName = `Carretinha ${next}`;
-                            setSelectedBikesForTrailer((bikes as any[]).map(b => b.patrimonio));
                             // Passa direto para handleOrganizeTrailer sem abrir modal de nome
                             handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), nextName);
                           }}
@@ -5102,7 +5100,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 Solicitado por: <span className="text-blue-600">{action.mechanicName}</span>
                               </p>
                             </div>
-                            {action.type !== 'alterar_status_lote' && (
+                            {action.status === 'assigned' ? (
+                              <div className="flex items-center gap-2">
+                                <span className="px-2 py-1 bg-orange-100 text-orange-700 text-[10px] font-black uppercase rounded border border-orange-200 animate-pulse">
+                                  Aguardando Aceite: {action.assignedTo}
+                                </span>
+                                <button
+                                  onClick={() => handleRejectAction(action.id)}
+                                  disabled={isLoading}
+                                  className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
+                                  title="Cancelar Envio"
+                                >
+                                  <XIcon className="w-5 h-5" />
+                                </button>
+                              </div>
+                            ) : action.type !== 'alterar_status_lote' && (
                               <div className="flex gap-2">
                                 {action.type === 'trailer_validation' && (
                                   <button
@@ -5114,7 +5126,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                     className="p-2 bg-blue-50 text-blue-600 rounded-lg border border-blue-100 hover:bg-blue-100 transition-colors"
                                     title="Enviar para Motorista"
                                   >
-                                    <TrailerIcon className="w-5 h-5" />
+                                    <CarIcon className="w-5 h-5" />
                                   </button>
                                 )}
                                 <button
@@ -5215,8 +5227,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div className="flex justify-between items-center mb-2 border-b pb-1">
                       <h3 className="font-black text-gray-900 text-sm uppercase">Visão Geral</h3>
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-4 gap-1.5">
                       {[
+                        { l: 'Alterar status', v: mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length, c: 'purple' },
                         { l: 'Aguardando', v: mechanicsList.filter(b => b.status === 'Aguardando Confirmação').length, c: 'blue' },
                         { l: 'Manutenção', v: mechanicsList.filter(b => b.status === 'Em Manutenção').length, c: 'orange' },
                         { l: 'Reserva', v: mechanicsList.filter(b => b.status === 'Reserva').length, c: 'green' },
@@ -5929,7 +5942,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       <RequestModal isOpen={isRequestModalOpen} onClose={() => setRequestModalOpen(false)} onSubmit={handleCreateRequest} isLoading={isLoading} motoristas={motoristas} driverLocations={driverLocations} error={error} clearError={() => setError(null)}/>
       <EditDriverModal isOpen={isEditDriverModalOpen} onClose={() => setIsEditDriverModalOpen(false)} driver={editingDriver} onSave={handleUpdateDriverState} isLoading={isLoading}/>
       <RouteModal isOpen={isRouteModalOpen} onClose={() => setRouteModalOpen(false)} onSubmit={handleCreateRoute} isLoading={isLoading} pendingBikeNumbers={allActiveBikes} motoristas={motoristas} error={error} clearError={() => setError(null)} type="route"/>
-      <RouteModal isOpen={isTrailerModalOpen} onClose={() => setTrailerModalOpen(false)} onSubmit={handleCreateTrailer} isLoading={isLoading} pendingBikeNumbers={allActiveBikes} motoristas={motoristas} error={error} clearError={() => setError(null)} type="trailer"/>
       <ReportModal isOpen={isReportModalOpen} onClose={() => setReportModalOpen(false)} driverName={driverName} plate={plate} kmInicial={kmInicial}/>
       <DestinationModal isOpen={destinationModal.isOpen} onClose={() => setDestinationModal(prev => ({ ...prev, isOpen: false }))}
         onConfirm={obs => executeCollectedBikeAction(destinationModal.bikeNumber, destinationModal.type === 'Estação' ? 'Enviada para Estação' : destinationModal.type === 'Filial' ? 'Enviada para Filial' : 'Vandalizada', obs)}
@@ -6170,9 +6182,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       <ReporModal isOpen={isReporModalOpen} onClose={() => setIsReporModalOpen(false)} data={reporData} isLoading={isReporLoading}/>
       <MechanicRepairModal isOpen={isMechanicRepairModalOpen} onClose={() => setIsMechanicRepairModalOpen(false)} onConfirm={handleFinalizeMechanicsRepair} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <MechanicSelectionModal isOpen={isMechanicSelectionModalOpen} onClose={() => setIsMechanicSelectionModalOpen(false)} onConfirm={handleMechanicSelectionConfirm} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
-      <TrailerSelectionModal isOpen={isTrailerSelectionModalOpen} onClose={() => setIsTrailerSelectionModalOpen(false)}
-        onConfirm={name => { handleOrganizeTrailer(selectedBikesForTrailer, name); setIsTrailerSelectionModalOpen(false); }}
-        isLoading={isLoading} bikeNumbers={selectedBikesForTrailer}/>
 
       <DriverSelectionModal 
         isOpen={isDriverSelectionModalOpen} 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 // O ícone `PlusPlusIcon` representa a criação de um roteiro (múltiplas solicitações).
-import { PlusPlusIcon, TrailerIcon, QrCodeIcon, XIcon } from './icons';
+import { PlusPlusIcon, QrCodeIcon, XIcon } from './icons';
 import { Html5Qrcode } from 'html5-qrcode';
 
 interface RouteModalProps {
@@ -12,7 +12,6 @@ interface RouteModalProps {
   motoristas: string[];
   error: string | null;
   clearError: () => void;
-  type?: 'route' | 'trailer';
 }
 
 // Hook customizado para obter o valor anterior de uma prop ou estado.
@@ -24,7 +23,7 @@ function usePrevious<T>(value: T): T | undefined {
   return ref.current;
 }
 
-const RouteModal: React.FC<RouteModalProps> = ({ isOpen, onClose, onSubmit, isLoading, pendingBikeNumbers, motoristas, error, clearError, type = 'route' }) => {
+const RouteModal: React.FC<RouteModalProps> = ({ isOpen, onClose, onSubmit, isLoading, pendingBikeNumbers, motoristas, error, clearError }) => {
   const [routeName, setRouteName] = useState('');
   const [bikeListText, setBikeListText] = useState('');
   const [recipient, setRecipient] = useState('Todos');
@@ -53,11 +52,8 @@ const RouteModal: React.FC<RouteModalProps> = ({ isOpen, onClose, onSubmit, isLo
       setBikeListText('');
       setRecipient('Todos');
       stopScanner();
-    } else if (isOpen && !prevIsOpen && type === 'trailer') {
-      // Nome padrão para carretinha para facilitar o envio
-      setRouteName(`Carretinha ${new Date().toLocaleDateString('pt-BR')}`);
     }
-  }, [isOpen, prevIsOpen, type]);
+  }, [isOpen, prevIsOpen]);
 
   const startScanner = async () => {
     setIsScannerOpen(true);
