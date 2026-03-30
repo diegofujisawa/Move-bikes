@@ -3708,7 +3708,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   { label: 'Recolh.', value: driver.stats.recolhidas, c: 'green' },
                   { label: 'Remanej.', value: driver.stats.remanejada, c: 'indigo' },
                   { label: 'Não Enc.', value: driver.stats.naoEncontrada, c: 'red' },
-                  { label: 'Não Atend.', value: driver.stats.naoAtendida || 0, c: 'orange' },
+                  { label: 'Total', value: (driver.stats.recolhidas || 0) + (driver.stats.remanejada || 0), c: 'teal' },
                 ].map((item, i) => (
                   <div key={`stat-${item.label}-${i}`} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
                     <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.label}</p>
@@ -4629,7 +4629,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               { l: 'Recolh.', v: driver.stats.recolhidas, c: 'green' },
                               { l: 'Remanej.', v: driver.stats.remanejada, c: 'indigo' },
                               { l: 'Não Enc.', v: driver.stats.naoEncontrada, c: 'red' },
-                              { l: 'Não Atend.', v: driver.stats.naoAtendida || 0, c: 'orange' },
+                              { l: 'Total', v: (driver.stats.recolhidas || 0) + (driver.stats.remanejada || 0), c: 'teal' },
                             ].map((item, i) => (
                               <div key={`adm-stat-${item.l}-${i}`} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
                                 <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.l}</p>
