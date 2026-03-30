@@ -327,6 +327,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const trailerScannerStartPromise = useRef<Promise<any> | null>(null);
   const isScannerBusy = useRef(false);
   const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
+  const [isMechanicHistoryOpen, setIsMechanicHistoryOpen] = useState(false);
+  const [mechanicHistory, setMechanicHistory] = useState<any[]>([]);
+  const [isMechanicHistoryLoading, setIsMechanicHistoryLoading] = useState(false);
+  const [mechanicHistoryFilter, setMechanicHistoryFilter] = useState({ mechanic: 'Todos', date: localDateStr() });
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
 
   // --- Refs ---
@@ -1408,6 +1412,63 @@ const MainScreen: React.FC<MainScreenProps> = ({
     finally { setIsBikeSearchLoading(false); }
   };
 
+  const fetchMechanicHistory = async () => {
+    setIsMechanicHistoryLoading(true);
+    try {
+      const { getDocs: _getDocs, query: _query, where: _where, collection: _col } = await import('firebase/firestore');
+
+      // Busca registros de saída (Reparo = bike foi para Reserva)
+      const qReparo = _query(_col(db, 'reports'), _where('type', '==', 'Reparo'));
+      // Busca registros de entrada (Mecânica = bike entrou em manutenção)
+      const qEntrada = _query(_col(db, 'reports'), _where('type', '==', 'Mecânica'));
+
+      const [snapReparo, snapEntrada] = await Promise.all([
+        _getDocs(qReparo),
+        _getDocs(qEntrada)
+      ]);
+
+      // Indexa entradas por bikeNumber — pega a mais recente antes da saída
+      const entradas: Record<string, any[]> = {};
+      snapEntrada.docs.forEach(d => {
+        const rec = d.data();
+        const pat = String(rec.bikeNumber);
+        if (!entradas[pat]) entradas[pat] = [];
+        entradas[pat].push(rec);
+      });
+
+      // Monta registros de saída com dataEntrada cruzada
+      const records = snapReparo.docs.map(d => {
+        const rec = { id: d.id, ...d.data() } as any;
+        const pat = String(rec.bikeNumber);
+        const tsOut = rec.timestamp?.toMillis?.() || 0;
+
+        // Pega a entrada mais recente ANTES da saída (menor diferença de tempo)
+        const entradasBike = (entradas[pat] || []).filter(e => {
+          const tsE = e.dataEntrada?.toMillis?.() || e.timestamp?.toMillis?.() || 0;
+          return tsE <= tsOut;
+        }).sort((a: any, b: any) => {
+          const tA = a.dataEntrada?.toMillis?.() || a.timestamp?.toMillis?.() || 0;
+          const tB = b.dataEntrada?.toMillis?.() || b.timestamp?.toMillis?.() || 0;
+          return tB - tA; // mais recente primeiro
+        });
+
+        const entrada = entradasBike[0];
+        return {
+          ...rec,
+          mecanico: rec.driverName,
+          dataEntrada: entrada?.dataEntrada || entrada?.timestamp || null,
+          dataSaida: rec.timestamp,
+        };
+      });
+
+      setMechanicHistory(records);
+    } catch (e) {
+      console.error('fetchMechanicHistory:', e);
+    } finally {
+      setIsMechanicHistoryLoading(false);
+    }
+  };
+
   const handleSearch = async (bikeToSearch?: string) => {
     const term = (bikeToSearch || searchTerm).trim();
     if (!term) { setSearchedBike(null); setSearchTerm(''); return; }
@@ -1754,7 +1815,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicSelectionModalOpen(false);
     try {
       updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
-      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Mecânica', driverName, mechanicName, timestamp: serverTimestamp(), type: 'Mecânica' }).catch(e => console.warn('[Firebase] reports write:', e.code));
+      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Mecânica', driverName, mechanicName, dataEntrada: serverTimestamp(), timestamp: serverTimestamp(), type: 'Mecânica' }).catch(e => console.warn('[Firebase] reports write:', e.code));
       apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true).catch(() => {});
     } catch (err: any) {
       alert('Erro: ' + err.message);
@@ -3976,7 +4037,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         {/* ÍCONES DE ATALHO MECÂNICA */}
         {isMecanica && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-6">
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-6">
             <button 
               onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Alterar status' ? null : 'Alterar status')}
               className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Alterar status' ? 'bg-purple-600 border-purple-700 text-white' : 'bg-purple-50 border-purple-100 hover:bg-purple-100'}`}
@@ -4024,6 +4085,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Reserva' ? 'text-white' : 'text-green-600'}`}>
                 {mechanicsList.filter(b => b.status === 'Reserva').length}
               </span>
+            </button>
+            <button
+              onClick={() => { setIsMechanicHistoryOpen(true); fetchMechanicHistory(); }}
+              className="flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 bg-gray-50 border-gray-200 hover:bg-gray-100"
+            >
+              <div className="p-1.5 rounded-full mb-1 bg-gray-600 text-white">
+                <CalendarIcon className="w-4 h-4" />
+              </div>
+              <span className="text-[8px] font-bold text-center leading-tight h-5 flex items-center text-gray-800">Histórico</span>
+              <span className="mt-0.5 text-[10px] font-black text-gray-600">—</span>
             </button>
           </div>
         )}
@@ -4878,9 +4949,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div className="flex justify-between items-center mb-2 border-b pb-1">
                       <h3 className="font-black text-gray-900 text-sm uppercase">Visão Geral</h3>
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-4 gap-1.5">
                       {[
-                        { l: 'Aguardando', v: mechanicsList.filter(b => b.status === 'Aguardando Confirmação').length, c: 'blue' },
+                        { l: 'Alterar Status', v: mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length, c: 'purple' },
+                        { l: 'Aguardando', v: mechanicsList.filter(b => b.status === 'Aguardando Manutenção').length, c: 'blue' },
                         { l: 'Manutenção', v: mechanicsList.filter(b => b.status === 'Em Manutenção').length, c: 'orange' },
                         { l: 'Reserva', v: mechanicsList.filter(b => b.status === 'Reserva').length, c: 'green' },
                       ].map(item => (
@@ -5893,6 +5965,143 @@ const MainScreen: React.FC<MainScreenProps> = ({
       <VehicleSwitchModal isOpen={isVehicleModalOpen} onClose={() => setIsVehicleModalOpen(false)} onSwitch={(p, km) => onUpdateUser({ plate: p, kmInicial: km })} driverName={driverName} currentPlate={plate}/>
       <AdminAlerts isOpen={isAdminAlertsOpen} onClose={() => setIsAdminAlertsOpen(false)} adminName={driverName}/>
       <ReporModal isOpen={isReporModalOpen} onClose={() => setIsReporModalOpen(false)} data={reporData} isLoading={isReporLoading}/>
+      {/* Modal Histórico de Manutenções */}
+      {isMechanicHistoryOpen && (() => {
+        const fmt = (ts: any) => {
+          if (!ts) return '—';
+          const d = ts.toDate ? ts.toDate() : new Date(ts);
+          if (isNaN(d.getTime())) return '—';
+          return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+        };
+
+        // Filtra por mecânico e pela data de saída (dataSaida)
+        const filtered = mechanicHistory.filter(r => {
+          const ts = r.dataSaida?.toDate ? r.dataSaida.toDate() : new Date(r.dataSaida || 0);
+          const recDate = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')}`;
+          const matchDate = mechanicHistoryFilter.date ? recDate === mechanicHistoryFilter.date : true;
+          const matchMechanic = mechanicHistoryFilter.mechanic === 'Todos' || r.mecanico === mechanicHistoryFilter.mechanic;
+          return matchDate && matchMechanic;
+        }).sort((a, b) => {
+          const ta = a.dataSaida?.toMillis?.() || 0;
+          const tb = b.dataSaida?.toMillis?.() || 0;
+          return tb - ta;
+        });
+
+        // Mecânicos únicos da lista completa
+        const uniqueMechanics = ['Todos', ...Array.from(new Set(mechanicHistory.map(r => r.mecanico).filter(Boolean))).sort()];
+
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh] overflow-hidden">
+
+              {/* Header */}
+              <div className="bg-gray-800 p-4 text-white flex items-center justify-between flex-shrink-0">
+                <div className="flex items-center gap-2">
+                  <CalendarIcon className="w-5 h-5"/>
+                  <div>
+                    <h2 className="text-base font-black">Histórico de Manutenções</h2>
+                    <p className="text-[10px] opacity-60">Data de entrada → saída para reserva</p>
+                  </div>
+                </div>
+                <button onClick={() => setIsMechanicHistoryOpen(false)} className="p-1 hover:bg-white/20 rounded-full">
+                  <XIcon className="w-5 h-5"/>
+                </button>
+              </div>
+
+              {/* Filtros */}
+              <div className="p-3 border-b bg-gray-50 flex gap-2 flex-shrink-0">
+                <div className="flex-1">
+                  <label className="text-[9px] font-black text-gray-400 uppercase block mb-1">Mecânico</label>
+                  <select
+                    value={mechanicHistoryFilter.mechanic}
+                    onChange={e => setMechanicHistoryFilter(prev => ({ ...prev, mechanic: e.target.value }))}
+                    className="w-full text-xs p-1.5 border rounded-lg bg-white font-bold text-gray-700 outline-none"
+                  >
+                    {uniqueMechanics.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="text-[9px] font-black text-gray-400 uppercase block mb-1">Data de Saída</label>
+                  <input
+                    type="date"
+                    value={mechanicHistoryFilter.date}
+                    max={localDateStr()}
+                    onChange={e => setMechanicHistoryFilter(prev => ({ ...prev, date: e.target.value }))}
+                    className="w-full text-xs p-1.5 border rounded-lg bg-white font-bold text-gray-700 outline-none"
+                  />
+                </div>
+                <div className="flex items-end gap-1">
+                  <button
+                    onClick={() => setMechanicHistoryFilter({ mechanic: 'Todos', date: localDateStr() })}
+                    className="px-2 py-1.5 bg-gray-200 text-gray-600 text-[10px] font-bold rounded-lg hover:bg-gray-300 whitespace-nowrap"
+                  >Hoje</button>
+                  <button
+                    onClick={() => { setMechanicHistoryFilter(prev => ({ ...prev, date: '' })); }}
+                    className="px-2 py-1.5 bg-gray-100 text-gray-500 text-[10px] font-bold rounded-lg hover:bg-gray-200 whitespace-nowrap"
+                  >Tudo</button>
+                </div>
+              </div>
+
+              {/* Lista */}
+              <div className="flex-1 overflow-y-auto p-3">
+                {isMechanicHistoryLoading ? (
+                  <div className="text-center py-10 text-gray-400 text-sm">Carregando...</div>
+                ) : filtered.length === 0 ? (
+                  <div className="text-center py-10 text-gray-400 text-sm italic">Nenhum registro encontrado.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {filtered.map((r, i) => (
+                      <div key={r.id || i} className="bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
+                        {/* Bike + mecânico */}
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xl font-black text-gray-800 font-mono">{r.bikeNumber}</span>
+                          </div>
+                          {r.mecanico && (
+                            <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
+                              🔧 {r.mecanico}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Tratativa */}
+                        {r.treatment && (
+                          <div className="mb-2 p-2 bg-gray-50 border border-gray-100 rounded-lg">
+                            <p className="text-[9px] font-black text-gray-400 uppercase mb-0.5">Manutenção realizada</p>
+                            <p className="text-[11px] text-gray-700 font-medium">{r.treatment}</p>
+                          </div>
+                        )}
+
+                        {/* Datas */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="bg-orange-50 border border-orange-100 rounded-lg p-2 text-center">
+                            <p className="text-[8px] font-black text-orange-500 uppercase mb-0.5">📥 Entrada Mecânica</p>
+                            <p className="text-[11px] font-black text-orange-700 font-mono">{fmt(r.dataEntrada)}</p>
+                          </div>
+                          <div className="bg-green-50 border border-green-100 rounded-lg p-2 text-center">
+                            <p className="text-[8px] font-black text-green-600 uppercase mb-0.5">📤 Saída → Reserva</p>
+                            <p className="text-[11px] font-black text-green-700 font-mono">{fmt(r.dataSaida)}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="p-3 border-t bg-gray-50 flex justify-between items-center flex-shrink-0">
+                <span className="text-[10px] text-gray-400 font-bold">{filtered.length} registro(s)</span>
+                <button onClick={() => setIsMechanicHistoryOpen(false)}
+                  className="px-4 py-2 bg-gray-800 text-white text-xs font-bold rounded-lg hover:bg-gray-700">
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       <MechanicRepairModal isOpen={isMechanicRepairModalOpen} onClose={() => setIsMechanicRepairModalOpen(false)} onConfirm={handleFinalizeMechanicsRepair} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <MechanicSelectionModal isOpen={isMechanicSelectionModalOpen} onClose={() => setIsMechanicSelectionModalOpen(false)} onConfirm={handleMechanicSelectionConfirm} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <TrailerSelectionModal isOpen={isTrailerSelectionModalOpen} onClose={() => setIsTrailerSelectionModalOpen(false)}
