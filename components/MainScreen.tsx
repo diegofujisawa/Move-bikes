@@ -1613,6 +1613,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       try {
         // 1. Move no backend imediatamente — evita que o refreshAll reverta o estado
         await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {});
+        addDoc(collection(db, 'reports'), {
+          bikeNumber: bikeId, status: 'Aguardando Manutenção',
+          driverName, mecanico: driverName,
+          observation: `Enviada para Aguardando Manutenção por ${driverName}`,
+          timestamp: serverTimestamp(), type: 'Mecânica'
+        }).catch(() => {});
 
         // 2. Agrupa num único doc no Firebase — busca doc pendente existente antes de criar novo
         const { arrayUnion, getDocs: _getDocs, query: _query, where: _where } = await import('firebase/firestore');
@@ -1701,6 +1707,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setDoc(doc(db, 'bikes', bikePat), {
         status: 'Aguardando Técnica', responsavel: finalMechanic, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes:', e.code));
+      addDoc(collection(db, 'reports'), {
+        bikeNumber: bikePat, status: 'Aguardando Técnica',
+        driverName: finalMechanic, mecanico: finalMechanic,
+        observation: `Enviada para Técnica por ${finalMechanic}`,
+        timestamp: serverTimestamp(), type: 'Técnica'
+      }).catch(() => {});
       // Backend — grava na aba Mecânica com status Aguardando Técnica
       await apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: finalMechanic }, 1, false);
     } catch (err: any) {
@@ -1736,6 +1748,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setDoc(doc(db, 'bikes', bikeNumber), {
         status: 'Em Técnica', responsavel: technicianName, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase]', e.code));
+      addDoc(collection(db, 'reports'), {
+        bikeNumber, status: 'Em Técnica',
+        driverName: technicianName, mecanico: technicianName,
+        observation: `Recebida pela Técnica — ${technicianName}`,
+        timestamp: serverTimestamp(), type: 'Técnica'
+      }).catch(() => {});
       await apiCall({ action: 'confirmTechnicaReceipt', bikeNumber, technicianName }, 1, false);
     } catch (err: any) {
       setError('Erro: ' + err.message);
@@ -1762,6 +1780,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setDoc(doc(db, 'bikes', bikeNumber), {
         status: 'Em Manutenção', responsavel: originalMechanic || null, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase]', e.code));
+      addDoc(collection(db, 'reports'), {
+        bikeNumber, status: 'Devolvida da Técnica',
+        driverName: driverName, mecanico: driverName,
+        treatment, originalMechanic,
+        observation: `Técnica finalizada por ${driverName} — ${treatment}. Devolvida para ${originalMechanic || 'Mecânica'}`,
+        timestamp: serverTimestamp(), type: 'Técnica'
+      }).catch(() => {});
       await apiCall({
         action: 'finalizeTechnicaRepair', bikeNumber,
         technicianName: driverName, treatment, originalMechanic
@@ -1796,6 +1821,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         treatment: finalTreatment,
         localFinal: finalRoom || null,
         observation,
+        localidade: finalRoom || null,
         timestamp: serverTimestamp(), 
         type: 'Vandalizada' 
       }).catch(() => {});
@@ -1841,7 +1867,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicSelectionModalOpen(false);
     try {
       updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
-      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Mecânica', driverName, mechanicName, dataEntrada: serverTimestamp(), timestamp: serverTimestamp(), type: 'Mecânica' }).catch(e => console.warn('[Firebase] reports write:', e.code));
+      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Em Manutenção', driverName, mecanico: mechanicName, mechanicName, observation: `Entrada na Mecânica — ${mechanicName}`, dataEntrada: serverTimestamp(), timestamp: serverTimestamp(), type: 'Mecânica' }).catch(e => console.warn('[Firebase] reports write:', e.code));
       apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true).catch(() => {});
     } catch (err: any) {
       alert('Erro: ' + err.message);
@@ -5242,14 +5268,22 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div className="space-y-2">
                       {bikeSearchResult.map((record: any, i: number) => {
                         const statusLow = (record.status || '').toLowerCase();
-                        const isMecanicaRecord = record.origem === 'mecanica';
+                        // Detecta origem do registro
+                        const isMecanicaRecord = record.origem === 'mecanica' || record.type === 'Mecânica' || record.type === 'Reparo';
+                        const isTecnicaRecord  = record.type === 'Técnica';
+                        const isCarretinha     = record.type === 'Carretinha';
                         const isRecolhida   = statusLow === 'recolhida' || statusLow === 'filial';
                         const isEstacao     = statusLow === 'estação' || statusLow === 'estacao';
                         const isVandalizada = statusLow === 'vandalizada';
                         const isNaoEnc      = statusLow.includes('não encontrada') || statusLow.includes('nao encontrada');
-                        const isMec         = statusLow.includes('manutenção') || statusLow.includes('manutencao') || statusLow === 'em manutenção';
-                        const isReserva     = statusLow === 'reserva' || statusLow.includes('reparo finalizado');
+                        const isMec         = statusLow.includes('manutenção') || statusLow.includes('manutencao') || statusLow === 'em manutenção' || statusLow === 'aguardando manutenção';
+                        const isReserva     = statusLow === 'reserva' || statusLow.includes('reparo finalizado') || statusLow === 'em estação';
                         const isRemanejada  = statusLow === 'remanejada';
+                        const isTec         = statusLow.includes('técnica') || statusLow.includes('tecnica');
+
+                        const borderColor = isCarretinha ? 'border-l-purple-400' :
+                          isTecnicaRecord ? 'border-l-blue-400' :
+                          isMecanicaRecord ? 'border-l-orange-400' : 'border-l-gray-300';
 
                         const badgeClass = isRecolhida ? 'bg-green-700 text-white' :
                           isEstacao ? 'bg-indigo-500 text-white' :
@@ -5257,40 +5291,48 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           isMec ? 'bg-orange-500 text-white' :
                           isReserva ? 'bg-green-500 text-white' :
                           isRemanejada ? 'bg-teal-500 text-white' :
+                          isTec ? 'bg-blue-500 text-white' :
+                          isCarretinha ? 'bg-purple-500 text-white' :
                           'bg-gray-400 text-white';
 
+                        // Responsável pelo registro
+                        const responsavel = record.mecanico || record.motorista || record.driverName || null;
+
                         return (
-                          <div key={i} className={`bg-white border rounded-lg p-2.5 shadow-sm ${isMecanicaRecord ? 'border-l-4 border-l-orange-400' : 'border-l-4 border-l-blue-300'}`}>
+                          <div key={i} className={`bg-white border rounded-lg p-2.5 shadow-sm border-l-4 ${borderColor}`}>
                             <div className="flex items-start justify-between gap-2 mb-1.5">
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className={`px-2 py-0.5 text-[9px] font-black uppercase rounded ${badgeClass}`}>
                                   {record.status}
                                 </span>
-                                {isMecanicaRecord && (
-                                  <span className="px-1.5 py-0.5 text-[8px] font-bold bg-orange-50 text-orange-500 border border-orange-200 rounded">🔧 Mecânica</span>
-                                )}
+                                {isTecnicaRecord && <span className="px-1.5 py-0.5 text-[8px] font-bold bg-blue-50 text-blue-500 border border-blue-200 rounded">🔬 Técnica</span>}
+                                {isMecanicaRecord && !isTecnicaRecord && <span className="px-1.5 py-0.5 text-[8px] font-bold bg-orange-50 text-orange-500 border border-orange-200 rounded">🔧 Mecânica</span>}
+                                {isCarretinha && <span className="px-1.5 py-0.5 text-[8px] font-bold bg-purple-50 text-purple-500 border border-purple-200 rounded">🚌 {record.trailerName || 'Carretinha'}</span>}
                               </div>
-                              <span className="text-[9px] text-gray-800 font-mono font-bold whitespace-nowrap">{record.timestamp}</span>
+                              <span className="text-[9px] text-gray-800 font-mono font-bold whitespace-nowrap flex-shrink-0">{record.timestamp}</span>
                             </div>
-                            {record.motorista && (
+                            {responsavel && (
                               <p className="text-[10px] font-semibold text-gray-700">
-                                {isMecanicaRecord ? '🔧' : '👤'} {record.motorista}
+                                {isTecnicaRecord ? '🔬' : isCarretinha ? '🚌' : isMecanicaRecord ? '🔧' : '👤'} {responsavel}
                               </p>
                             )}
-                            {record.observacao && (
+                            {record.observation && (
+                              <p className="text-[10px] text-gray-500 mt-0.5">📝 {record.observation}</p>
+                            )}
+                            {!record.observation && record.observacao && (
                               <p className="text-[10px] text-gray-500 mt-0.5">📝 {record.observacao}</p>
                             )}
+                            {record.treatment && (
+                              <p className="text-[10px] text-gray-500 mt-0.5">🛠 {record.treatment}</p>
+                            )}
                             {record.bateria && (() => {
-                              // Converte 0.3 → 30%, 0.8 → 80%, já 80% fica 80%
                               const raw = String(record.bateria).replace(',', '.');
                               const num = parseFloat(raw);
                               const pct = !isNaN(num) ? (num <= 1 && num > 0 ? Math.round(num * 100) : Math.round(num)) : null;
-                              return pct !== null ? (
-                                <p className="text-[10px] text-gray-500 mt-0.5">🔋 {pct}%</p>
-                              ) : null;
+                              return pct !== null ? <p className="text-[10px] text-gray-500 mt-0.5">🔋 {pct}%</p> : null;
                             })()}
-                            {record.localidade && (
-                              <p className="text-[10px] text-gray-400 mt-0.5">📍 {record.localidade}</p>
+                            {(record.localFinal || record.localidade) && (
+                              <p className="text-[10px] text-red-600 font-bold mt-0.5">📍 Local final: {record.localFinal || record.localidade}</p>
                             )}
 
                             {/* Botões de Ação Manual (Apenas Perfil Mecânica) */}
