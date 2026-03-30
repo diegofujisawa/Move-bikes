@@ -304,13 +304,29 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [activeMechanicCategory, setActiveMechanicCategory] = useState<string | null>(null);
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
   const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
+  const [selectedBatteryFilter, setSelectedBatteryFilter] = useState<string>('Todos');
   const [mechanicSummaryPeriod, setMechanicSummaryPeriod] = useState<'diario'|'semanal'|'mensal'>('diario');
+  const [productionDrillDown, setProductionDrillDown] = useState<{ mechanic: string; type: 'man' | 'res'; bikes: string[] } | null>(null);
   const [bikeFoundModal, setBikeFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [mechanicNotFoundModal, setMechanicNotFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string, mechanicName?: string } | null>(null);
   const [manualMechanicModal, setManualMechanicModal] = useState<{ isOpen: boolean; bikePat: string; targetStatus: string }>({ isOpen: false, bikePat: '', targetStatus: '' });
   const [manualMechanicName, setManualMechanicName] = useState('');
   const [isVandalizedConfirmOpen, setIsVandalizedConfirmOpen] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
+  const [vandalizedMechanicModal, setVandalizedMechanicModal] = useState<{ bikePat: string; mechanicName: string } | null>(null);
+  const [vandalizedSelected, setVandalizedSelected] = useState<Set<string>>(new Set());
+  const [vandalizedRoom, setVandalizedRoom] = useState<string>('');
+  const VANDALIZED_ROOMS = ['SALA 2', 'SALA 3', 'SALA 4'];
+  const MECHANIC_REPAIR_OPTIONS = [
+    'Ajuste e aperto', 'Placa',
+    'Cesto', 'Banco',
+    'Rodas', 'Guidão',
+    'Quadro', 'Adesivos',
+    'Identificação', 'Pedal',
+    'Carregamento', 'Limpeza',
+    'Instalação de Locker', 'Troca de Cabo de Freio',
+    'Troca Cabo Energia', 'Corrente',
+  ];
   const [isZerarListaConfirmOpen, setIsZerarListaConfirmOpen] = useState(false);
   const [trailerQrModal, setTrailerQrModal] = useState<{
     isOpen: boolean;
@@ -1757,32 +1773,42 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally { setIsLoading(false); }
   };
 
-  const handleMarkAsVandalizedNoRecovery = async (bikePat: string) => {
+  const handleMarkAsVandalizedNoRecovery = async (bikePat: string, treatment?: string, room?: string, mechanicName?: string) => {
     setIsLoading(true);
+    const finalMechanic = mechanicName || driverName;
+    const finalTreatment = treatment || 'Vandalizada sem recuperação';
+    const finalRoom = room || '';
+    const observation = [finalTreatment, finalRoom ? `Local: ${finalRoom}` : ''].filter(Boolean).join(' | ');
     try {
       setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
-      const treatment = 'Vandalizada sem recuperação';
-      await updateDoc(doc(db, 'bikes', bikePat), { 
+      updateDoc(doc(db, 'bikes', bikePat), { 
         status: 'Vandalizada', 
-        responsavel: null, 
-        observacao: treatment, 
+        responsavel: finalMechanic,
+        observacao: observation,
+        localFinal: finalRoom || null,
         ultimaAtualizacao: serverTimestamp() 
-      });
-      await addDoc(collection(db, 'reports'), { 
+      }).catch(() => {});
+      addDoc(collection(db, 'reports'), { 
         bikeNumber: bikePat, 
         status: 'Vandalizada', 
-        driverName, 
-        treatment, 
+        driverName: finalMechanic,
+        mecanico: finalMechanic,
+        treatment: finalTreatment,
+        localFinal: finalRoom || null,
+        observation,
         timestamp: serverTimestamp(), 
         type: 'Vandalizada' 
-      });
-      await apiCall({ action: 'markAsVandalizedNoRecovery', bikeNumber: bikePat, mechanicName: driverName, treatment }, 1, true);
-      refreshAll(true);
+      }).catch(() => {});
+      apiCall({ action: 'markAsVandalizedNoRecovery', bikeNumber: bikePat, mechanicName: finalMechanic, treatment: observation }, 1, true).catch(() => {});
+      setSuccessMessage(`Bike ${bikePat} marcada como Vandalizada${finalRoom ? ` — ${finalRoom}` : ''}.`);
     } catch (err: any) {
       console.error('Erro ao marcar como vandalizada:', err);
     } finally {
       setIsLoading(false);
       setIsVandalizedConfirmOpen(null);
+      setVandalizedMechanicModal(null);
+      setVandalizedSelected(new Set());
+      setVandalizedRoom('');
     }
   };
 
@@ -1830,15 +1856,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
     // A notificação ao ADM só ocorre ao FINALIZAR A CARRETINHA (após QR + bateria + comunicação).
     // Atualização otimista
-    protectMechanicBike(bikeNumber, 'Reserva');
+    const mechanicName = selectedMechanicBike?.mecanico || driverName;
+    const now = new Date();
+    protectMechanicBike(bikeNumber, { status: 'Reserva', mecanico: mechanicName, tratativa: treatment, dataFinalizacao: now });
     setMechanicsList(prev => prev.map(b =>
-      b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', tratativa: treatment } : b
+      b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', mecanico: mechanicName, tratativa: treatment, dataFinalizacao: now } : b
     ));
     setIsMechanicRepairModalOpen(false);
     try {
-      updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
-      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Em Estação', driverName, treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(e => console.warn('[Firebase] reports write:', e.code));
-      apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName: driverName, treatment }, 1, true).catch(() => {});
+      updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: mechanicName, observacao: treatment, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
+      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Em Estação', driverName: mechanicName, mecanico: mechanicName, treatment, dataEntrada: selectedMechanicBike?.dataEntrada || null, timestamp: serverTimestamp(), type: 'Reparo' }).catch(e => console.warn('[Firebase] reports write:', e.code));
+      apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName, treatment }, 1, true).catch(() => {});
       setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
     } catch (err: any) {
       alert('Erro: ' + err.message);
@@ -1858,14 +1886,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       // Persiste no backend
       apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
-      await Promise.all(bikeNumbers.map(id =>
-        updateDoc(doc(db, 'bikes', id), { 
+      await Promise.all(bikeNumbers.map(id => {
+        const bikeData = mechanicsList.find(b => b.patrimonio === id);
+        return updateDoc(doc(db, 'bikes', id), { 
           carretinha: trailerName, 
-          status: 'Reserva', 
+          status: 'Reserva',
+          responsavel: bikeData?.mecanico || null, // mantém mecânico associado
           trailerStatus: null, // Reseta status se estiver sendo re-organizada
           ultimaAtualizacao: serverTimestamp() 
-        }, { merge: true }).catch(() => {})
-      ));
+        }, { merge: true }).catch(() => {});
+      }));
 
       setSuccessMessage(`Bikes organizadas na ${trailerName}!`);
       refreshAll(true);
@@ -1887,9 +1917,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
         ));
       } else if (action.type === 'status_change') {
         if (action.targetStatus === 'Reserva') {
-          updateDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
-          addDoc(collection(db, 'reports'), { bikeNumber: action.bikeNumber, status: 'Em Estação', driverName: action.mechanicName, treatment: action.treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(() => {});
-          const res = await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber: action.bikeNumber, mechanicName: action.mechanicName, treatment: action.treatment }, 1, true);
+          updateDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: action.mechanicName || driverName, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
+          addDoc(collection(db, 'reports'), { bikeNumber: action.bikeNumber, status: 'Em Estação', driverName: action.mechanicName || driverName, treatment: action.treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(() => {});
+          const res = await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber: action.bikeNumber, mechanicName: action.mechanicName || driverName, treatment: action.treatment }, 1, true);
           if (!res.success) throw new Error(res.error || 'Erro ao aprovar reparo.');
         } else {
           const res = await apiCall({
@@ -2238,10 +2268,25 @@ const MainScreen: React.FC<MainScreenProps> = ({
     ));
     try {
       // Não limpa carretinha aqui; define trailerStatus como 'finalized'
-      await Promise.all(bikeIds.map(id => setDoc(doc(db, 'bikes', id), { 
-        trailerStatus: 'finalized', 
-        ultimaAtualizacao: serverTimestamp() 
-      }, { merge: true })));
+      await Promise.all(bikeIds.map(id => {
+        const bikeData = mechanicsList.find(b => b.patrimonio === id);
+        const mechanicName = bikeData?.mecanico || driverName;
+        // Atualiza status da bike
+        setDoc(doc(db, 'bikes', id), { 
+          trailerStatus: 'finalized', 
+          ultimaAtualizacao: serverTimestamp() 
+        }, { merge: true }).catch(() => {});
+        // Atualiza o report de Reparo desta bike com o trailerName
+        // (busca o report mais recente type=Reparo desta bike e adiciona trailerName)
+        import('firebase/firestore').then(({ query: _q, where: _w, getDocs: _gd, updateDoc: _upd, orderBy: _ob, limit: _lim, collection: _col }) => {
+          _gd(_q(_col(db, 'reports'), _w('bikeNumber', '==', id), _w('type', '==', 'Reparo'), _ob('timestamp', 'desc'), _lim(1)))
+            .then(snap => {
+              if (!snap.empty) {
+                _upd(snap.docs[0].ref, { trailerName, mecanico: mechanicName }).catch(() => {});
+              }
+            }).catch(() => {});
+        });
+      }));
       apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
       // Notifica ADM para alterar status das bikes — só ocorre aqui, após QR + bateria + comunicação
       const notifyMsg = `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
@@ -3610,15 +3655,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       batteryFailed: prev.batteryFailed === patrimonio ? null : prev.batteryFailed,
                       lastError: null,
                     } : null);
-                    // Atualiza lista local — volta para Em Manutenção sem carretinha
-                    setMechanicsList(prev => prev.map(b =>
-                      b.patrimonio === patrimonio
-                        ? { ...b, status: 'Em Manutenção', carretinha: null, dataFinalizacao: '' }
-                        : b
-                    ));
+                    // Atualiza lista local — volta para Em Manutenção preservando mecânico
+                    setMechanicsList(prev => prev.map(b => {
+                      if (b.patrimonio !== patrimonio) return b;
+                      const mechanicName = b.mecanico || driverName;
+                      protectMechanicBike(patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
+                      return { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null, dataFinalizacao: null };
+                    }));
+                    // Firebase não-bloqueante
+                    const bikeData = mechanicsList.find(b => b.patrimonio === patrimonio);
+                    const mechanicName = bikeData?.mecanico || driverName;
+                    updateDoc(doc(db, 'bikes', patrimonio), {
+                      carretinha: null, trailerStatus: null,
+                      status: 'Mecânica', responsavel: mechanicName,
+                      ultimaAtualizacao: serverTimestamp()
+                    }).catch(() => {});
                     // Backend
                     try {
-                      await apiCall({ action: 'removeFromTrailer', bikeNumber: patrimonio }, 1, false);
+                      await apiCall({ action: 'removeFromTrailer', bikeNumber: patrimonio, mechanicName }, 1, false);
                     } catch (e: any) {
                       console.warn('[removeFromTrailer]', e.message);
                     }
@@ -3797,15 +3851,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
           const activeStatuses = isTecnica
             ? ['Em Técnica', 'Aguardando Técnica']
             : ['Em Manutenção', 'Reserva'];
-          const byMechanic: Record<string, {manutencao: number, reserva: number}> = {};
+          const byMechanic: Record<string, {manutencao: number, reserva: number, bikesMan: string[], bikesRes: string[]}> = {};
           sourceList.filter(b => activeStatuses.includes(b.status)).forEach(b => {
             const m = b.mecanico || '—';
-            if (!byMechanic[m]) byMechanic[m] = { manutencao: 0, reserva: 0 };
-            const entryDate = b.dataEntrada ? new Date(b.dataEntrada) : null;
-            if (!entryDate || entryDate >= cutoff) {
-              const isMainStatus = isTecnica ? b.status === 'Em Técnica' : b.status === 'Em Manutenção';
-              if (isMainStatus) byMechanic[m].manutencao++;
-              else byMechanic[m].reserva++;
+            if (!byMechanic[m]) byMechanic[m] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
+            const isMainStatus = isTecnica ? b.status === 'Em Técnica' : b.status === 'Em Manutenção';
+            const refDate = isMainStatus
+              ? (b.dataEntrada ? new Date(b.dataEntrada) : null)
+              : (b.dataFinalizacao ? new Date(b.dataFinalizacao) : b.dataEntrada ? new Date(b.dataEntrada) : null);
+            if (!refDate || refDate >= cutoff) {
+              if (isMainStatus) { byMechanic[m].manutencao++; byMechanic[m].bikesMan.push(b.patrimonio); }
+              else { byMechanic[m].reserva++; byMechanic[m].bikesRes.push(b.patrimonio); }
             }
           });
           const mechs = Object.entries(byMechanic);
@@ -3829,14 +3885,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div key={name} className="flex items-center gap-2">
                       <span className="text-[10px] font-bold text-gray-500 uppercase w-16 truncate flex-shrink-0">{name}</span>
                       <div className="flex gap-1.5 flex-1">
-                        <div className="flex flex-col items-center py-0.5 px-2 bg-orange-50 border border-orange-100 rounded-md flex-1">
+                        <button
+                          onClick={() => counts.manutencao > 0 && setProductionDrillDown({ mechanic: name, type: 'man', bikes: counts.bikesMan })}
+                          className={`flex flex-col items-center py-0.5 px-2 bg-orange-50 border border-orange-100 rounded-md flex-1 transition-all ${counts.manutencao > 0 ? 'hover:bg-orange-100 active:scale-95 cursor-pointer' : 'cursor-default'}`}
+                        >
                           <span className="text-[7px] font-bold text-orange-400 uppercase leading-none">{isTecnica ? 'Téc' : 'Man'}</span>
                           <span className="text-sm font-black text-orange-500 leading-tight">{counts.manutencao}</span>
-                        </div>
-                        <div className="flex flex-col items-center py-0.5 px-2 bg-green-50 border border-green-100 rounded-md flex-1">
+                        </button>
+                        <button
+                          onClick={() => counts.reserva > 0 && setProductionDrillDown({ mechanic: name, type: 'res', bikes: counts.bikesRes })}
+                          className={`flex flex-col items-center py-0.5 px-2 bg-green-50 border border-green-100 rounded-md flex-1 transition-all ${counts.reserva > 0 ? 'hover:bg-green-100 active:scale-95 cursor-pointer' : 'cursor-default'}`}
+                        >
                           <span className="text-[7px] font-bold text-green-500 uppercase leading-none">{isTecnica ? 'Agu' : 'Res'}</span>
                           <span className="text-sm font-black text-green-600 leading-tight">{counts.reserva}</span>
-                        </div>
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -4206,28 +4268,51 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
                   <h2 className="text-lg font-bold text-orange-800 flex items-center gap-2"><BicycleIcon className="w-5 h-5"/>Mecânica - Em Manutenção</h2>
                   
-                  {/* Filtro por Mecânico */}
-                  <div className="flex items-center gap-2">
-                    <label htmlFor="mechanic-filter" className="text-xs font-bold text-gray-600">Filtrar:</label>
-                    <select 
-                      id="mechanic-filter"
-                      value={selectedMechanicFilter}
-                      onChange={(e) => setSelectedMechanicFilter(e.target.value)}
-                      className="text-xs p-1 border rounded bg-white font-semibold text-gray-700 focus:ring-1 focus:ring-orange-500 outline-none"
-                    >
-                      <option value="Todos">Todos os Mecânicos</option>
-                      {Array.from(new Set(mechanicsList.filter(b => b.status === 'Em Manutenção' && b.mecanico).map(b => b.mecanico))).sort().map(name => (
-                        <option key={name} value={name}>{name}</option>
-                      ))}
-                    </select>
+                  {/* Filtros */}
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs font-bold text-gray-600 w-12">Mecân.:</label>
+                      <select
+                        value={selectedMechanicFilter}
+                        onChange={(e) => setSelectedMechanicFilter(e.target.value)}
+                        className="text-xs p-1 border rounded bg-white font-semibold text-gray-700 focus:ring-1 focus:ring-orange-500 outline-none"
+                      >
+                        <option value="Todos">Todos os Mecânicos</option>
+                        {Array.from(new Set(mechanicsList.filter(b => b.status === 'Em Manutenção' && b.mecanico).map(b => b.mecanico))).sort().map(name => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs font-bold text-gray-600 w-12">Bateria:</label>
+                      <button
+                        onClick={() => setSelectedBatteryFilter(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? 'Todos' : 'asc')}
+                        className={`text-xs px-2 py-1 rounded border font-bold transition-all ${
+                          selectedBatteryFilter === 'desc' ? 'bg-orange-500 text-white border-orange-500' :
+                          selectedBatteryFilter === 'asc'  ? 'bg-blue-500 text-white border-blue-500' :
+                          'bg-white text-gray-500 border-gray-300 hover:border-gray-400'
+                        }`}
+                      >
+                        {selectedBatteryFilter === 'desc' ? '🔋 Maior → Menor' :
+                         selectedBatteryFilter === 'asc'  ? '🔋 Menor → Maior' :
+                         '🔋 Ordenar'}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
                 {(() => {
-                  const filteredBikes = mechanicsList.filter(b => 
-                    b.status === 'Em Manutenção' && 
-                    (selectedMechanicFilter === 'Todos' || b.mecanico === selectedMechanicFilter)
-                  );
+                  const getBatPct = (b: any) => {
+                    const raw = b.bateria !== undefined ? Number(b.bateria) : undefined;
+                    return raw !== undefined ? (raw <= 1 && raw > 0 ? Math.round(raw * 100) : Math.round(raw)) : -1;
+                  };
+                  const filteredBikes = mechanicsList
+                    .filter(b => b.status === 'Em Manutenção' && (selectedMechanicFilter === 'Todos' || b.mecanico === selectedMechanicFilter))
+                    .sort((a, b) => {
+                      if (selectedBatteryFilter === 'desc') return getBatPct(b) - getBatPct(a);
+                      if (selectedBatteryFilter === 'asc')  return getBatPct(a) - getBatPct(b);
+                      return 0;
+                    });
                   
                   return filteredBikes.length > 0 ? (
                     <div className="space-y-2">
@@ -4249,7 +4334,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             <button onClick={() => { setSelectedMechanicBike(bike); setIsMechanicRepairModalOpen(true); }} className="px-3 py-1.5 bg-orange-600 text-white text-xs font-bold rounded hover:bg-orange-700 active:scale-95">Finalizar Reparo</button>
                             <div className="flex gap-2">
                               <button onClick={() => setIsTechnicalConfirmOpen({ isOpen: true, bikePat: bike.patrimonio, mechanicName: bike.mecanico })} className="flex-1 px-2 py-1 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700 active:scale-95">Técnica</button>
-                              <button onClick={() => setIsVandalizedConfirmOpen({ isOpen: true, bikePat: bike.patrimonio })} className="flex-1 px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded hover:bg-red-700 active:scale-95">Vandalizada</button>
+                              <button onClick={() => {
+                                const mec = bike.mecanico || driverName;
+                                setVandalizedMechanicModal({ bikePat: bike.patrimonio, mechanicName: mec });
+                                setVandalizedSelected(new Set());
+                                setVandalizedRoom('');
+                              }} className="flex-1 px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded hover:bg-red-700 active:scale-95">Vandalizada</button>
                             </div>
                           </div>
                         </div>
@@ -4265,115 +4355,125 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 <div className="flex justify-between items-center mb-3">
                   <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
                 </div>
-                {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (
-                  <div className="space-y-4">
-                    {Object.entries(
-                      mechanicsList.filter(b => b.status === 'Reserva').reduce((acc, bike) => {
-                        const key = bike.carretinha || 'Sem Carretinha';
-                        if (!acc[key]) acc[key] = [];
-                        acc[key].push(bike);
-                        return acc;
-                      }, {} as Record<string, any[]>)
-                    ).map(([trailer, bikes]) => (
-                      <div key={trailer} className="border border-green-200 rounded-md bg-white p-3 shadow-sm">
-                        <div className="flex justify-between items-center mb-2 border-b pb-1">
-                          <div className="flex flex-col">
-                            <h3 className="font-bold text-green-700 flex items-center gap-2"><TrailerIcon className="w-4 h-4"/>{trailer}</h3>
-                            {trailer !== 'Sem Carretinha' && bikes[0]?.trailerStatus === 'finalized' && (
-                              <span className="text-[8px] font-bold text-orange-600 uppercase">Aguardando Validação ADM</span>
-                            )}
-                            {trailer !== 'Sem Carretinha' && bikes[0]?.trailerStatus === 'assigned' && (
-                              <span className="text-[8px] font-bold text-blue-600 uppercase">Aguardando Aceite Motorista</span>
+                {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (() => {
+                  const grouped = mechanicsList.filter(b => b.status === 'Reserva').reduce((acc, bike) => {
+                    const key = bike.carretinha || 'Sem Carretinha';
+                    if (!acc[key]) acc[key] = [];
+                    acc[key].push(bike);
+                    return acc;
+                  }, {} as Record<string, any[]>);
+
+                  // Separa carretinhas ativas (sem status ou em montagem) das enviadas (finalized/assigned)
+                  const activeTrailers = Object.entries(grouped).filter(([t, b]) =>
+                    t === 'Sem Carretinha' || !b[0]?.trailerStatus
+                  );
+                  const sentTrailers = Object.entries(grouped).filter(([t, b]) =>
+                    t !== 'Sem Carretinha' && (b[0]?.trailerStatus === 'finalized' || b[0]?.trailerStatus === 'assigned')
+                  );
+
+                  return (
+                    <div className="space-y-3">
+                      {/* Carretinhas ativas — edição completa */}
+                      {activeTrailers.map(([trailer, bikes]) => (
+                        <div key={trailer} className="border border-green-200 rounded-xl bg-white p-3 shadow-sm">
+                          <div className="flex justify-between items-center mb-2 border-b pb-1.5">
+                            <h3 className="font-bold text-green-700 flex items-center gap-2 text-sm">
+                              <TrailerIcon className="w-4 h-4"/>{trailer}
+                            </h3>
+                            {trailer !== 'Sem Carretinha' && (
+                              <button onClick={() => handleFinalizeTrailer(trailer)}
+                                className="text-[10px] px-2 py-0.5 rounded font-bold bg-green-600 hover:bg-green-700 text-white transition-all">
+                                Finalizar Carretinha
+                              </button>
                             )}
                           </div>
-                          {trailer !== 'Sem Carretinha' && (
-                            <div className="flex gap-1">
-                              {(!bikes[0]?.trailerStatus || bikes[0]?.trailerStatus === 'finalized') && (
-                                <button 
-                                  onClick={() => handleFinalizeTrailer(trailer)} 
-                                  className={`text-[10px] px-2 py-0.5 rounded font-bold transition-all ${bikes[0]?.trailerStatus === 'finalized' ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700'} text-white`}
-                                >
-                                  {bikes[0]?.trailerStatus === 'finalized' ? 'Re-Finalizar' : 'Finalizar Carretinha'}
-                                </button>
-                              )}
-                              {bikes[0]?.trailerStatus === 'finalized' && (
-                                <button 
-                                  onClick={() => {
-                                    // Permite editar: remove status finalized para permitir alteração
-                                    bikes.forEach(b => {
-                                      updateDoc(doc(db, 'bikes', b.patrimonio), { trailerStatus: null, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
-                                    });
-                                    alert('Carretinha aberta para edição!');
-                                    refreshAll(true);
-                                  }}
-                                  className="text-[10px] bg-blue-500 text-white px-2 py-0.5 rounded font-bold hover:bg-blue-600"
-                                >
-                                  Editar
-                                </button>
-                              )}
-                            </div>
+                          <div className="space-y-1">
+                            {(bikes as any[]).map((bike, i) => (
+                              <div key={`tr-${bike.patrimonio}-${i}`} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 border rounded-lg text-[11px]">
+                                <span className="font-black text-gray-800 font-mono w-10 flex-shrink-0">{bike.patrimonio}</span>
+                                {bike.mecanico && <span className="text-blue-600 font-bold flex-shrink-0 truncate max-w-[80px]">{bike.mecanico}</span>}
+                                {bike.tratativa && bike.tratativa !== 'MANUAL' && <span className="text-gray-400 flex-1 truncate text-[9px]">{bike.tratativa}</span>}
+                                <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
+                                  {bike.bateria !== undefined && (
+                                    <span className={`text-[10px] font-bold ${Number(bike.bateria) < 85 ? 'text-red-500' : 'text-gray-500'}`}>🔋{bike.bateria}%</span>
+                                  )}
+                                  {trailer !== 'Sem Carretinha' && (
+                                    <button onClick={() => {
+                                      const mechanicName = bike.mecanico || driverName;
+                                      // 1. Atualiza estado local imediatamente
+                                      protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
+                                      setMechanicsList(prev => prev.map(b =>
+                                        b.patrimonio === bike.patrimonio
+                                          ? { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null, dataFinalizacao: null }
+                                          : b
+                                      ));
+                                      // 2. Firebase não-bloqueante
+                                      updateDoc(doc(db, 'bikes', bike.patrimonio), {
+                                        carretinha: null, trailerStatus: null,
+                                        status: 'Mecânica', responsavel: mechanicName,
+                                        ultimaAtualizacao: serverTimestamp()
+                                      }).catch(() => {});
+                                      // 3. Backend
+                                      apiCall({ action: 'removeFromTrailer', bikeNumber: bike.patrimonio, mechanicName }, 1, false).catch(() => {});
+                                    }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95 transition-all">
+                                      <XIcon className="w-3 h-3"/>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          {trailer === 'Sem Carretinha' && (
+                            <button onClick={() => {
+                              const MAX_TRAILERS = 4;
+                              const today = localDateStr();
+                              const storageKey = `last_trailer_${driverName}_${today}`;
+                              let lastNum = 0;
+                              try { const saved = localStorage.getItem(storageKey); if (saved) lastNum = parseInt(saved) || 0; } catch {}
+                              const next = (lastNum % MAX_TRAILERS) + 1;
+                              try { localStorage.setItem(storageKey, String(next)); } catch {}
+                              handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
+                            }} className="mt-2 w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700">
+                              Organizar em Carretinha
+                            </button>
                           )}
                         </div>
-                        <div className="grid grid-cols-3 gap-2">
-                          {(bikes as any[]).map((bike, i) => (
-                            <div key={`trailer-${bike.patrimonio}-${i}`} className="relative text-xs p-1.5 bg-gray-50 border rounded text-center font-medium text-gray-700 flex flex-col items-center gap-0.5">
-                              {trailer !== 'Sem Carretinha' && (!bike.trailerStatus) && (
-                                <button 
-                                  onClick={async () => {
-                                    if (window.confirm(`Remover bike ${bike.patrimonio} da ${trailer}?`)) {
-                                      await updateDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, ultimaAtualizacao: serverTimestamp() });
-                                      refreshAll(true);
-                                    }
-                                  }}
-                                  className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 shadow-sm hover:bg-red-600 z-10"
-                                >
-                                  <XIcon className="w-2.5 h-2.5" />
-                                </button>
-                              )}
-                              <span className="font-bold">{bike.patrimonio}</span>
-                              <div className="flex flex-col items-center scale-90 origin-top">
-                                {bike.bateria !== undefined && <span className="text-[8px] text-gray-500">{bike.bateria}%</span>}
-                                {bike.carregamento === 'Carregando' && <span className="text-[8px] text-green-600 font-bold">⚡</span>}
-                                {bike.carregamento === 'Não carregando' && <span className="text-[8px] text-red-500 font-bold">🔌</span>}
-                              </div>
-                              {bike.mecanico && <span className="text-[7px] text-blue-600 truncate max-w-full">{bike.mecanico}</span>}
-                            </div>
-                          ))}
+                      ))}
+
+                      {/* Carretinhas enviadas — visualização resumida até aceite do motorista */}
+                      {sentTrailers.length > 0 && (
+                        <div className="border border-dashed border-gray-300 rounded-xl p-3 bg-gray-50">
+                          <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-2">Aguardando Aceite do Motorista</p>
+                          <div className="space-y-2">
+                            {sentTrailers.map(([trailer, bikes]) => {
+                              const isAssigned = bikes[0]?.trailerStatus === 'assigned';
+                              const motorista = bikes[0]?.responsavel || bikes[0]?.assignedTo || null;
+                              return (
+                                <div key={trailer} className={`rounded-lg border p-2.5 ${isAssigned ? 'bg-blue-50 border-blue-200' : 'bg-orange-50 border-orange-200'}`}>
+                                  <div className="flex items-center justify-between mb-1.5">
+                                    <div className="flex items-center gap-2">
+                                      <TrailerIcon className={`w-3.5 h-3.5 ${isAssigned ? 'text-blue-500' : 'text-orange-500'}`}/>
+                                      <span className="font-black text-sm text-gray-700">{trailer}</span>
+                                      <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase ${isAssigned ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                                        {isAssigned ? `Enviada → ${motorista || '?'}` : 'Aguard. ADM'}
+                                      </span>
+                                    </div>
+                                    <span className="text-[9px] text-gray-400 font-bold">{bikes.length} bike{bikes.length > 1 ? 's' : ''}</span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1">
+                                    {(bikes as any[]).map(b => (
+                                      <span key={b.patrimonio} className="font-mono text-[10px] font-bold px-1.5 py-0.5 bg-white border rounded text-gray-600">{b.patrimonio}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
-                        {trailer === 'Sem Carretinha' && (
-                          <button onClick={() => {
-                            // Sequência diária: 1→2→3→4→1→2→...
-                            // Usa localStorage para lembrar qual foi a última carretinha do dia
-                            const MAX_TRAILERS = 4;
-                            const today = localDateStr();
-                            const storageKey = `last_trailer_${driverName}_${today}`;
-                            
-                            let lastNum = 0;
-                            try {
-                              const saved = localStorage.getItem(storageKey);
-                              if (saved) lastNum = parseInt(saved) || 0;
-                            } catch {}
-
-                            // Próximo na sequência — se chegou no 4, volta pro 1
-                            const next = (lastNum % MAX_TRAILERS) + 1;
-
-                            // Persiste para a próxima organização do dia
-                            try {
-                              localStorage.setItem(storageKey, String(next));
-                            } catch {}
-
-                            const nextName = `Carretinha ${next}`;
-                            // Passa direto para handleOrganizeTrailer sem abrir modal de nome
-                            handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), nextName);
-                          }}
-                            className="mt-3 w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700">
-                            Organizar em Carretinha
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                ) : <p className="text-sm text-gray-500 italic">Nenhuma bike na reserva.</p>}
+                      )}
+                    </div>
+                  );
+                })() : <p className="text-sm text-gray-500 italic">Nenhuma bike na reserva.</p>}
               </div>
             )}
           </div>
@@ -4964,64 +5064,76 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     </div>
                   </div>
 
-                  {/* Carretinhas Liberadas Hoje */}
+                  {/* Carretinhas */}
                   {(() => {
-                    // Busca carretinhas que já foram enviadas para motoristas (status assigned ou aprovadas)
-                    const trailersByName: Record<string, { bikes: string[], motorista: string, status: string }> = {};
+                    const trailersByName: Record<string, { bikes: any[], motorista: string, status: string }> = {};
                     mechanicsList
                       .filter(b => b.carretinha && b.carretinha !== 'Sem Carretinha')
                       .forEach(b => {
                         const t = b.carretinha;
                         if (!trailersByName[t]) {
-                          trailersByName[t] = {
-                            bikes: [],
-                            motorista: b.responsavel || b.assignedTo || '—',
-                            status: b.trailerStatus || ''
-                          };
+                          trailersByName[t] = { bikes: [], motorista: b.responsavel || b.assignedTo || '—', status: b.trailerStatus || '' };
                         }
-                        trailersByName[t].bikes.push(b.patrimonio);
+                        trailersByName[t].bikes.push(b);
                       });
 
                     const trailers = Object.entries(trailersByName);
                     if (trailers.length === 0) return null;
 
+                    // Separa em montagem x enviadas
+                    const active = trailers.filter(([, d]) => !d.status);
+                    const sent   = trailers.filter(([, d]) => d.status === 'finalized' || d.status === 'assigned');
+
                     return (
                       <div className="bg-white p-3 rounded-lg border shadow-sm mb-3">
                         <div className="flex justify-between items-center mb-2 border-b pb-1">
                           <h3 className="font-black text-gray-900 text-sm uppercase flex items-center gap-2">
-                            <TrailerIcon className="w-4 h-4 text-green-600"/>
-                            Carretinhas
+                            <TrailerIcon className="w-4 h-4 text-green-600"/>Carretinhas
                           </h3>
                         </div>
-                        <div className="space-y-2">
-                          {trailers.map(([trailerName, data]) => (
-                            <div key={trailerName} className="p-2 bg-gray-50 rounded-lg border">
-                              <div className="flex items-center justify-between mb-1.5">
-                                <span className="text-xs font-black text-gray-700">{trailerName}</span>
-                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase ${
-                                  data.status === 'assigned' ? 'bg-blue-100 text-blue-700' :
-                                  data.status === 'finalized' ? 'bg-orange-100 text-orange-700' :
-                                  'bg-green-100 text-green-700'
-                                }`}>
-                                  {data.status === 'assigned' ? 'Aguard. Aceite' :
-                                   data.status === 'finalized' ? 'Finalizada' :
-                                   'Em Reserva'}
-                                </span>
-                              </div>
-                              {data.motorista && data.motorista !== '—' && (
-                                <p className="text-[10px] text-blue-600 font-bold mb-1">👤 {data.motorista}</p>
-                              )}
-                              <div className="flex flex-wrap gap-1">
-                                {data.bikes.map(pat => (
-                                  <span key={pat} className="px-1.5 py-0.5 bg-green-600 text-white text-[9px] font-black rounded font-mono">
-                                    {pat}
-                                  </span>
-                                ))}
-                              </div>
-                              <p className="text-[9px] text-gray-400 mt-1">{data.bikes.length} bike(s)</p>
+
+                        {/* Em montagem — detalhes completos */}
+                        {active.map(([trailerName, data]) => (
+                          <div key={trailerName} className="mb-2 p-2 bg-green-50 rounded-lg border border-green-200">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-black text-green-700">{trailerName}</span>
+                              <span className="text-[8px] font-black px-1.5 py-0.5 rounded uppercase bg-green-100 text-green-700">Em Montagem</span>
                             </div>
-                          ))}
-                        </div>
+                            <div className="flex flex-wrap gap-1">
+                              {data.bikes.map((b: any) => (
+                                <span key={b.patrimonio} className="px-1.5 py-0.5 bg-white border border-green-300 text-green-800 text-[9px] font-black rounded font-mono">
+                                  {b.patrimonio}
+                                </span>
+                              ))}
+                            </div>
+                            <p className="text-[9px] text-gray-400 mt-1">{data.bikes.length} bike(s)</p>
+                          </div>
+                        ))}
+
+                        {/* Enviadas — resumo compacto até aceite */}
+                        {sent.length > 0 && (
+                          <div className="border border-dashed border-gray-200 rounded-lg p-2 bg-gray-50">
+                            <p className="text-[8px] font-black text-gray-400 uppercase mb-1.5">Aguardando Aceite do Motorista</p>
+                            <div className="space-y-1.5">
+                              {sent.map(([trailerName, data]) => {
+                                const isAssigned = data.status === 'assigned';
+                                return (
+                                  <div key={trailerName} className={`flex items-center gap-2 p-1.5 rounded-lg border ${isAssigned ? 'bg-blue-50 border-blue-200' : 'bg-orange-50 border-orange-200'}`}>
+                                    <TrailerIcon className={`w-3.5 h-3.5 flex-shrink-0 ${isAssigned ? 'text-blue-500' : 'text-orange-500'}`}/>
+                                    <span className="font-black text-xs text-gray-700 flex-shrink-0">{trailerName}</span>
+                                    {isAssigned && data.motorista !== '—' && (
+                                      <span className="text-[10px] text-blue-600 font-bold flex-shrink-0">→ {data.motorista}</span>
+                                    )}
+                                    <span className={`text-[8px] font-black px-1 py-0.5 rounded ml-auto flex-shrink-0 ${isAssigned ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                                      {isAssigned ? 'Aguard. Aceite' : 'Aguard. ADM'}
+                                    </span>
+                                    <span className="text-[9px] text-gray-400 flex-shrink-0">{data.bikes.length}b</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })()}
@@ -5928,6 +6040,101 @@ const MainScreen: React.FC<MainScreenProps> = ({
         </div>
       )}
 
+      {/* Modal Vandalizada — Mecânica (com opções de reparo + sala) */}
+      {vandalizedMechanicModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col max-h-[90vh] overflow-hidden">
+            {/* Header */}
+            <div className="bg-red-600 p-4 text-white flex-shrink-0">
+              <p className="text-xs font-bold uppercase opacity-80">Finalizar como Vandalizada</p>
+              <h2 className="text-lg font-black">Bike {vandalizedMechanicModal.bikePat}</h2>
+              <p className="text-[11px] opacity-80 mt-0.5">Mecânico: <span className="font-bold">{vandalizedMechanicModal.mechanicName}</span></p>
+            </div>
+
+            {/* Opções de dano */}
+            <div className="flex-1 overflow-y-auto p-4">
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">O que foi reparado?</p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {MECHANIC_REPAIR_OPTIONS.map(opt => {
+                  const selected = vandalizedSelected.has(opt);
+                  return (
+                    <button key={opt}
+                      onClick={() => setVandalizedSelected(prev => {
+                        const next = new Set(prev);
+                        if (next.has(opt)) next.delete(opt); else next.add(opt);
+                        return next;
+                      })}
+                      className={`text-left px-2.5 py-2 rounded-lg border-2 font-bold text-xs transition-all active:scale-95 flex items-center gap-2 ${
+                        selected ? 'bg-red-50 border-red-400 text-red-700' : 'bg-white border-gray-200 text-gray-500 hover:border-red-200'
+                      }`}
+                    >
+                      <span className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 text-[9px] font-black ${
+                        selected ? 'bg-red-500 border-red-500 text-white' : 'border-gray-300'
+                      }`}>{selected ? '✓' : ''}</span>
+                      {opt}
+                    </button>
+                  );
+                })}
+              </div>
+              {vandalizedSelected.size > 0 && (
+                <p className="text-[9px] text-gray-400 italic mt-2">Selecione todas as opções que se aplicam.</p>
+              )}
+
+              {/* Local final */}
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mt-4 mb-2">Local final da bike</p>
+              <div className="grid grid-cols-3 gap-2">
+                {VANDALIZED_ROOMS.map(room => (
+                  <button key={room}
+                    onClick={() => setVandalizedRoom(prev => prev === room ? '' : room)}
+                    className={`py-2 rounded-xl border-2 font-black text-xs transition-all active:scale-95 ${
+                      vandalizedRoom === room
+                        ? 'bg-gray-800 border-gray-800 text-white'
+                        : 'bg-white border-gray-200 text-gray-600 hover:border-gray-400'
+                    }`}
+                  >
+                    {room}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t flex-shrink-0 space-y-2">
+              {(vandalizedSelected.size > 0 || vandalizedRoom) && (
+                <p className="text-[10px] text-red-600 font-bold text-center">
+                  {vandalizedSelected.size > 0 ? `${vandalizedSelected.size} componente(s)` : ''}
+                  {vandalizedSelected.size > 0 && vandalizedRoom ? ' · ' : ''}
+                  {vandalizedRoom || ''}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setVandalizedMechanicModal(null); setVandalizedSelected(new Set()); setVandalizedRoom(''); }}
+                  className="flex-1 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase hover:bg-gray-200"
+                >Cancelar</button>
+                <button
+                  onClick={() => {
+                    const treatment = vandalizedSelected.size > 0
+                      ? Array.from(vandalizedSelected).join(', ')
+                      : 'Vandalizada sem recuperação';
+                    handleMarkAsVandalizedNoRecovery(
+                      vandalizedMechanicModal.bikePat,
+                      treatment,
+                      vandalizedRoom,
+                      vandalizedMechanicModal.mechanicName
+                    );
+                  }}
+                  disabled={isLoading}
+                  className="flex-1 py-2.5 bg-red-600 text-white rounded-xl font-bold text-xs uppercase shadow-lg hover:bg-red-700 active:scale-95 disabled:bg-gray-300 transition-all"
+                >
+                  {isLoading ? '...' : 'Confirmar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal de Confirmação "Bike Vandalizada" */}
       {isVandalizedConfirmOpen?.isOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
@@ -6049,40 +6256,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 ) : filtered.length === 0 ? (
                   <div className="text-center py-10 text-gray-400 text-sm italic">Nenhum registro encontrado.</div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-1">
                     {filtered.map((r, i) => (
-                      <div key={r.id || i} className="bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
-                        {/* Bike + mecânico */}
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xl font-black text-gray-800 font-mono">{r.bikeNumber}</span>
-                          </div>
-                          {r.mecanico && (
-                            <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
-                              🔧 {r.mecanico}
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Tratativa */}
-                        {r.treatment && (
-                          <div className="mb-2 p-2 bg-gray-50 border border-gray-100 rounded-lg">
-                            <p className="text-[9px] font-black text-gray-400 uppercase mb-0.5">Manutenção realizada</p>
-                            <p className="text-[11px] text-gray-700 font-medium">{r.treatment}</p>
-                          </div>
+                      <div key={r.id || i} className="flex items-center gap-1.5 px-2 py-1.5 bg-white border border-gray-100 rounded-lg text-[10px]">
+                        <span className="font-black text-gray-800 font-mono w-9 flex-shrink-0">{r.bikeNumber}</span>
+                        <span className="text-blue-600 font-bold w-14 truncate flex-shrink-0" title={r.mecanico || '—'}>{r.mecanico || '—'}</span>
+                        <span className="text-gray-500 flex-1 truncate min-w-0" title={r.treatment || '—'}>{r.treatment || '—'}</span>
+                        {r.trailerName && (
+                          <span className="text-purple-600 font-bold flex-shrink-0 bg-purple-50 px-1 rounded text-[9px] whitespace-nowrap">{r.trailerName}</span>
                         )}
-
-                        {/* Datas */}
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="bg-orange-50 border border-orange-100 rounded-lg p-2 text-center">
-                            <p className="text-[8px] font-black text-orange-500 uppercase mb-0.5">📥 Entrada Mecânica</p>
-                            <p className="text-[11px] font-black text-orange-700 font-mono">{fmt(r.dataEntrada)}</p>
-                          </div>
-                          <div className="bg-green-50 border border-green-100 rounded-lg p-2 text-center">
-                            <p className="text-[8px] font-black text-green-600 uppercase mb-0.5">📤 Saída → Reserva</p>
-                            <p className="text-[11px] font-black text-green-700 font-mono">{fmt(r.dataSaida)}</p>
-                          </div>
-                        </div>
+                        <span className="text-orange-500 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataEntrada)}</span>
+                        <span className="text-gray-300 flex-shrink-0">→</span>
+                        <span className="text-green-600 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataSaida)}</span>
                       </div>
                     ))}
                   </div>
@@ -6101,6 +6286,39 @@ const MainScreen: React.FC<MainScreenProps> = ({
           </div>
         );
       })()}
+
+      {/* Popup Drill-down Produção */}
+      {productionDrillDown && (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/40 p-4" onClick={() => setProductionDrillDown(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className={`p-3 text-white flex items-center justify-between ${productionDrillDown.type === 'man' ? 'bg-orange-500' : 'bg-green-600'}`}>
+              <div>
+                <p className="text-[10px] font-bold uppercase opacity-80">{productionDrillDown.type === 'man' ? 'Em Manutenção' : 'Reserva (Liberadas)'}</p>
+                <h3 className="text-base font-black">{productionDrillDown.mechanic}</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-2xl font-black">{productionDrillDown.bikes.length}</span>
+                <button onClick={() => setProductionDrillDown(null)} className="p-1 hover:bg-white/20 rounded-full ml-2">
+                  <XIcon className="w-4 h-4"/>
+                </button>
+              </div>
+            </div>
+            {/* Lista de bikes */}
+            <div className="p-3 max-h-64 overflow-y-auto">
+              <div className="flex flex-wrap gap-1.5">
+                {productionDrillDown.bikes.map(pat => (
+                  <span key={pat} className={`font-mono font-black text-sm px-2.5 py-1 rounded-lg border ${
+                    productionDrillDown.type === 'man'
+                      ? 'bg-orange-50 border-orange-200 text-orange-700'
+                      : 'bg-green-50 border-green-200 text-green-700'
+                  }`}>{pat}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <MechanicRepairModal isOpen={isMechanicRepairModalOpen} onClose={() => setIsMechanicRepairModalOpen(false)} onConfirm={handleFinalizeMechanicsRepair} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <MechanicSelectionModal isOpen={isMechanicSelectionModalOpen} onClose={() => setIsMechanicSelectionModalOpen(false)} onConfirm={handleMechanicSelectionConfirm} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
