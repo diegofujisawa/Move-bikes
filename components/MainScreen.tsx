@@ -598,7 +598,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
             updated.push({ id: doc.id, ...d });
           }
         });
-        setAlerts(updated);
+        // Deduplica por patrimônio — mantém apenas o mais recente por bike
+        const seen = new Set<string>();
+        const deduped = updated.filter(a => {
+          const key = String(a.patrimonio || a.id);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        setAlerts(deduped);
         // Não atualiza alertCount aqui — será feito pelo sync do Sheets
         // para evitar contagem duplicada
       }, err => console.error('Listener alertas:', err));
@@ -1096,14 +1104,26 @@ const MainScreen: React.FC<MainScreenProps> = ({
             ultimaAtualizacao: serverTimestamp()
           }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
         });
-        // Registra apenas na timeline (Relatório removido conforme solicitação)
+        // Registra na timeline E no relatório de movimentação
+        const trailerLabel = title || 'Carretinha';
         bikesToAdd.forEach(id => {
+          // Timeline (linha do tempo ADM)
           addDoc(collection(db, 'timeline_events'), {
             driverName, bikeNumber: id, 
             type: 'carretinha',
-            observacao: title || 'Carretinha',
+            observacao: trailerLabel,
             timestamp: serverTimestamp(),
             date: localDateStr()
+          }).catch(() => {});
+          // Reports (aparece na busca de movimentação de bike)
+          addDoc(collection(db, 'reports'), {
+            bikeNumber: id,
+            status: 'Carretinha',
+            driverName,
+            observation: `${trailerLabel} — aceita por ${driverName}`,
+            timestamp: serverTimestamp(),
+            type: 'Carretinha',
+            trailerName: trailerLabel,
           }).catch(() => {});
         });
       } else {
@@ -1875,6 +1895,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
         recipient: targetDriverName
       }, 1, true);
 
+      // 2b. Registra no relatório de movimentação — aparece na busca por bike no ADM
+      bikes.forEach((id: string) => {
+        addDoc(collection(db, 'reports'), {
+          bikeNumber: id,
+          status: 'Carretinha',
+          driverName: targetDriverName,
+          observation: `${trailerName} → atribuída a ${targetDriverName} pelo ADM ${driverName}`,
+          timestamp: serverTimestamp(),
+          type: 'Carretinha',
+          trailerName,
+          assignedBy: driverName,
+        }).catch(() => {});
+      });
+
       // 3. Aprova a ação pendente
       await updateDoc(doc(db, 'pending_actions', action.id), {
         status: 'approved',
@@ -2067,12 +2101,32 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const qr = new Html5Qrcode('qr-trailer-reader');
       trailerScannerRef.current = qr;
 
-      await qr.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 220, height: 220 } },
-        (decodedText) => handleTrailerQrSuccess(decodedText),
-        () => {}
-      );
+      // Tenta iniciar com zoom 2x para facilitar leitura — fallback sem zoom
+      const startWithConfig = async (zoom: boolean) => {
+        const cameraConfig = zoom
+          ? { facingMode: 'environment', advanced: [{ zoom: 2.0 }] } as any
+          : { facingMode: 'environment' };
+        await qr.start(
+          cameraConfig,
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          (decodedText) => handleTrailerQrSuccess(decodedText),
+          () => {}
+        );
+      };
+      try {
+        await startWithConfig(true);
+      } catch {
+        // Dispositivo não suporta zoom — inicia sem
+        el.innerHTML = '';
+        const qr2 = new Html5Qrcode('qr-trailer-reader');
+        trailerScannerRef.current = qr2;
+        await qr2.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          (decodedText) => handleTrailerQrSuccess(decodedText),
+          () => {}
+        );
+      }
     } catch (err: any) {
       console.error('Trailer Scanner error:', err);
       const msg = (err.message || String(err));
@@ -2566,7 +2620,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
 
       if (isAdm) {
-        if (d.alerts) setAlerts(d.alerts);
+        if (d.alerts) {
+          // Deduplica por patrimônio — evita duplicatas entre Firebase e Sheets
+          const seen = new Set<string>();
+          const deduped = (d.alerts as any[]).filter((a: any) => {
+            const key = String(a.patrimonio || a.id);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          setAlerts(deduped);
+        }
         if (d.vandalized) setVandalizedBikes(d.vandalized);
         if (d.changeStatusData) setChangeStatusData(d.changeStatusData);
         if (d.adminAlerts) {
@@ -3238,9 +3302,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 {scannerActive ? (
                   <div className="relative overflow-hidden rounded-xl bg-black aspect-square w-full border-2 border-green-500 shadow-lg">
                     <div id="qr-trailer-reader" className="w-full h-full" />
-                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                      <div className="w-44 h-44 border-2 border-green-400/60 rounded-xl" />
-                    </div>
                     <button onClick={stopTrailerScanner} className="absolute top-2 right-2 bg-black/60 text-white p-1.5 rounded-full">
                       <XIcon className="w-4 h-4" />
                     </button>
@@ -4132,15 +4193,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <div id="section-reserva" className="p-4 border rounded-lg bg-green-50 shadow-sm scroll-mt-4">
                 <div className="flex justify-between items-center mb-3">
                   <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
-                  <button 
-                    onClick={() => {
-                      // Abre scanner para qualquer bike na reserva (Sem Carretinha ou não)
-                      startScanner(); // Usa o scanner geral, mas vamos tratar o sucesso
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm transition-all active:scale-95"
-                  >
-                    <QrCodeIcon className="w-4 h-4"/>Escanear para Carretinha
-                  </button>
                 </div>
                 {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (
                   <div className="space-y-4">
@@ -4219,22 +4271,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         </div>
                         {trailer === 'Sem Carretinha' && (
                           <button onClick={() => {
-                            // Calcula próximo número de carretinha (1→2→3→4→1...)
+                            // Sequência diária: 1→2→3→4→1→2→...
+                            // Usa localStorage para lembrar qual foi a última carretinha do dia
                             const MAX_TRAILERS = 4;
-                            const usedNumbers = mechanicsList
-                              .filter(b => b.carretinha && b.carretinha !== 'Sem Carretinha')
-                              .map(b => {
-                                const m = String(b.carretinha).match(/(\d+)$/);
-                                return m ? parseInt(m[1]) : 0;
-                              })
-                              .filter(n => n > 0);
-                            let next = 1;
-                            for (let i = 1; i <= MAX_TRAILERS; i++) {
-                              if (!usedNumbers.includes(i)) { next = i; break; }
-                            }
-                            // Se todos ocupados, reutiliza o 1
+                            const today = localDateStr();
+                            const storageKey = `last_trailer_${driverName}_${today}`;
+                            
+                            let lastNum = 0;
+                            try {
+                              const saved = localStorage.getItem(storageKey);
+                              if (saved) lastNum = parseInt(saved) || 0;
+                            } catch {}
+
+                            // Próximo na sequência — se chegou no 4, volta pro 1
+                            const next = (lastNum % MAX_TRAILERS) + 1;
+
+                            // Persiste para a próxima organização do dia
+                            try {
+                              localStorage.setItem(storageKey, String(next));
+                            } catch {}
+
                             const nextName = `Carretinha ${next}`;
-                            setSelectedBikesForTrailer((bikes as any[]).map(b => b.patrimonio));
                             // Passa direto para handleOrganizeTrailer sem abrir modal de nome
                             handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), nextName);
                           }}
@@ -4834,6 +4891,68 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       ))}
                     </div>
                   </div>
+
+                  {/* Carretinhas Liberadas Hoje */}
+                  {(() => {
+                    // Busca carretinhas que já foram enviadas para motoristas (status assigned ou aprovadas)
+                    const trailersByName: Record<string, { bikes: string[], motorista: string, status: string }> = {};
+                    mechanicsList
+                      .filter(b => b.carretinha && b.carretinha !== 'Sem Carretinha')
+                      .forEach(b => {
+                        const t = b.carretinha;
+                        if (!trailersByName[t]) {
+                          trailersByName[t] = {
+                            bikes: [],
+                            motorista: b.responsavel || b.assignedTo || '—',
+                            status: b.trailerStatus || ''
+                          };
+                        }
+                        trailersByName[t].bikes.push(b.patrimonio);
+                      });
+
+                    const trailers = Object.entries(trailersByName);
+                    if (trailers.length === 0) return null;
+
+                    return (
+                      <div className="bg-white p-3 rounded-lg border shadow-sm mb-3">
+                        <div className="flex justify-between items-center mb-2 border-b pb-1">
+                          <h3 className="font-black text-gray-900 text-sm uppercase flex items-center gap-2">
+                            <TrailerIcon className="w-4 h-4 text-green-600"/>
+                            Carretinhas
+                          </h3>
+                        </div>
+                        <div className="space-y-2">
+                          {trailers.map(([trailerName, data]) => (
+                            <div key={trailerName} className="p-2 bg-gray-50 rounded-lg border">
+                              <div className="flex items-center justify-between mb-1.5">
+                                <span className="text-xs font-black text-gray-700">{trailerName}</span>
+                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase ${
+                                  data.status === 'assigned' ? 'bg-blue-100 text-blue-700' :
+                                  data.status === 'finalized' ? 'bg-orange-100 text-orange-700' :
+                                  'bg-green-100 text-green-700'
+                                }`}>
+                                  {data.status === 'assigned' ? 'Aguard. Aceite' :
+                                   data.status === 'finalized' ? 'Finalizada' :
+                                   'Em Reserva'}
+                                </span>
+                              </div>
+                              {data.motorista && data.motorista !== '—' && (
+                                <p className="text-[10px] text-blue-600 font-bold mb-1">👤 {data.motorista}</p>
+                              )}
+                              <div className="flex flex-wrap gap-1">
+                                {data.bikes.map(pat => (
+                                  <span key={pat} className="px-1.5 py-0.5 bg-green-600 text-white text-[9px] font-black rounded font-mono">
+                                    {pat}
+                                  </span>
+                                ))}
+                              </div>
+                              <p className="text-[9px] text-gray-400 mt-1">{data.bikes.length} bike(s)</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Card por mecânico */}
                   {(() => {
