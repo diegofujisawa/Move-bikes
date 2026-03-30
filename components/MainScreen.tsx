@@ -4317,7 +4317,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
               <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Alterar status' ? 'text-white' : 'text-purple-800'}`}>Alterar status</span>
               <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Alterar status' ? 'text-white' : 'text-purple-600'}`}>
-                {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length}
+                {mechanicsList.filter(b => b.status === 'Alterar Status').length}
               </span>
             </button>
             <button 
@@ -4366,7 +4366,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <div id="section-alterar-status" className="p-4 border rounded-lg bg-purple-50 shadow-sm scroll-mt-4">
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-lg font-bold text-purple-800 flex items-center gap-2"><PlusPlusIcon className="w-5 h-5"/>Alterar Status</h2>
-                  {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length > 0 && (
+                  {mechanicsList.filter(b => b.status === 'Alterar Status').length > 0 && (
                     <button
                       onClick={() => setIsLimparListaConfirmOpen(true)}
                       disabled={isLoading}
@@ -4377,9 +4377,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     </button>
                   )}
                 </div>
-                {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length > 0 ? (
+                {mechanicsList.filter(b => b.status === 'Alterar Status').length > 0 ? (
                   <div className="space-y-2">
-                    {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').map((bike, i) => {
+                    {mechanicsList.filter(b => b.status === 'Alterar Status').map((bike, i) => {
                       const isNotFound = bike.status === 'Não encontrada';
                       return (
                         <div key={`mec-alterar-${bike.patrimonio}-${i}`} 
@@ -5228,7 +5228,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     </div>
                     <div className="grid grid-cols-4 gap-1.5">
                       {[
-                        { l: 'Alterar status', v: mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length, c: 'purple' },
+                        { l: 'Alterar status', v: mechanicsList.filter(b => b.status === 'Alterar Status').length, c: 'purple' },
                         { l: 'Aguardando', v: mechanicsList.filter(b => b.status === 'Aguardando Confirmação').length, c: 'blue' },
                         { l: 'Manutenção', v: mechanicsList.filter(b => b.status === 'Em Manutenção').length, c: 'orange' },
                         { l: 'Reserva', v: mechanicsList.filter(b => b.status === 'Reserva').length, c: 'green' },

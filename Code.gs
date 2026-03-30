@@ -2827,7 +2827,7 @@ function getMechanicsList() {
   const EXIT_STATUSES = new Set([
     'estação', 'estacao', 'não encontrada', 'nao encontrada',
     'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno',
-    'Remanejada'
+    'Remanejada', 'recuperada', 'encontrada', 'localizada'
   ]);
 
   try {
