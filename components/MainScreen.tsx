@@ -305,14 +305,33 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [activeMechanicCategory, setActiveMechanicCategory] = useState<string | null>(null);
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
   const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
+  const [selectedBatteryFilter, setSelectedBatteryFilter] = useState<'asc' | 'desc' | 'Todos'>('Todos');
   const [mechanicSummaryPeriod, setMechanicSummaryPeriod] = useState<'diario'|'semanal'|'mensal'>('diario');
   const [productionDrillDown, setProductionDrillDown] = useState<{ mechanic: string; type: 'man' | 'res'; bikes: string[] } | null>(null);
+  const [isMechanicHistoryOpen, setIsMechanicHistoryOpen] = useState(false);
+  const [mechanicHistory, setMechanicHistory] = useState<any[]>([]);
+  const [isMechanicHistoryLoading, setIsMechanicHistoryLoading] = useState(false);
+  const [mechanicHistoryFilter, setMechanicHistoryFilter] = useState({ mechanic: 'Todos', date: '' });
+  const [isTechnicaHistoryOpen, setIsTechnicaHistoryOpen] = useState(false);
+  const [technicaHistory, setTechnicaHistory] = useState<any[]>([]);
+  const [isTechnicaHistoryLoading, setIsTechnicaHistoryLoading] = useState(false);
+  const [technicaHistoryFilter, setTechnicaHistoryFilter] = useState({ technician: 'Todos', date: '' });
   const [bikeFoundModal, setBikeFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [mechanicNotFoundModal, setMechanicNotFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string, mechanicName?: string } | null>(null);
   const [manualMechanicModal, setManualMechanicModal] = useState<{ isOpen: boolean; bikePat: string; targetStatus: string }>({ isOpen: false, bikePat: '', targetStatus: '' });
   const [manualMechanicName, setManualMechanicName] = useState('');
   const [isVandalizedConfirmOpen, setIsVandalizedConfirmOpen] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
+  const [vandalizedSelected, setVandalizedSelected] = useState<Set<string>>(new Set());
+  const [vandalizedRoom, setVandalizedRoom] = useState<string>('');
+  const VANDALIZED_OPTIONS = [
+    'Quadro Vandalizado', 'Pezinho Quebrado',
+    'Cesto/Placa Quebrada', 'Ferradura Vandalizada',
+    'Rodas Vandalizadas', 'Guidão Quebrado',
+    'Garfo Danificado', 'Locker Danificado',
+    'Sem Locker',
+  ];
+  const VANDALIZED_ROOMS = ['SALA 2', 'SALA 3', 'SALA 4'];
   const [isZerarListaConfirmOpen, setIsZerarListaConfirmOpen] = useState(false);
   const [trailerQrModal, setTrailerQrModal] = useState<{
     isOpen: boolean;
@@ -1098,14 +1117,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
             ultimaAtualizacao: serverTimestamp()
           }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
         });
-        // Registra apenas na timeline (Relatório removido conforme solicitação)
+        // Registra na timeline e no relatório de movimentação
+        const trailerLabel = title || 'Carretinha';
         bikesToAdd.forEach(id => {
           addDoc(collection(db, 'timeline_events'), {
-            driverName, bikeNumber: id, 
+            driverName, bikeNumber: id,
             type: 'carretinha',
-            observacao: title || 'Carretinha',
+            observacao: trailerLabel,
             timestamp: serverTimestamp(),
             date: localDateStr()
+          }).catch(() => {});
+          addDoc(collection(db, 'reports'), {
+            bikeNumber: id,
+            status: 'Carretinha',
+            driverName,
+            observation: `${trailerLabel} — aceita por ${driverName}`,
+            timestamp: serverTimestamp(),
+            type: 'Carretinha',
+            trailerName: trailerLabel,
           }).catch(() => {});
         });
       } else {
@@ -1378,6 +1407,110 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
+  const fetchMechanicHistory = async () => {
+    setIsMechanicHistoryLoading(true);
+    try {
+      // Busca reports de Reparo (saída) e Mecânica (entrada) do Firebase
+      const { getDocs: _gd, query: _q, where: _w, collection: _col, orderBy: _ob } = await import('firebase/firestore');
+      const [snapReparo, snapEntrada] = await Promise.all([
+        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Reparo'))),
+        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Mecânica'))),
+      ]);
+
+      // Indexa entradas por bikeNumber — pega a mais recente antes da saída
+      const entradas: Record<string, any[]> = {};
+      snapEntrada.docs.forEach(d => {
+        const rec = d.data();
+        const pat = String(rec.bikeNumber);
+        if (!entradas[pat]) entradas[pat] = [];
+        entradas[pat].push(rec);
+      });
+
+      const records = snapReparo.docs.map(d => {
+        const rec = { id: d.id, ...d.data() } as any;
+        const pat = String(rec.bikeNumber);
+        const tsOut = rec.timestamp?.toMillis?.() || 0;
+        const entradasBike = (entradas[pat] || [])
+          .filter(e => (e.dataEntrada?.toMillis?.() || e.timestamp?.toMillis?.() || 0) <= tsOut)
+          .sort((a: any, b: any) => (b.dataEntrada?.toMillis?.() || b.timestamp?.toMillis?.() || 0) - (a.dataEntrada?.toMillis?.() || a.timestamp?.toMillis?.() || 0));
+        const entrada = entradasBike[0];
+        return {
+          ...rec,
+          mecanico: rec.mecanico || rec.driverName || '—',
+          dataEntrada: entrada?.dataEntrada || entrada?.timestamp || null,
+          dataSaida: rec.timestamp,
+        };
+      }).sort((a: any, b: any) => (b.dataSaida?.toMillis?.() || 0) - (a.dataSaida?.toMillis?.() || 0));
+
+      setMechanicHistory(records);
+    } catch (e) {
+      console.error('fetchMechanicHistory:', e);
+    } finally {
+      setIsMechanicHistoryLoading(false);
+    }
+  };
+
+  const fetchTechnicaHistory = async () => {
+    setIsTechnicaHistoryLoading(true);
+    try {
+      const { getDocs: _gd, query: _q, where: _w, collection: _col } = await import('firebase/firestore');
+      // Busca registros type Técnica — inclui Aguardando, Recebida, Devolvida
+      const [snapTec, snapMec] = await Promise.all([
+        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Técnica'))),
+        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Reparo'))),
+      ]);
+
+      // Indexa reparos por bike para cruzar com devolução
+      const reparos: Record<string, any> = {};
+      snapMec.docs.forEach(d => {
+        const rec = d.data();
+        const pat = String(rec.bikeNumber);
+        const ts = rec.timestamp?.toMillis?.() || 0;
+        if (!reparos[pat] || ts > (reparos[pat].timestamp?.toMillis?.() || 0)) {
+          reparos[pat] = rec;
+        }
+      });
+
+      // Monta histórico a partir dos registros Técnica de saída (Devolvida)
+      const devolvidas = snapTec.docs
+        .map(d => ({ id: d.id, ...d.data() } as any))
+        .filter(r => (r.status || '').includes('Devolvida') || (r.observation || '').includes('finalizada'));
+
+      // Para cada devolução, busca a entrada (Recebida)
+      const entradas: Record<string, any[]> = {};
+      snapTec.docs.forEach(d => {
+        const rec = d.data();
+        if ((rec.status || '').includes('Em Técnica') || (rec.observation || '').includes('Recebida')) {
+          const pat = String(rec.bikeNumber);
+          if (!entradas[pat]) entradas[pat] = [];
+          entradas[pat].push(rec);
+        }
+      });
+
+      const records = devolvidas.map(rec => {
+        const pat = String(rec.bikeNumber);
+        const tsOut = rec.timestamp?.toMillis?.() || 0;
+        const entrada = (entradas[pat] || [])
+          .filter(e => (e.timestamp?.toMillis?.() || 0) <= tsOut)
+          .sort((a: any, b: any) => (b.timestamp?.toMillis?.() || 0) - (a.timestamp?.toMillis?.() || 0))[0];
+        return {
+          ...rec,
+          tecnico: rec.mecanico || rec.driverName || '—',
+          dataEntrada: entrada?.timestamp || null,
+          dataSaida: rec.timestamp,
+          treatment: rec.treatment || '—',
+          originalMechanic: rec.originalMechanic || '—',
+        };
+      }).sort((a: any, b: any) => (b.dataSaida?.toMillis?.() || 0) - (a.dataSaida?.toMillis?.() || 0));
+
+      setTechnicaHistory(records);
+    } catch (e) {
+      console.error('fetchTechnicaHistory:', e);
+    } finally {
+      setIsTechnicaHistoryLoading(false);
+    }
+  };
+
   const handleBikeMovementSearch = async () => {
     if (!bikeSearchTerm.trim()) return;
     setIsBikeSearchLoading(true);
@@ -1519,6 +1652,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       try {
         // 1. Move no backend imediatamente — evita que o refreshAll reverta o estado
         await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {});
+        addDoc(collection(db, 'reports'), {
+          bikeNumber: bikeId, status: 'Aguardando Manutenção',
+          driverName, mecanico: driverName,
+          observation: `Enviada para Aguardando Manutenção por ${driverName}`,
+          timestamp: serverTimestamp(), type: 'Mecânica'
+        }).catch(() => {});
 
         // 2. Agrupa num único doc no Firebase — busca doc pendente existente antes de criar novo
         const { arrayUnion, getDocs: _getDocs, query: _query, where: _where } = await import('firebase/firestore');
@@ -1607,6 +1746,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setDoc(doc(db, 'bikes', bikePat), {
         status: 'Aguardando Técnica', responsavel: finalMechanic, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes:', e.code));
+      addDoc(collection(db, 'reports'), {
+        bikeNumber: bikePat, status: 'Aguardando Técnica',
+        driverName: finalMechanic, mecanico: finalMechanic,
+        observation: `Enviada para Técnica por ${finalMechanic}`,
+        timestamp: serverTimestamp(), type: 'Técnica'
+      }).catch(() => {});
       // Backend — fire-and-forget, não bloqueia UI
       apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: finalMechanic }, 1, false).catch(() => {});
     } catch (err: any) {
@@ -1642,6 +1787,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setDoc(doc(db, 'bikes', bikeNumber), {
         status: 'Em Técnica', responsavel: technicianName, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase]', e.code));
+      addDoc(collection(db, 'reports'), {
+        bikeNumber, status: 'Em Técnica',
+        driverName: technicianName, mecanico: technicianName,
+        observation: `Recebida pela Técnica — ${technicianName}`,
+        timestamp: serverTimestamp(), type: 'Técnica'
+      }).catch(() => {});
       await apiCall({ action: 'confirmTechnicaReceipt', bikeNumber, technicianName }, 1, false);
     } catch (err: any) {
       setError('Erro: ' + err.message);
@@ -1668,6 +1819,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setDoc(doc(db, 'bikes', bikeNumber), {
         status: 'Em Manutenção', responsavel: originalMechanic || null, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase]', e.code));
+      addDoc(collection(db, 'reports'), {
+        bikeNumber, status: 'Devolvida da Técnica',
+        driverName, mecanico: driverName,
+        treatment, originalMechanic,
+        observation: `Técnica finalizada por ${driverName} — ${treatment}. Devolvida para ${originalMechanic || 'Mecânica'}`,
+        timestamp: serverTimestamp(), type: 'Técnica'
+      }).catch(() => {});
       await apiCall({
         action: 'finalizeTechnicaRepair', bikeNumber,
         technicianName: driverName, treatment, originalMechanic
@@ -1679,32 +1837,39 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally { setIsLoading(false); }
   };
 
-  const handleMarkAsVandalizedNoRecovery = async (bikePat: string) => {
+  const handleMarkAsVandalizedNoRecovery = async (bikePat: string, treatment: string, room: string) => {
     setIsLoading(true);
+    const observation = [treatment, room ? `Local: ${room}` : ''].filter(Boolean).join(' | ');
     try {
       setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
-      const treatment = 'Vandalizada sem recuperação';
-      await updateDoc(doc(db, 'bikes', bikePat), { 
+      updateDoc(doc(db, 'bikes', bikePat), { 
         status: 'Vandalizada', 
-        responsavel: null, 
-        observacao: treatment, 
+        responsavel: driverName, 
+        observacao: observation,
+        localFinal: room || null,
         ultimaAtualizacao: serverTimestamp() 
-      });
-      await addDoc(collection(db, 'reports'), { 
+      }).catch(() => {});
+      addDoc(collection(db, 'reports'), { 
         bikeNumber: bikePat, 
         status: 'Vandalizada', 
-        driverName, 
-        treatment, 
+        driverName,
+        mecanico: driverName,
+        treatment,
+        localFinal: room || null,
+        observation,
+        localidade: room || null,
         timestamp: serverTimestamp(), 
         type: 'Vandalizada' 
-      });
-      await apiCall({ action: 'markAsVandalizedNoRecovery', bikeNumber: bikePat, mechanicName: driverName, treatment }, 1, true);
-      refreshAll(true);
+      }).catch(() => {});
+      apiCall({ action: 'markAsVandalizedNoRecovery', bikeNumber: bikePat, mechanicName: driverName, treatment: observation }, 1, true).catch(() => {});
+      setSuccessMessage(`Bike ${bikePat} marcada como Vandalizada${room ? ` — ${room}` : ''}.`);
     } catch (err: any) {
       console.error('Erro ao marcar como vandalizada:', err);
     } finally {
       setIsLoading(false);
       setIsVandalizedConfirmOpen(null);
+      setVandalizedSelected(new Set());
+      setVandalizedRoom('');
     }
   };
 
@@ -1768,7 +1933,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicRepairModalOpen(false);
     try {
       updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
-      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Em Estação', driverName, treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(e => console.warn('[Firebase] reports write:', e.code));
+      addDoc(collection(db, 'reports'), {
+        bikeNumber, status: 'Reserva',
+        driverName: mechanicName, mecanico: mechanicName, treatment,
+        observation: `Reparo finalizado por ${mechanicName} — ${treatment}`,
+        dataEntrada: selectedMechanicBike?.dataEntrada || null,
+        timestamp: serverTimestamp(), type: 'Reparo'
+      }).catch(e => console.warn('[Firebase] reports write:', e.code));
       apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName, treatment }, 1, true).catch(() => {});
       setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
     } catch (err: any) {
@@ -3716,11 +3887,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
             : ['Em Manutenção', 'Reserva'];
           const byMechanic: Record<string, {manutencao: number, reserva: number, bikesMan: string[], bikesRes: string[]}> = {};
           sourceList.filter(b => activeStatuses.includes(b.status)).forEach(b => {
-            const m = b.mecanico || '—';
+            // Técnica: usa responsável (técnico que recebeu) para Em Técnica,
+            // e mecanico (origem) para Aguardando Técnica
+            const isMainStatus = isTecnica ? b.status === 'Em Técnica' : b.status === 'Em Manutenção';
+            const m = isTecnica && isMainStatus
+              ? (b.responsavel || b.tecnico || b.mecanico || '—')
+              : (b.mecanico || '—');
             if (!byMechanic[m]) byMechanic[m] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
             const entryDate = b.dataEntrada ? new Date(b.dataEntrada) : null;
             if (!entryDate || entryDate >= cutoff) {
-              const isMainStatus = isTecnica ? b.status === 'Em Técnica' : b.status === 'Em Manutenção';
               if (isMainStatus) { byMechanic[m].manutencao++; byMechanic[m].bikesMan.push(b.patrimonio); }
               else { byMechanic[m].reserva++; byMechanic[m].bikesRes.push(b.patrimonio); }
             }
@@ -3993,7 +4168,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         {/* ÍCONES DE ATALHO MECÂNICA */}
         {isMecanica && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-6">
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-6">
             <button 
               onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Alterar status' ? null : 'Alterar status')}
               className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Alterar status' ? 'bg-purple-600 border-purple-700 text-white' : 'bg-purple-50 border-purple-100 hover:bg-purple-100'}`}
@@ -4041,6 +4216,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Reserva' ? 'text-white' : 'text-green-600'}`}>
                 {mechanicsList.filter(b => b.status === 'Reserva').length}
               </span>
+            </button>
+            {/* Ícone Histórico */}
+            <button
+              onClick={() => { setIsMechanicHistoryOpen(true); fetchMechanicHistory(); }}
+              className="flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 bg-gray-50 border-gray-200 hover:bg-gray-100"
+            >
+              <div className="p-1.5 rounded-full mb-1 bg-gray-700 text-white">
+                <CalendarIcon className="w-4 h-4" />
+              </div>
+              <span className="text-[8px] font-bold text-center leading-tight h-5 flex items-center text-gray-800">Histórico</span>
+              <span className="mt-0.5 text-[10px] font-black text-gray-500">—</span>
             </button>
           </div>
         )}
@@ -4152,28 +4338,55 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
                   <h2 className="text-lg font-bold text-orange-800 flex items-center gap-2"><BicycleIcon className="w-5 h-5"/>Mecânica - Em Manutenção</h2>
                   
-                  {/* Filtro por Mecânico */}
-                  <div className="flex items-center gap-2">
-                    <label htmlFor="mechanic-filter" className="text-xs font-bold text-gray-600">Filtrar:</label>
-                    <select 
-                      id="mechanic-filter"
-                      value={selectedMechanicFilter}
-                      onChange={(e) => setSelectedMechanicFilter(e.target.value)}
-                      className="text-xs p-1 border rounded bg-white font-semibold text-gray-700 focus:ring-1 focus:ring-orange-500 outline-none"
-                    >
-                      <option value="Todos">Todos os Mecânicos</option>
-                      {Array.from(new Set(mechanicsList.filter(b => b.status === 'Em Manutenção' && b.mecanico).map(b => b.mecanico))).sort().map(name => (
-                        <option key={name} value={name}>{name}</option>
-                      ))}
-                    </select>
+                  {/* Filtros */}
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-2">
+                      <label htmlFor="mechanic-filter" className="text-xs font-bold text-gray-600 w-12">Mecân.:</label>
+                      <select 
+                        id="mechanic-filter"
+                        value={selectedMechanicFilter}
+                        onChange={(e) => setSelectedMechanicFilter(e.target.value)}
+                        className="text-xs p-1 border rounded bg-white font-semibold text-gray-700 focus:ring-1 focus:ring-orange-500 outline-none"
+                      >
+                        <option value="Todos">Todos os Mecânicos</option>
+                        {Array.from(new Set(mechanicsList.filter(b => b.status === 'Em Manutenção' && b.mecanico).map(b => b.mecanico))).sort().map(name => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs font-bold text-gray-600 w-12">Bateria:</label>
+                      <button
+                        onClick={() => setSelectedBatteryFilter(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? 'Todos' : 'asc')}
+                        className={`text-xs px-2 py-1 rounded border font-bold transition-all ${
+                          selectedBatteryFilter === 'desc' ? 'bg-orange-500 text-white border-orange-500' :
+                          selectedBatteryFilter === 'asc'  ? 'bg-blue-500 text-white border-blue-500' :
+                          'bg-white text-gray-500 border-gray-300 hover:border-gray-400'
+                        }`}
+                      >
+                        {selectedBatteryFilter === 'desc' ? '🔋 Maior → Menor' :
+                         selectedBatteryFilter === 'asc'  ? '🔋 Menor → Maior' :
+                         '🔋 Ordenar'}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
                 {(() => {
-                  const filteredBikes = mechanicsList.filter(b => 
-                    b.status === 'Em Manutenção' && 
-                    (selectedMechanicFilter === 'Todos' || b.mecanico === selectedMechanicFilter)
-                  );
+                  const getBatPct = (b: any) => {
+                    const raw = b.bateria !== undefined ? Number(b.bateria) : undefined;
+                    return raw !== undefined ? (raw <= 1 && raw > 0 ? Math.round(raw * 100) : Math.round(raw)) : -1;
+                  };
+                  const filteredBikes = mechanicsList
+                    .filter(b =>
+                      b.status === 'Em Manutenção' &&
+                      (selectedMechanicFilter === 'Todos' || b.mecanico === selectedMechanicFilter)
+                    )
+                    .sort((a, b) => {
+                      if (selectedBatteryFilter === 'desc') return getBatPct(b) - getBatPct(a);
+                      if (selectedBatteryFilter === 'asc')  return getBatPct(a) - getBatPct(b);
+                      return 0;
+                    });
                   
                   return filteredBikes.length > 0 ? (
                     <div className="space-y-2">
@@ -4352,7 +4565,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         {/* ÍCONES DE ATALHO TÉCNICA */}
         {isTecnica && (
-          <div className="grid grid-cols-2 gap-2 mb-6 mt-6">
+          <div className="grid grid-cols-3 gap-2 mb-6 mt-6">
             <button
               onClick={() => setActiveTechnicaCategory(activeTechnicaCategory === 'Aguardando' ? null : 'Aguardando')}
               className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeTechnicaCategory === 'Aguardando' ? 'bg-blue-600 border-blue-700 text-white' : 'bg-blue-50 border-blue-100 hover:bg-blue-100'}`}
@@ -4376,6 +4589,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <span className={`mt-0.5 text-[10px] font-black ${activeTechnicaCategory === 'EmTecnica' ? 'text-white' : 'text-orange-600'}`}>
                 {technicaList.filter(b => b.status === 'Em Técnica').length}
               </span>
+            </button>
+            {/* Histórico Técnica */}
+            <button
+              onClick={() => { setIsTechnicaHistoryOpen(true); fetchTechnicaHistory(); }}
+              className="flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 bg-gray-50 border-gray-200 hover:bg-gray-100"
+            >
+              <div className="p-1.5 rounded-full mb-1 bg-gray-700 text-white">
+                <CalendarIcon className="w-4 h-4" />
+              </div>
+              <span className="text-[8px] font-bold text-center leading-tight h-5 flex items-center text-gray-800">Histórico</span>
+              <span className="mt-0.5 text-[10px] font-black text-gray-500">—</span>
             </button>
           </div>
         )}
@@ -5104,29 +5328,47 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div className="space-y-2">
                       {bikeSearchResult.map((record: any, i: number) => {
                         const statusLow = (record.status || '').toLowerCase();
-                        const isMecanicaRecord = record.origem === 'mecanica';
+                        const isMecanicaRecord = record.origem === 'mecanica' || record.type === 'Mecânica' || record.type === 'Reparo';
+                        const isTecnicaRecord  = record.type === 'Técnica';
+                        const isCarretinha     = record.type === 'Carretinha';
                         const isRecolhida   = statusLow === 'recolhida' || statusLow === 'filial';
-                        const isEstacao     = statusLow === 'estação' || statusLow === 'estacao';
+                        const isEstacao     = statusLow === 'estação' || statusLow === 'estacao' || statusLow === 'em estação';
                         const isVandalizada = statusLow === 'vandalizada';
                         const isNaoEnc      = statusLow.includes('não encontrada') || statusLow.includes('nao encontrada');
-                        const isMec         = statusLow.includes('manutenção') || statusLow.includes('manutencao') || statusLow === 'em manutenção';
-                        const isReserva     = statusLow === 'reserva' || statusLow.includes('reparo finalizado');
-                        const isRemanejada  = statusLow === 'remanejada';
+                        const isMec         = statusLow.includes('manutenção') || statusLow.includes('manutencao') || statusLow === 'em manutenção' || statusLow === 'aguardando manutenção';
+                        // Reserva = saiu da mecânica (type Reparo ou status reserva/remanejada)
+                        // Estação = motorista entregou a bike na estação (não deve virar Reserva)
+                        const isReserva     = record.type === 'Reparo'
+                          || statusLow === 'reserva'
+                          || statusLow === 'remanejada'
+                          || statusLow.includes('reparo finalizado');
+                        const isEstacaoMot  = statusLow === 'em estação' || statusLow === 'estação' || statusLow === 'estacao';
+                        const isTec         = statusLow.includes('técnica') || statusLow.includes('tecnica');
+
+                        // Label exibido
+                        const displayLabel = isReserva ? 'Reserva'
+                          : isEstacaoMot ? 'Estação'
+                          : record.status;
 
                         const badgeClass = isRecolhida ? 'bg-green-700 text-white' :
                           isEstacao ? 'bg-indigo-500 text-white' :
                           isVandalizada || isNaoEnc ? 'bg-red-500 text-white' :
                           isMec ? 'bg-orange-500 text-white' :
                           isReserva ? 'bg-green-500 text-white' :
-                          isRemanejada ? 'bg-teal-500 text-white' :
+                          isTec ? 'bg-blue-500 text-white' :
+                          isCarretinha ? 'bg-purple-500 text-white' :
                           'bg-gray-400 text-white';
 
+                        const borderColor = isCarretinha ? 'border-l-purple-400' :
+                          isTecnicaRecord ? 'border-l-blue-400' :
+                          isMecanicaRecord ? 'border-l-orange-400' : 'border-l-gray-300';
+
                         return (
-                          <div key={i} className={`bg-white border rounded-lg p-2.5 shadow-sm ${isMecanicaRecord ? 'border-l-4 border-l-orange-400' : 'border-l-4 border-l-blue-300'}`}>
+                          <div key={i} className={`bg-white border rounded-lg p-2.5 shadow-sm border-l-4 ${borderColor}`}>
                             <div className="flex items-start justify-between gap-2 mb-1.5">
                               <div className="flex items-center gap-1.5">
                                 <span className={`px-2 py-0.5 text-[9px] font-black uppercase rounded ${badgeClass}`}>
-                                  {record.status}
+                                  {displayLabel}
                                 </span>
                                 {isMecanicaRecord && (
                                   <span className="px-1.5 py-0.5 text-[8px] font-bold bg-orange-50 text-orange-500 border border-orange-200 rounded">🔧 Mecânica</span>
@@ -5134,16 +5376,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               </div>
                               <span className="text-[9px] text-gray-800 font-mono font-bold whitespace-nowrap">{record.timestamp}</span>
                             </div>
-                            {record.motorista && (
+                            {/* Responsável */}
+                            {(record.mecanico || record.motorista || record.driverName) && (
                               <p className="text-[10px] font-semibold text-gray-700">
-                                {isMecanicaRecord ? '🔧' : '👤'} {record.motorista}
+                                {isTecnicaRecord ? '🔬' : isCarretinha ? '🚌' : isMecanicaRecord ? '🔧' : '👤'}{' '}
+                                {record.mecanico || record.motorista || record.driverName}
                               </p>
                             )}
-                            {record.observacao && (
+                            {/* Observação / tratativa */}
+                            {record.observation && (
+                              <p className="text-[10px] text-gray-500 mt-0.5">📝 {record.observation}</p>
+                            )}
+                            {!record.observation && record.observacao && (
                               <p className="text-[10px] text-gray-500 mt-0.5">📝 {record.observacao}</p>
                             )}
+                            {record.treatment && (
+                              <p className="text-[10px] text-gray-500 mt-0.5">🛠 {record.treatment}</p>
+                            )}
                             {record.bateria && (() => {
-                              // Converte 0.3 → 30%, 0.8 → 80%, já 80% fica 80%
                               const raw = String(record.bateria).replace(',', '.');
                               const num = parseFloat(raw);
                               const pct = !isNaN(num) ? (num <= 1 && num > 0 ? Math.round(num * 100) : Math.round(num)) : null;
@@ -5151,8 +5401,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 <p className="text-[10px] text-gray-500 mt-0.5">🔋 {pct}%</p>
                               ) : null;
                             })()}
-                            {record.localidade && (
-                              <p className="text-[10px] text-gray-400 mt-0.5">📍 {record.localidade}</p>
+                            {/* Local final — vandalizada */}
+                            {(record.localFinal || record.localidade) && (
+                              <p className="text-[10px] text-red-600 font-bold mt-0.5">
+                                📍 Local final: {record.localFinal || record.localidade}
+                              </p>
+                            )}
+                            {/* Carretinha */}
+                            {record.trailerName && (
+                              <p className="text-[10px] text-purple-600 font-bold mt-0.5">🚌 {record.trailerName}</p>
                             )}
 
                             {/* Botões de Ação Manual (Apenas Perfil Mecânica) */}
@@ -5904,30 +6161,91 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       {/* Modal de Confirmação "Bike Vandalizada" */}
       {isVandalizedConfirmOpen?.isOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
-            <div className="flex flex-col items-center text-center">
-              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
-                <AlertTriangleIcon size={32} className="text-red-600" />
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col max-h-[90vh] overflow-hidden">
+            {/* Header */}
+            <div className="bg-red-600 p-4 text-white flex-shrink-0">
+              <p className="text-xs font-bold uppercase opacity-80">Finalizar como Vandalizada</p>
+              <h2 className="text-lg font-black">Bike {isVandalizedConfirmOpen.bikePat}</h2>
+            </div>
+
+            {/* Opções de dano */}
+            <div className="flex-1 overflow-y-auto p-4">
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">Motivo(s) da vandalização</p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {VANDALIZED_OPTIONS.map(opt => {
+                  const selected = vandalizedSelected.has(opt);
+                  return (
+                    <button key={opt}
+                      onClick={() => setVandalizedSelected(prev => {
+                        const next = new Set(prev);
+                        if (next.has(opt)) next.delete(opt); else next.add(opt);
+                        return next;
+                      })}
+                      className={`text-left px-2.5 py-2 rounded-lg border-2 font-bold text-xs transition-all active:scale-95 flex items-center gap-2 ${
+                        selected ? 'bg-red-50 border-red-400 text-red-700' : 'bg-white border-gray-200 text-gray-500 hover:border-red-200'
+                      }`}
+                    >
+                      <span className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 text-[9px] font-black ${
+                        selected ? 'bg-red-500 border-red-500 text-white' : 'border-gray-300'
+                      }`}>{selected ? '✓' : ''}</span>
+                      {opt}
+                    </button>
+                  );
+                })}
               </div>
-              <h2 className="text-xl font-black text-gray-800 uppercase mb-2">Bike Vandalizada?</h2>
-              <p className="text-sm text-gray-500 mb-6">
-                Marcar a bicicleta <span className="font-bold text-gray-800">{isVandalizedConfirmOpen.bikePat}</span> como <span className="font-bold text-red-600 uppercase">Vandalizada sem recuperação</span>?
-              </p>
-              <div className="grid grid-cols-2 gap-3 w-full">
+
+              {/* Destino */}
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mt-4 mb-2">Destino da bike</p>
+              <div className="grid grid-cols-3 gap-2">
+                {VANDALIZED_ROOMS.map(room => (
+                  <button key={room}
+                    onClick={() => setVandalizedRoom(prev => prev === room ? '' : room)}
+                    className={`py-2.5 rounded-xl border-2 font-black text-xs transition-all active:scale-95 ${
+                      vandalizedRoom === room
+                        ? 'bg-gray-800 border-gray-800 text-white'
+                        : 'bg-white border-gray-200 text-gray-600 hover:border-gray-400'
+                    }`}
+                  >
+                    {room}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t flex-shrink-0 space-y-2">
+              {(vandalizedSelected.size > 0 || vandalizedRoom) && (
+                <p className="text-[10px] text-red-600 font-bold text-center">
+                  {vandalizedSelected.size > 0 ? `${vandalizedSelected.size} motivo(s) selecionado(s)` : ''}
+                  {vandalizedSelected.size > 0 && vandalizedRoom ? ' · ' : ''}
+                  {vandalizedRoom || ''}
+                </p>
+              )}
+              <div className="flex gap-2">
                 <button
-                  onClick={() => setIsVandalizedConfirmOpen(null)}
-                  disabled={isLoading}
-                  className="py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all disabled:opacity-50"
-                >
-                  Cancelar
-                </button>
+                  onClick={() => {
+                    setIsVandalizedConfirmOpen(null);
+                    setVandalizedSelected(new Set());
+                    setVandalizedRoom('');
+                  }}
+                  className="flex-1 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase hover:bg-gray-200"
+                >Cancelar</button>
                 <button
-                  onClick={() => handleMarkAsVandalizedNoRecovery(isVandalizedConfirmOpen.bikePat)}
+                  onClick={() => {
+                    const treatment = vandalizedSelected.size > 0
+                      ? Array.from(vandalizedSelected).join(', ')
+                      : 'Vandalizada sem recuperação';
+                    handleMarkAsVandalizedNoRecovery(
+                      isVandalizedConfirmOpen!.bikePat,
+                      treatment,
+                      vandalizedRoom
+                    );
+                  }}
                   disabled={isLoading}
-                  className="py-3 bg-red-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-red-200 hover:bg-red-700 active:scale-95 transition-all disabled:opacity-50"
+                  className="flex-1 py-2.5 bg-red-600 text-white rounded-xl font-bold text-xs uppercase shadow-lg hover:bg-red-700 active:scale-95 disabled:bg-gray-300 transition-all"
                 >
-                  Confirmar
+                  {isLoading ? '...' : 'Confirmar'}
                 </button>
               </div>
             </div>
@@ -5939,6 +6257,206 @@ const MainScreen: React.FC<MainScreenProps> = ({
       <VehicleSwitchModal isOpen={isVehicleModalOpen} onClose={() => setIsVehicleModalOpen(false)} onSwitch={(p, km) => onUpdateUser({ plate: p, kmInicial: km })} driverName={driverName} currentPlate={plate}/>
       <AdminAlerts isOpen={isAdminAlertsOpen} onClose={() => setIsAdminAlertsOpen(false)} adminName={driverName}/>
       <ReporModal isOpen={isReporModalOpen} onClose={() => setIsReporModalOpen(false)} data={reporData} isLoading={isReporLoading}/>
+      {/* Modal Histórico Técnica */}
+      {isTechnicaHistoryOpen && (() => {
+        const fmt = (ts: any) => {
+          if (!ts) return '—';
+          const d = ts.toDate ? ts.toDate() : new Date(ts);
+          if (isNaN(d.getTime())) return '—';
+          return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+        };
+        const uniqueTechs = ['Todos', ...Array.from(new Set(technicaHistory.map(r => r.tecnico).filter(Boolean))).sort()];
+        const filtered = technicaHistory.filter(r => {
+          const ts = r.dataSaida?.toDate ? r.dataSaida.toDate() : new Date(r.dataSaida || 0);
+          const recDate = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')}`;
+          const matchDate = technicaHistoryFilter.date ? recDate === technicaHistoryFilter.date : true;
+          const matchTech = technicaHistoryFilter.technician === 'Todos' || r.tecnico === technicaHistoryFilter.technician;
+          return matchDate && matchTech;
+        });
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh] overflow-hidden">
+              <div className="bg-blue-900 p-4 text-white flex items-center justify-between flex-shrink-0">
+                <div className="flex items-center gap-2">
+                  <CalendarIcon className="w-5 h-5"/>
+                  <div>
+                    <h2 className="text-base font-black">Histórico da Técnica</h2>
+                    <p className="text-[10px] opacity-60">Bikes analisadas e devolvidas</p>
+                  </div>
+                </div>
+                <button onClick={() => setIsTechnicaHistoryOpen(false)} className="p-1 hover:bg-white/20 rounded-full">
+                  <XIcon className="w-5 h-5"/>
+                </button>
+              </div>
+              <div className="p-3 border-b bg-gray-50 flex gap-2 flex-shrink-0 flex-wrap">
+                <div className="flex-1 min-w-[120px]">
+                  <label className="text-[9px] font-black text-gray-400 uppercase block mb-1">Técnico</label>
+                  <select
+                    value={technicaHistoryFilter.technician}
+                    onChange={e => setTechnicaHistoryFilter(prev => ({ ...prev, technician: e.target.value }))}
+                    className="w-full text-xs p-1.5 border rounded-lg bg-white font-bold text-gray-700 outline-none"
+                  >
+                    {uniqueTechs.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div className="flex-1 min-w-[130px]">
+                  <label className="text-[9px] font-black text-gray-400 uppercase block mb-1">Data de Saída</label>
+                  <input type="date" value={technicaHistoryFilter.date} max={localDateStr()}
+                    onChange={e => setTechnicaHistoryFilter(prev => ({ ...prev, date: e.target.value }))}
+                    className="w-full text-xs p-1.5 border rounded-lg bg-white font-bold text-gray-700 outline-none"
+                  />
+                </div>
+                <div className="flex items-end gap-1">
+                  <button onClick={() => setTechnicaHistoryFilter({ technician: 'Todos', date: localDateStr() })}
+                    className="px-2 py-1.5 bg-gray-200 text-gray-600 text-[10px] font-bold rounded-lg hover:bg-gray-300 whitespace-nowrap">Hoje</button>
+                  <button onClick={() => setTechnicaHistoryFilter(prev => ({ ...prev, date: '' }))}
+                    className="px-2 py-1.5 bg-gray-100 text-gray-500 text-[10px] font-bold rounded-lg hover:bg-gray-200 whitespace-nowrap">Tudo</button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3">
+                {isTechnicaHistoryLoading ? (
+                  <div className="text-center py-10 text-gray-400 text-sm">Carregando...</div>
+                ) : filtered.length === 0 ? (
+                  <div className="text-center py-10 text-gray-400 text-sm italic">Nenhum registro encontrado.</div>
+                ) : (
+                  <div className="space-y-1">
+                    {filtered.map((r, i) => (
+                      <div key={r.id || i} className="flex items-center gap-1.5 px-2 py-1.5 bg-white border border-gray-100 rounded-lg text-[10px]">
+                        <span className="font-black text-gray-800 font-mono w-9 flex-shrink-0">{r.bikeNumber}</span>
+                        <span className="text-blue-700 font-bold w-14 truncate flex-shrink-0" title={r.tecnico}>{r.tecnico}</span>
+                        <span className="text-gray-500 flex-1 truncate min-w-0" title={r.treatment}>{r.treatment}</span>
+                        {r.originalMechanic && r.originalMechanic !== '—' && (
+                          <span className="text-orange-500 font-bold flex-shrink-0 text-[9px] whitespace-nowrap">→ {r.originalMechanic}</span>
+                        )}
+                        <span className="text-orange-500 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataEntrada)}</span>
+                        <span className="text-gray-300 flex-shrink-0">→</span>
+                        <span className="text-green-600 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataSaida)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="p-3 border-t bg-gray-50 flex justify-between items-center flex-shrink-0">
+                <span className="text-[10px] text-gray-400 font-bold">{filtered.length} registro(s)</span>
+                <button onClick={() => setIsTechnicaHistoryOpen(false)}
+                  className="px-4 py-2 bg-blue-900 text-white text-xs font-bold rounded-lg hover:bg-blue-800">Fechar</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal Histórico de Manutenções */}
+      {isMechanicHistoryOpen && (() => {
+        const fmt = (ts: any) => {
+          if (!ts) return '—';
+          const d = ts.toDate ? ts.toDate() : new Date(ts);
+          if (isNaN(d.getTime())) return '—';
+          return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+        };
+
+        // Mecânicos únicos do histórico
+        const uniqueMechanics = ['Todos', ...Array.from(new Set(mechanicHistory.map(r => r.mecanico).filter(Boolean))).sort()];
+
+        // Filtro por mecânico e data de saída
+        const filtered = mechanicHistory.filter(r => {
+          const ts = r.dataSaida?.toDate ? r.dataSaida.toDate() : new Date(r.dataSaida || 0);
+          const recDate = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')}`;
+          const matchDate = mechanicHistoryFilter.date ? recDate === mechanicHistoryFilter.date : true;
+          const matchMechanic = mechanicHistoryFilter.mechanic === 'Todos' || r.mecanico === mechanicHistoryFilter.mechanic;
+          return matchDate && matchMechanic;
+        });
+
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh] overflow-hidden">
+
+              {/* Header */}
+              <div className="bg-gray-800 p-4 text-white flex items-center justify-between flex-shrink-0">
+                <div className="flex items-center gap-2">
+                  <CalendarIcon className="w-5 h-5"/>
+                  <div>
+                    <h2 className="text-base font-black">Histórico de Manutenções</h2>
+                    <p className="text-[10px] opacity-60">Entrada → Saída para reserva</p>
+                  </div>
+                </div>
+                <button onClick={() => setIsMechanicHistoryOpen(false)} className="p-1 hover:bg-white/20 rounded-full">
+                  <XIcon className="w-5 h-5"/>
+                </button>
+              </div>
+
+              {/* Filtros */}
+              <div className="p-3 border-b bg-gray-50 flex gap-2 flex-shrink-0 flex-wrap">
+                <div className="flex-1 min-w-[120px]">
+                  <label className="text-[9px] font-black text-gray-400 uppercase block mb-1">Mecânico</label>
+                  <select
+                    value={mechanicHistoryFilter.mechanic}
+                    onChange={e => setMechanicHistoryFilter(prev => ({ ...prev, mechanic: e.target.value }))}
+                    className="w-full text-xs p-1.5 border rounded-lg bg-white font-bold text-gray-700 outline-none"
+                  >
+                    {uniqueMechanics.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div className="flex-1 min-w-[130px]">
+                  <label className="text-[9px] font-black text-gray-400 uppercase block mb-1">Data de Saída</label>
+                  <input
+                    type="date"
+                    value={mechanicHistoryFilter.date}
+                    max={localDateStr()}
+                    onChange={e => setMechanicHistoryFilter(prev => ({ ...prev, date: e.target.value }))}
+                    className="w-full text-xs p-1.5 border rounded-lg bg-white font-bold text-gray-700 outline-none"
+                  />
+                </div>
+                <div className="flex items-end gap-1">
+                  <button
+                    onClick={() => setMechanicHistoryFilter({ mechanic: 'Todos', date: localDateStr() })}
+                    className="px-2 py-1.5 bg-gray-200 text-gray-600 text-[10px] font-bold rounded-lg hover:bg-gray-300 whitespace-nowrap"
+                  >Hoje</button>
+                  <button
+                    onClick={() => setMechanicHistoryFilter(prev => ({ ...prev, date: '' }))}
+                    className="px-2 py-1.5 bg-gray-100 text-gray-500 text-[10px] font-bold rounded-lg hover:bg-gray-200 whitespace-nowrap"
+                  >Tudo</button>
+                </div>
+              </div>
+
+              {/* Lista */}
+              <div className="flex-1 overflow-y-auto p-3">
+                {isMechanicHistoryLoading ? (
+                  <div className="text-center py-10 text-gray-400 text-sm">Carregando...</div>
+                ) : filtered.length === 0 ? (
+                  <div className="text-center py-10 text-gray-400 text-sm italic">Nenhum registro encontrado.</div>
+                ) : (
+                  <div className="space-y-1">
+                    {filtered.map((r, i) => (
+                      <div key={r.id || i} className="flex items-center gap-1.5 px-2 py-1.5 bg-white border border-gray-100 rounded-lg text-[10px]">
+                        <span className="font-black text-gray-800 font-mono w-9 flex-shrink-0">{r.bikeNumber}</span>
+                        <span className="text-blue-600 font-bold w-14 truncate flex-shrink-0" title={r.mecanico}>{r.mecanico}</span>
+                        <span className="text-gray-500 flex-1 truncate min-w-0" title={r.treatment || '—'}>{r.treatment || '—'}</span>
+                        {r.trailerName && (
+                          <span className="text-purple-600 font-bold flex-shrink-0 bg-purple-50 px-1 rounded text-[9px] whitespace-nowrap">{r.trailerName}</span>
+                        )}
+                        <span className="text-orange-500 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataEntrada)}</span>
+                        <span className="text-gray-300 flex-shrink-0">→</span>
+                        <span className="text-green-600 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataSaida)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="p-3 border-t bg-gray-50 flex justify-between items-center flex-shrink-0">
+                <span className="text-[10px] text-gray-400 font-bold">{filtered.length} registro(s)</span>
+                <button onClick={() => setIsMechanicHistoryOpen(false)}
+                  className="px-4 py-2 bg-gray-800 text-white text-xs font-bold rounded-lg hover:bg-gray-700">
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       <MechanicRepairModal isOpen={isMechanicRepairModalOpen} onClose={() => setIsMechanicRepairModalOpen(false)} onConfirm={handleFinalizeMechanicsRepair} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <MechanicSelectionModal isOpen={isMechanicSelectionModalOpen} onClose={() => setIsMechanicSelectionModalOpen(false)} onConfirm={handleMechanicSelectionConfirm} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <TrailerSelectionModal isOpen={isTrailerSelectionModalOpen} onClose={() => setIsTrailerSelectionModalOpen(false)}
