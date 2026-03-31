@@ -306,6 +306,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
   const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
   const [mechanicSummaryPeriod, setMechanicSummaryPeriod] = useState<'diario'|'semanal'|'mensal'>('diario');
+  const [productionDrillDown, setProductionDrillDown] = useState<{ mechanic: string; type: 'man' | 'res'; bikes: string[] } | null>(null);
   const [bikeFoundModal, setBikeFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [mechanicNotFoundModal, setMechanicNotFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string, mechanicName?: string } | null>(null);
@@ -1497,18 +1498,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // Ref para proteger atualizações otimistas da mecânica do sync do Sheets
   // Map de patrimônio → { status, expiresAt } — protege por 30s após cada ação
   // Plain object ref — avoids Map constructor issues in this environment
-  const mechanicOptimisticRef = useRef<Record<string, { status: string; expiresAt: number }>>({});
+  const mechanicOptimisticRef = useRef<Record<string, any>>({});
 
-  const protectMechanicBike = (patrimonio: string, status: string) => {
+  const protectMechanicBike = (patrimonio: string, data: string | Record<string, any>) => {
+    const fields = typeof data === 'string' ? { status: data } : data;
     mechanicOptimisticRef.current[String(patrimonio)] = {
-      status,
-      expiresAt: Date.now() + 30000, // 30s de proteção
+      ...fields,
+      expiresAt: Date.now() + 60000, // 60s de proteção — cobre latência do Apps Script
     };
   };
 
   const handleAlterarStatus = async (bikeId: string) => {
     // 1. Atualiza estado local imediatamente — bike some de "Alterar Status"
-    protectMechanicBike(bikeId, 'Aguardando Manutenção');
+    protectMechanicBike(bikeId, { status: 'Aguardando Manutenção' });
     setMechanicsList(prev => prev.map(b =>
       b.patrimonio === bikeId ? { ...b, status: 'Aguardando Manutenção' } : b
     ));
@@ -1605,8 +1607,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setDoc(doc(db, 'bikes', bikePat), {
         status: 'Aguardando Técnica', responsavel: finalMechanic, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes:', e.code));
-      // Backend — grava na aba Mecânica com status Aguardando Técnica
-      await apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: finalMechanic }, 1, false);
+      // Backend — fire-and-forget, não bloqueia UI
+      apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: finalMechanic }, 1, false).catch(() => {});
     } catch (err: any) {
       console.error('Erro ao enviar para técnica:', err);
       setError('Erro ao enviar para técnica: ' + err.message);
@@ -1728,7 +1730,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     const bikeNumber = selectedMechanicBike.patrimonio;
     // Atualização otimista — remove da lista imediatamente
-    protectMechanicBike(bikeNumber, 'Em Manutenção');
+    protectMechanicBike(bikeNumber, {
+      status: 'Em Manutenção',
+      mecanico: mechanicName,
+    });
     setMechanicsList(prev => prev.map(b =>
       b.patrimonio === bikeNumber ? { ...b, status: 'Em Manutenção', mecanico: mechanicName } : b
     ));
@@ -1750,15 +1755,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
     // A notificação ao ADM só ocorre ao FINALIZAR A CARRETINHA (após QR + bateria + comunicação).
     // Atualização otimista
-    protectMechanicBike(bikeNumber, 'Reserva');
+    const mechanicName = selectedMechanicBike?.mecanico || driverName;
+    protectMechanicBike(bikeNumber, {
+      status: 'Reserva',
+      mecanico: mechanicName,
+      tratativa: treatment,
+      dataFinalizacao: new Date().toISOString(),
+    });
     setMechanicsList(prev => prev.map(b =>
-      b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', tratativa: treatment } : b
+      b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', mecanico: mechanicName, tratativa: treatment } : b
     ));
     setIsMechanicRepairModalOpen(false);
     try {
       updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
       addDoc(collection(db, 'reports'), { bikeNumber, status: 'Em Estação', driverName, treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(e => console.warn('[Firebase] reports write:', e.code));
-      apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName: driverName, treatment }, 1, true).catch(() => {});
+      apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName, treatment }, 1, true).catch(() => {});
       setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
     } catch (err: any) {
       alert('Erro: ' + err.message);
@@ -2041,78 +2052,72 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const startTrailerScanner = async () => {
     if (isScannerBusy.current) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Seu navegador não suporta acesso à câmera.', scannerActive: false } : null);
+      setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Câmera não suportada neste navegador.', scannerActive: false } : null);
       return;
     }
+
     isScannerBusy.current = true;
-    try {
-      await internalStopScanner();
-      await internalStopTrailerScanner();
-      await new Promise(r => setTimeout(r, 400));
-    } catch (e) {
-      console.warn('Error stopping existing scanners:', e);
+
+    // Para scanner anterior se existir
+    if (trailerScannerRef.current) {
+      try {
+        if (trailerScannerRef.current.isScanning) await trailerScannerRef.current.stop();
+        await trailerScannerRef.current.clear();
+      } catch {}
+      trailerScannerRef.current = null;
     }
 
+    // Mostra área do scanner imediatamente
     setTrailerQrModal(prev => prev ? { ...prev, scannerActive: true, lastError: null } : null);
-    setTimeout(async () => {
+
+    // Aguarda DOM renderizar o elemento
+    await new Promise(r => setTimeout(r, 600));
+
+    try {
+      const el = document.getElementById('qr-trailer-reader');
+      if (!el) throw new Error('Elemento qr-trailer-reader não encontrado.');
+
+      // Limpa qualquer estado residual do DOM
+      el.innerHTML = '';
+
+      const qr = new Html5Qrcode('qr-trailer-reader');
+      trailerScannerRef.current = qr;
+
+      // Tenta sem zoom (mais compatível) — zoom causava tela preta em muitos dispositivos
+      await qr.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (decodedText) => handleTrailerQrSuccess(decodedText),
+        () => {}
+      );
+    } catch (err: any) {
+      console.error('Trailer Scanner error:', err);
+      // Se falhou, tenta com deviceId direto como fallback
       try {
-        const el = document.getElementById('qr-trailer-reader');
-        if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
-        
-        const checkStillActive = () => {
-          let active = false;
-          setTrailerQrModal(prev => {
-            if (prev && prev.scannerActive) active = true;
-            return prev;
-          });
-          return active;
-        };
-
-        if (!checkStillActive()) return;
-
-        const qr = new Html5Qrcode('qr-trailer-reader');
-        trailerScannerRef.current = qr;
-        
-        const startWithRetry = async (withZoom: boolean, retries = 3): Promise<void> => {
-          if (!checkStillActive()) return;
-          try {
-            const config = withZoom 
-              ? { facingMode: 'environment', advanced: [{ zoom: 2.0 }] } as any
-              : { facingMode: 'environment' };
-            
-            const promise = qr.start(
-              config,
-              { fps: 10, qrbox: { width: 220, height: 220 } },
-              (decodedText) => handleTrailerQrSuccess(decodedText),
-              () => {}
-            );
-            trailerScannerStartPromise.current = promise;
-            await promise;
-            trailerScannerStartPromise.current = null;
-          } catch (err: any) {
-            trailerScannerStartPromise.current = null;
-            if (err?.message?.includes('already under transition') && retries > 0) {
-              console.warn('Trailer Scanner transition error, retrying...', retries);
-              await new Promise(r => setTimeout(r, 500));
-              return startWithRetry(withZoom, retries - 1);
-            }
-            throw err;
-          }
-        };
-
-        try {
-          await startWithRetry(true);
-        } catch (err) {
-          console.warn('Zoom not supported or start failed, retrying without zoom:', err);
-          await startWithRetry(false);
+        const cameras = await Html5Qrcode.getCameras();
+        if (cameras.length > 0) {
+          const el = document.getElementById('qr-trailer-reader');
+          if (el) el.innerHTML = '';
+          const qr2 = new Html5Qrcode('qr-trailer-reader');
+          trailerScannerRef.current = qr2;
+          await qr2.start(
+            { deviceId: { exact: cameras[cameras.length - 1].id } },
+            { fps: 10, qrbox: { width: 250, height: 250 } },
+            (decodedText) => handleTrailerQrSuccess(decodedText),
+            () => {}
+          );
+        } else {
+          throw err;
         }
-      } catch (err: any) {
-        console.error('Trailer Scanner error:', err);
-        setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + (err.message || String(err)), scannerActive: false } : null);
-      } finally {
-        isScannerBusy.current = false;
+      } catch (err2: any) {
+        setTrailerQrModal(prev => prev
+          ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + (err2.message || String(err2)), scannerActive: false }
+          : null
+        );
       }
-    }, 500);
+    } finally {
+      isScannerBusy.current = false;
+    }
   };
 
   const handleFinalizeTrailer = async (trailerName: string) => {
@@ -2558,7 +2563,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
           return d.mechanicsList.map((serverBike: any) => {
             const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
             if (protected_ && protected_.expiresAt > now) {
-              return { ...serverBike, status: protected_.status };
+              // Aplica todos os campos protegidos (status, mecanico, tratativa, carretinha, etc)
+              const { expiresAt: _exp, ...protectedFields } = protected_;
+              return { ...serverBike, ...protectedFields };
             }
             return serverBike;
           });
@@ -2775,7 +2782,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
           return d.mechanicsList.map((serverBike: any) => {
             const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
             if (protected_ && protected_.expiresAt > now) {
-              return { ...serverBike, status: protected_.status };
+              // Aplica todos os campos protegidos (status, mecanico, tratativa, carretinha, etc)
+              const { expiresAt: _exp, ...protectedFields } = protected_;
+              return { ...serverBike, ...protectedFields };
             }
             return serverBike;
           });
@@ -3705,19 +3714,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
           const activeStatuses = isTecnica
             ? ['Em Técnica', 'Aguardando Técnica']
             : ['Em Manutenção', 'Reserva'];
-          const byMechanic: Record<string, {manutencao: number, reserva: number}> = {};
+          const byMechanic: Record<string, {manutencao: number, reserva: number, bikesMan: string[], bikesRes: string[]}> = {};
           sourceList.filter(b => activeStatuses.includes(b.status)).forEach(b => {
             const m = b.mecanico || '—';
-            if (!byMechanic[m]) byMechanic[m] = { manutencao: 0, reserva: 0 };
+            if (!byMechanic[m]) byMechanic[m] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
             const entryDate = b.dataEntrada ? new Date(b.dataEntrada) : null;
             if (!entryDate || entryDate >= cutoff) {
               const isMainStatus = isTecnica ? b.status === 'Em Técnica' : b.status === 'Em Manutenção';
-              if (isMainStatus) byMechanic[m].manutencao++;
-              else byMechanic[m].reserva++;
+              if (isMainStatus) { byMechanic[m].manutencao++; byMechanic[m].bikesMan.push(b.patrimonio); }
+              else { byMechanic[m].reserva++; byMechanic[m].bikesRes.push(b.patrimonio); }
             }
           });
           const mechs = Object.entries(byMechanic);
           return (
+            <>
             <div className="mb-3 px-3 py-2 border rounded-lg bg-white shadow-sm">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[10px] font-black text-gray-600 uppercase tracking-widest">Produção</span>
@@ -3737,20 +3747,58 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div key={name} className="flex items-center gap-2">
                       <span className="text-[10px] font-bold text-gray-500 uppercase w-16 truncate flex-shrink-0">{name}</span>
                       <div className="flex gap-1.5 flex-1">
-                        <div className="flex flex-col items-center py-0.5 px-2 bg-orange-50 border border-orange-100 rounded-md flex-1">
+                        <button
+                          onClick={() => counts.manutencao > 0 && setProductionDrillDown({ mechanic: name, type: 'man', bikes: counts.bikesMan })}
+                          className={`flex flex-col items-center py-0.5 px-2 bg-orange-50 border border-orange-100 rounded-md flex-1 transition-all ${counts.manutencao > 0 ? 'hover:bg-orange-100 active:scale-95 cursor-pointer' : 'cursor-default'}`}
+                        >
                           <span className="text-[7px] font-bold text-orange-400 uppercase leading-none">{isTecnica ? 'Téc' : 'Man'}</span>
                           <span className="text-sm font-black text-orange-500 leading-tight">{counts.manutencao}</span>
-                        </div>
-                        <div className="flex flex-col items-center py-0.5 px-2 bg-green-50 border border-green-100 rounded-md flex-1">
+                        </button>
+                        <button
+                          onClick={() => counts.reserva > 0 && setProductionDrillDown({ mechanic: name, type: 'res', bikes: counts.bikesRes })}
+                          className={`flex flex-col items-center py-0.5 px-2 bg-green-50 border border-green-100 rounded-md flex-1 transition-all ${counts.reserva > 0 ? 'hover:bg-green-100 active:scale-95 cursor-pointer' : 'cursor-default'}`}
+                        >
                           <span className="text-[7px] font-bold text-green-500 uppercase leading-none">{isTecnica ? 'Agu' : 'Res'}</span>
                           <span className="text-sm font-black text-green-600 leading-tight">{counts.reserva}</span>
-                        </div>
+                        </button>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
             </div>
+
+            {/* Popup drill-down bikes da produção */}
+            {productionDrillDown && (
+              <div className="fixed inset-0 z-[200] flex items-end justify-center bg-black/40 p-4" onClick={() => setProductionDrillDown(null)}>
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+                  <div className={`p-3 text-white flex items-center justify-between ${productionDrillDown.type === 'man' ? 'bg-orange-500' : 'bg-green-600'}`}>
+                    <div>
+                      <p className="text-[10px] font-bold uppercase opacity-80">{productionDrillDown.type === 'man' ? (isTecnica ? 'Em Técnica' : 'Em Manutenção') : (isTecnica ? 'Aguardando' : 'Reserva')}</p>
+                      <h3 className="text-base font-black">{productionDrillDown.mechanic}</h3>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-2xl font-black">{productionDrillDown.bikes.length}</span>
+                      <button onClick={() => setProductionDrillDown(null)} className="p-1 hover:bg-white/20 rounded-full ml-2">
+                        <XIcon className="w-4 h-4"/>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="p-3 max-h-56 overflow-y-auto">
+                    <div className="flex flex-wrap gap-1.5">
+                      {productionDrillDown.bikes.map(pat => (
+                        <span key={pat} className={`font-mono font-black text-sm px-2.5 py-1 rounded-lg border ${
+                          productionDrillDown.type === 'man'
+                            ? 'bg-orange-50 border-orange-200 text-orange-700'
+                            : 'bg-green-50 border-green-200 text-green-700'
+                        }`}>{pat}</span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            </>
           );
         })()}
 
@@ -4162,111 +4210,96 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <div id="section-reserva" className="p-4 border rounded-lg bg-green-50 shadow-sm scroll-mt-4">
                 <div className="flex justify-between items-center mb-3">
                   <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
-                  <button 
-                    onClick={() => {
-                      // Abre scanner para qualquer bike na reserva (Sem Carretinha ou não)
-                      startScanner(); // Usa o scanner geral, mas vamos tratar o sucesso
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm transition-all active:scale-95"
-                  >
-                    <QrCodeIcon className="w-4 h-4"/>Escanear para Carretinha
-                  </button>
                 </div>
-                {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (
-                  <div className="space-y-4">
-                    {Object.entries(
-                      mechanicsList.filter(b => b.status === 'Reserva').reduce((acc, bike) => {
-                        const key = bike.carretinha || 'Sem Carretinha';
-                        if (!acc[key]) acc[key] = [];
-                        acc[key].push(bike);
-                        return acc;
-                      }, {} as Record<string, any[]>)
-                    ).map(([trailer, bikes]) => (
-                      <div key={trailer} className="border border-green-200 rounded-md bg-white p-3 shadow-sm">
-                        <div className="flex justify-between items-center mb-2 border-b pb-1">
-                          <div className="flex flex-col">
-                            <h3 className="font-bold text-green-700 flex items-center gap-2"><TrailerIcon className="w-4 h-4"/>{trailer}</h3>
-                            {trailer !== 'Sem Carretinha' && bikes[0]?.trailerStatus === 'finalized' && (
-                              <span className="text-[8px] font-bold text-orange-600 uppercase">Aguardando Validação ADM</span>
-                            )}
-                            {trailer !== 'Sem Carretinha' && bikes[0]?.trailerStatus === 'assigned' && (
-                              <span className="text-[8px] font-bold text-blue-600 uppercase">Aguardando Aceite Motorista</span>
-                            )}
-                          </div>
+                {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (() => {
+                  const grouped = mechanicsList.filter(b => b.status === 'Reserva').reduce((acc, bike) => {
+                    const key = bike.carretinha || 'Sem Carretinha';
+                    if (!acc[key]) acc[key] = [];
+                    acc[key].push(bike);
+                    return acc;
+                  }, {} as Record<string, any[]>);
+
+                  // Carretinhas em montagem (sem status ou sem nome)
+                  const activeEntries = Object.entries(grouped).filter(([t, b]) =>
+                    t === 'Sem Carretinha' || !b[0]?.trailerStatus
+                  );
+                  // Carretinhas enviadas — finalized ou assigned — aguardando aceite
+                  const sentEntries = Object.entries(grouped).filter(([t, b]) =>
+                    t !== 'Sem Carretinha' && (b[0]?.trailerStatus === 'finalized' || b[0]?.trailerStatus === 'assigned')
+                  );
+
+                  return (
+                    <div className="space-y-3">
+                      {/* Carretinhas ativas — edição completa */}
+                      {activeEntries.map(([trailer, bikes]) => (
+                      <div key={trailer} className="border border-green-200 rounded-xl bg-white p-3 shadow-sm">
+                        <div className="flex justify-between items-center mb-2 border-b pb-1.5">
+                          <h3 className="font-bold text-green-700 flex items-center gap-2 text-sm"><TrailerIcon className="w-4 h-4"/>{trailer}</h3>
                           {trailer !== 'Sem Carretinha' && (
-                            <div className="flex gap-1">
-                              {(!bikes[0]?.trailerStatus || bikes[0]?.trailerStatus === 'finalized') && (
-                                <button 
-                                  onClick={() => handleFinalizeTrailer(trailer)} 
-                                  className={`text-[10px] px-2 py-0.5 rounded font-bold transition-all ${bikes[0]?.trailerStatus === 'finalized' ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700'} text-white`}
-                                >
-                                  {bikes[0]?.trailerStatus === 'finalized' ? 'Re-Finalizar' : 'Finalizar Carretinha'}
-                                </button>
-                              )}
-                              {bikes[0]?.trailerStatus === 'finalized' && (
-                                <button 
-                                  onClick={() => {
-                                    // Permite editar: remove status finalized para permitir alteração
-                                    bikes.forEach(b => {
-                                      updateDoc(doc(db, 'bikes', b.patrimonio), { trailerStatus: null, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
-                                    });
-                                    alert('Carretinha aberta para edição!');
-                                    refreshAll(true);
-                                  }}
-                                  className="text-[10px] bg-blue-500 text-white px-2 py-0.5 rounded font-bold hover:bg-blue-600"
-                                >
-                                  Editar
-                                </button>
-                              )}
-                            </div>
+                            <button onClick={() => handleFinalizeTrailer(trailer)}
+                              className="text-[10px] px-2 py-0.5 rounded font-bold bg-green-600 hover:bg-green-700 text-white transition-all">
+                              Finalizar Carretinha
+                            </button>
                           )}
                         </div>
-                        <div className="grid grid-cols-3 gap-2">
+                        <div className="space-y-1">
                           {(bikes as any[]).map((bike, i) => (
-                            <div key={`trailer-${bike.patrimonio}-${i}`} className="relative text-xs p-1.5 bg-gray-50 border rounded text-center font-medium text-gray-700 flex flex-col items-center gap-0.5">
-                              {trailer !== 'Sem Carretinha' && (!bike.trailerStatus) && (
-                                <button 
-                                  onClick={async () => {
-                                    if (window.confirm(`Remover bike ${bike.patrimonio} da ${trailer}?`)) {
-                                      await updateDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, ultimaAtualizacao: serverTimestamp() });
-                                      refreshAll(true);
-                                    }
-                                  }}
-                                  className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 shadow-sm hover:bg-red-600 z-10"
-                                >
-                                  <XIcon className="w-2.5 h-2.5" />
-                                </button>
-                              )}
-                              <span className="font-bold">{bike.patrimonio}</span>
-                              <div className="flex flex-col items-center scale-90 origin-top">
-                                {bike.bateria !== undefined && <span className="text-[8px] text-gray-500">{bike.bateria}%</span>}
-                                {bike.carregamento === 'Carregando' && <span className="text-[8px] text-green-600 font-bold">⚡</span>}
-                                {bike.carregamento === 'Não carregando' && <span className="text-[8px] text-red-500 font-bold">🔌</span>}
+                            <div key={`tr-${bike.patrimonio}-${i}`} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 border rounded-lg text-[11px]">
+                              <span className="font-black text-gray-800 font-mono w-10 flex-shrink-0">{bike.patrimonio}</span>
+                              {bike.mecanico && <span className="text-blue-600 font-bold flex-shrink-0 truncate max-w-[80px]">{bike.mecanico}</span>}
+                              {bike.tratativa && bike.tratativa !== 'MANUAL' && <span className="text-gray-400 flex-1 truncate text-[9px]">{bike.tratativa}</span>}
+                              <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
+                                {bike.bateria !== undefined && (
+                                  <span className={`text-[10px] font-bold ${Number(bike.bateria) < 85 ? 'text-red-500' : 'text-gray-500'}`}>🔋{bike.bateria}%</span>
+                                )}
+                                {trailer !== 'Sem Carretinha' && (
+                                  <button onClick={() => {
+                                    const mechanicName = bike.mecanico || driverName;
+                                    protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
+                                    setMechanicsList(prev => prev.map(b =>
+                                      b.patrimonio === bike.patrimonio ? { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null } : b
+                                    ));
+                                    updateDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
+                                    apiCall({ action: 'removeFromTrailer', bikeNumber: bike.patrimonio, mechanicName }, 1, false).catch(() => {});
+                                  }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95">
+                                    <XIcon className="w-3 h-3"/>
+                                  </button>
+                                )}
                               </div>
-                              {bike.mecanico && <span className="text-[7px] text-blue-600 truncate max-w-full">{bike.mecanico}</span>}
                             </div>
                           ))}
                         </div>
                         {trailer === 'Sem Carretinha' && (
                           <button onClick={() => {
-                            // Calcula próximo número de carretinha (1→2→3→4→1...)
+                            // Sequência diária estrita: 1→2→3→4→1→...
+                            // Usa localStorage com chave por data — reinicia no 1 a cada novo dia
                             const MAX_TRAILERS = 4;
-                            const usedNumbers = mechanicsList
-                              .filter(b => b.carretinha && b.carretinha !== 'Sem Carretinha')
-                              .map(b => {
-                                const m = String(b.carretinha).match(/(\d+)$/);
-                                return m ? parseInt(m[1]) : 0;
-                              })
-                              .filter(n => n > 0);
-                            let next = 1;
-                            for (let i = 1; i <= MAX_TRAILERS; i++) {
-                              if (!usedNumbers.includes(i)) { next = i; break; }
-                            }
-                            // Se todos ocupados, reutiliza o 1
-                            const nextName = `Carretinha ${next}`;
-                            setSelectedBikesForTrailer((bikes as any[]).map(b => b.patrimonio));
-                            // Passa direto para handleOrganizeTrailer sem abrir modal de nome
-                            handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), nextName);
+                            const today = localDateStr();
+                            const storageKey = `trailer_seq_${today}`;
+
+                            // Lê o último número usado no dia
+                            let lastUsed = 0;
+                            try {
+                              const saved = localStorage.getItem(storageKey);
+                              if (saved) lastUsed = parseInt(saved) || 0;
+                            } catch {}
+
+                            // Próximo na sequência (1→2→3→4→1)
+                            const next = (lastUsed % MAX_TRAILERS) + 1;
+
+                            // Persiste imediatamente antes de organizar
+                            try {
+                              localStorage.setItem(storageKey, String(next));
+                              // Limpa chaves de dias anteriores
+                              for (let i = 0; i < localStorage.length; i++) {
+                                const k = localStorage.key(i);
+                                if (k && k.startsWith('trailer_seq_') && !k.endsWith(today)) {
+                                  localStorage.removeItem(k);
+                                }
+                              }
+                            } catch {}
+
+                            handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
                           }}
                             className="mt-3 w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700">
                             Organizar em Carretinha
@@ -4274,8 +4307,44 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         )}
                       </div>
                     ))}
-                  </div>
-                ) : <p className="text-sm text-gray-500 italic">Nenhuma bike na reserva.</p>}
+
+                      {/* ── Carretinhas enviadas — resumo até aceite do motorista ── */}
+                      {sentEntries.length > 0 && (
+                        <div className="border border-dashed border-gray-300 rounded-xl p-3 bg-gray-50">
+                          <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-2">
+                            Aguardando Aceite do Motorista
+                          </p>
+                          <div className="space-y-2">
+                            {sentEntries.map(([trailer, bikes]) => {
+                              const isAssigned = bikes[0]?.trailerStatus === 'assigned';
+                              const assignedTo = bikes[0]?.responsavel || bikes[0]?.assignedTo || null;
+                              return (
+                                <div key={trailer} className={`rounded-lg border p-2.5 ${isAssigned ? 'bg-blue-50 border-blue-200' : 'bg-orange-50 border-orange-200'}`}>
+                                  <div className="flex items-center justify-between mb-1.5">
+                                    <div className="flex items-center gap-2">
+                                      <TrailerIcon className={`w-3.5 h-3.5 ${isAssigned ? 'text-blue-500' : 'text-orange-500'}`}/>
+                                      <span className="font-black text-sm text-gray-700">{trailer}</span>
+                                      <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase ${isAssigned ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                                        {isAssigned ? `Enviada → ${assignedTo || '?'}` : 'Aguard. ADM'}
+                                      </span>
+                                    </div>
+                                    <span className="text-[9px] text-gray-400 font-bold">{bikes.length} bike{bikes.length > 1 ? 's' : ''}</span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1">
+                                    {(bikes as any[]).map(b => (
+                                      <span key={b.patrimonio} className="font-mono text-[10px] font-bold px-1.5 py-0.5 bg-white border rounded text-gray-600">{b.patrimonio}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                    </div>
+                  );
+                })() : <p className="text-sm text-gray-500 italic">Nenhuma bike na reserva.</p>}
               </div>
             )}
           </div>
@@ -4864,6 +4933,72 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       ))}
                     </div>
                   </div>
+
+                  {/* Carretinhas — ativas e aguardando aceite */}
+                  {(() => {
+                    const trailerGroups: Record<string, any[]> = {};
+                    mechanicsList
+                      .filter(b => b.carretinha && b.carretinha !== 'Sem Carretinha' && b.status === 'Reserva')
+                      .forEach(b => {
+                        if (!trailerGroups[b.carretinha]) trailerGroups[b.carretinha] = [];
+                        trailerGroups[b.carretinha].push(b);
+                      });
+                    const allTrailers = Object.entries(trailerGroups);
+                    if (allTrailers.length === 0) return null;
+                    const activeT = allTrailers.filter(([, b]) => !b[0]?.trailerStatus);
+                    const sentT   = allTrailers.filter(([, b]) => b[0]?.trailerStatus === 'finalized' || b[0]?.trailerStatus === 'assigned');
+                    return (
+                      <div className="bg-white p-3 rounded-lg border shadow-sm mb-3">
+                        <div className="flex justify-between items-center mb-2 border-b pb-1">
+                          <h3 className="font-black text-gray-900 text-sm uppercase flex items-center gap-2">
+                            <TrailerIcon className="w-4 h-4 text-green-600"/>Carretinhas
+                          </h3>
+                        </div>
+                        {/* Ativas — em montagem */}
+                        {activeT.map(([trailerName, bikes]) => (
+                          <div key={trailerName} className="mb-2 p-2 bg-green-50 rounded-lg border border-green-200">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-black text-green-700">{trailerName}</span>
+                              <span className="text-[8px] font-black px-1.5 py-0.5 rounded uppercase bg-green-100 text-green-700">Em Montagem</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {bikes.map((b: any) => (
+                                <span key={b.patrimonio} className="px-1.5 py-0.5 bg-white border border-green-300 text-green-800 text-[9px] font-black rounded font-mono">
+                                  {b.patrimonio}
+                                </span>
+                              ))}
+                            </div>
+                            <p className="text-[9px] text-gray-400 mt-1">{bikes.length} bike(s)</p>
+                          </div>
+                        ))}
+                        {/* Enviadas — resumo compacto até aceite */}
+                        {sentT.length > 0 && (
+                          <div className="border border-dashed border-gray-200 rounded-lg p-2 bg-gray-50">
+                            <p className="text-[8px] font-black text-gray-400 uppercase mb-1.5">Aguardando Aceite do Motorista</p>
+                            <div className="space-y-1.5">
+                              {sentT.map(([trailerName, bikes]) => {
+                                const isAssigned = bikes[0]?.trailerStatus === 'assigned';
+                                const assignedTo = bikes[0]?.responsavel || bikes[0]?.assignedTo || null;
+                                return (
+                                  <div key={trailerName} className={`flex items-center gap-2 p-1.5 rounded-lg border ${isAssigned ? 'bg-blue-50 border-blue-200' : 'bg-orange-50 border-orange-200'}`}>
+                                    <TrailerIcon className={`w-3.5 h-3.5 flex-shrink-0 ${isAssigned ? 'text-blue-500' : 'text-orange-500'}`}/>
+                                    <span className="font-black text-xs text-gray-700 flex-shrink-0">{trailerName}</span>
+                                    {isAssigned && assignedTo && (
+                                      <span className="text-[10px] text-blue-600 font-bold flex-shrink-0">→ {assignedTo}</span>
+                                    )}
+                                    <span className={`text-[8px] font-black px-1 py-0.5 rounded ml-auto flex-shrink-0 ${isAssigned ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                                      {isAssigned ? 'Aguard. Aceite' : 'Aguard. ADM'}
+                                    </span>
+                                    <span className="text-[9px] text-gray-400 flex-shrink-0">{bikes.length}b</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Card por mecânico */}
                   {(() => {
