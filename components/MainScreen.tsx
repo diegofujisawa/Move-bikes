@@ -250,6 +250,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isAlertsLoading, setIsAlertsLoading] = useState(false);
   const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
   const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
+  const [changeStatusData, setChangeStatusData] = useState<any>(null);
   const [statusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
   const [alertCount, setAlertCount] = useState(0);
   const [hasNewAlerts, setHasNewAlerts] = useState(false);
@@ -304,29 +305,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [activeMechanicCategory, setActiveMechanicCategory] = useState<string | null>(null);
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
   const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
-  const [selectedBatteryFilter, setSelectedBatteryFilter] = useState<string>('Todos');
   const [mechanicSummaryPeriod, setMechanicSummaryPeriod] = useState<'diario'|'semanal'|'mensal'>('diario');
-  const [productionDrillDown, setProductionDrillDown] = useState<{ mechanic: string; type: 'man' | 'res'; bikes: string[] } | null>(null);
   const [bikeFoundModal, setBikeFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [mechanicNotFoundModal, setMechanicNotFoundModal] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string, mechanicName?: string } | null>(null);
   const [manualMechanicModal, setManualMechanicModal] = useState<{ isOpen: boolean; bikePat: string; targetStatus: string }>({ isOpen: false, bikePat: '', targetStatus: '' });
   const [manualMechanicName, setManualMechanicName] = useState('');
   const [isVandalizedConfirmOpen, setIsVandalizedConfirmOpen] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
-  const [vandalizedMechanicModal, setVandalizedMechanicModal] = useState<{ bikePat: string; mechanicName: string } | null>(null);
-  const [vandalizedSelected, setVandalizedSelected] = useState<Set<string>>(new Set());
-  const [vandalizedRoom, setVandalizedRoom] = useState<string>('');
-  const VANDALIZED_ROOMS = ['SALA 2', 'SALA 3', 'SALA 4'];
-  const MECHANIC_REPAIR_OPTIONS = [
-    'Ajuste e aperto', 'Placa',
-    'Cesto', 'Banco',
-    'Rodas', 'Guidão',
-    'Quadro', 'Adesivos',
-    'Identificação', 'Pedal',
-    'Carregamento', 'Limpeza',
-    'Instalação de Locker', 'Troca de Cabo de Freio',
-    'Troca Cabo Energia', 'Corrente',
-  ];
   const [isZerarListaConfirmOpen, setIsZerarListaConfirmOpen] = useState(false);
   const [trailerQrModal, setTrailerQrModal] = useState<{
     isOpen: boolean;
@@ -343,10 +328,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const trailerScannerStartPromise = useRef<Promise<any> | null>(null);
   const isScannerBusy = useRef(false);
   const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
-  const [isMechanicHistoryOpen, setIsMechanicHistoryOpen] = useState(false);
-  const [mechanicHistory, setMechanicHistory] = useState<any[]>([]);
-  const [isMechanicHistoryLoading, setIsMechanicHistoryLoading] = useState(false);
-  const [mechanicHistoryFilter, setMechanicHistoryFilter] = useState({ mechanic: 'Todos', date: localDateStr() });
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
 
   // --- Refs ---
@@ -618,15 +599,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             updated.push({ id: doc.id, ...d });
           }
         });
-        // Deduplica por patrimônio — mantém apenas o mais recente por bike
-        const seen = new Set<string>();
-        const deduped = updated.filter(a => {
-          const key = String(a.patrimonio || a.id);
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-        setAlerts(deduped);
+        setAlerts(updated);
         // Não atualiza alertCount aqui — será feito pelo sync do Sheets
         // para evitar contagem duplicada
       }, err => console.error('Listener alertas:', err));
@@ -1124,26 +1097,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
             ultimaAtualizacao: serverTimestamp()
           }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
         });
-        // Registra na timeline E no relatório de movimentação
-        const trailerLabel = title || 'Carretinha';
+        // Registra apenas na timeline (Relatório removido conforme solicitação)
         bikesToAdd.forEach(id => {
-          // Timeline (linha do tempo ADM)
           addDoc(collection(db, 'timeline_events'), {
             driverName, bikeNumber: id, 
             type: 'carretinha',
-            observacao: trailerLabel,
+            observacao: title || 'Carretinha',
             timestamp: serverTimestamp(),
             date: localDateStr()
-          }).catch(() => {});
-          // Reports (aparece na busca de movimentação de bike)
-          addDoc(collection(db, 'reports'), {
-            bikeNumber: id,
-            status: 'Carretinha',
-            driverName,
-            observation: `${trailerLabel} — aceita por ${driverName}`,
-            timestamp: serverTimestamp(),
-            type: 'Carretinha',
-            trailerName: trailerLabel,
           }).catch(() => {});
         });
       } else {
@@ -1428,63 +1389,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     finally { setIsBikeSearchLoading(false); }
   };
 
-  const fetchMechanicHistory = async () => {
-    setIsMechanicHistoryLoading(true);
-    try {
-      const { getDocs: _getDocs, query: _query, where: _where, collection: _col } = await import('firebase/firestore');
-
-      // Busca registros de saída (Reparo = bike foi para Reserva)
-      const qReparo = _query(_col(db, 'reports'), _where('type', '==', 'Reparo'));
-      // Busca registros de entrada (Mecânica = bike entrou em manutenção)
-      const qEntrada = _query(_col(db, 'reports'), _where('type', '==', 'Mecânica'));
-
-      const [snapReparo, snapEntrada] = await Promise.all([
-        _getDocs(qReparo),
-        _getDocs(qEntrada)
-      ]);
-
-      // Indexa entradas por bikeNumber — pega a mais recente antes da saída
-      const entradas: Record<string, any[]> = {};
-      snapEntrada.docs.forEach(d => {
-        const rec = d.data();
-        const pat = String(rec.bikeNumber);
-        if (!entradas[pat]) entradas[pat] = [];
-        entradas[pat].push(rec);
-      });
-
-      // Monta registros de saída com dataEntrada cruzada
-      const records = snapReparo.docs.map(d => {
-        const rec = { id: d.id, ...d.data() } as any;
-        const pat = String(rec.bikeNumber);
-        const tsOut = rec.timestamp?.toMillis?.() || 0;
-
-        // Pega a entrada mais recente ANTES da saída (menor diferença de tempo)
-        const entradasBike = (entradas[pat] || []).filter(e => {
-          const tsE = e.dataEntrada?.toMillis?.() || e.timestamp?.toMillis?.() || 0;
-          return tsE <= tsOut;
-        }).sort((a: any, b: any) => {
-          const tA = a.dataEntrada?.toMillis?.() || a.timestamp?.toMillis?.() || 0;
-          const tB = b.dataEntrada?.toMillis?.() || b.timestamp?.toMillis?.() || 0;
-          return tB - tA; // mais recente primeiro
-        });
-
-        const entrada = entradasBike[0];
-        return {
-          ...rec,
-          mecanico: rec.driverName,
-          dataEntrada: entrada?.dataEntrada || entrada?.timestamp || null,
-          dataSaida: rec.timestamp,
-        };
-      });
-
-      setMechanicHistory(records);
-    } catch (e) {
-      console.error('fetchMechanicHistory:', e);
-    } finally {
-      setIsMechanicHistoryLoading(false);
-    }
-  };
-
   const handleSearch = async (bikeToSearch?: string) => {
     const term = (bikeToSearch || searchTerm).trim();
     if (!term) { setSearchedBike(null); setSearchTerm(''); return; }
@@ -1613,12 +1517,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       try {
         // 1. Move no backend imediatamente — evita que o refreshAll reverta o estado
         await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {});
-        addDoc(collection(db, 'reports'), {
-          bikeNumber: bikeId, status: 'Aguardando Manutenção',
-          driverName, mecanico: driverName,
-          observation: `Enviada para Aguardando Manutenção por ${driverName}`,
-          timestamp: serverTimestamp(), type: 'Mecânica'
-        }).catch(() => {});
 
         // 2. Agrupa num único doc no Firebase — busca doc pendente existente antes de criar novo
         const { arrayUnion, getDocs: _getDocs, query: _query, where: _where } = await import('firebase/firestore');
@@ -1707,12 +1605,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setDoc(doc(db, 'bikes', bikePat), {
         status: 'Aguardando Técnica', responsavel: finalMechanic, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes:', e.code));
-      addDoc(collection(db, 'reports'), {
-        bikeNumber: bikePat, status: 'Aguardando Técnica',
-        driverName: finalMechanic, mecanico: finalMechanic,
-        observation: `Enviada para Técnica por ${finalMechanic}`,
-        timestamp: serverTimestamp(), type: 'Técnica'
-      }).catch(() => {});
       // Backend — grava na aba Mecânica com status Aguardando Técnica
       await apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: finalMechanic }, 1, false);
     } catch (err: any) {
@@ -1748,12 +1640,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setDoc(doc(db, 'bikes', bikeNumber), {
         status: 'Em Técnica', responsavel: technicianName, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase]', e.code));
-      addDoc(collection(db, 'reports'), {
-        bikeNumber, status: 'Em Técnica',
-        driverName: technicianName, mecanico: technicianName,
-        observation: `Recebida pela Técnica — ${technicianName}`,
-        timestamp: serverTimestamp(), type: 'Técnica'
-      }).catch(() => {});
       await apiCall({ action: 'confirmTechnicaReceipt', bikeNumber, technicianName }, 1, false);
     } catch (err: any) {
       setError('Erro: ' + err.message);
@@ -1780,13 +1666,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setDoc(doc(db, 'bikes', bikeNumber), {
         status: 'Em Manutenção', responsavel: originalMechanic || null, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase]', e.code));
-      addDoc(collection(db, 'reports'), {
-        bikeNumber, status: 'Devolvida da Técnica',
-        driverName: driverName, mecanico: driverName,
-        treatment, originalMechanic,
-        observation: `Técnica finalizada por ${driverName} — ${treatment}. Devolvida para ${originalMechanic || 'Mecânica'}`,
-        timestamp: serverTimestamp(), type: 'Técnica'
-      }).catch(() => {});
       await apiCall({
         action: 'finalizeTechnicaRepair', bikeNumber,
         technicianName: driverName, treatment, originalMechanic
@@ -1798,43 +1677,32 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally { setIsLoading(false); }
   };
 
-  const handleMarkAsVandalizedNoRecovery = async (bikePat: string, treatment?: string, room?: string, mechanicName?: string) => {
+  const handleMarkAsVandalizedNoRecovery = async (bikePat: string) => {
     setIsLoading(true);
-    const finalMechanic = mechanicName || driverName;
-    const finalTreatment = treatment || 'Vandalizada sem recuperação';
-    const finalRoom = room || '';
-    const observation = [finalTreatment, finalRoom ? `Local: ${finalRoom}` : ''].filter(Boolean).join(' | ');
     try {
       setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
-      updateDoc(doc(db, 'bikes', bikePat), { 
+      const treatment = 'Vandalizada sem recuperação';
+      await updateDoc(doc(db, 'bikes', bikePat), { 
         status: 'Vandalizada', 
-        responsavel: finalMechanic,
-        observacao: observation,
-        localFinal: finalRoom || null,
+        responsavel: null, 
+        observacao: treatment, 
         ultimaAtualizacao: serverTimestamp() 
-      }).catch(() => {});
-      addDoc(collection(db, 'reports'), { 
+      });
+      await addDoc(collection(db, 'reports'), { 
         bikeNumber: bikePat, 
         status: 'Vandalizada', 
-        driverName: finalMechanic,
-        mecanico: finalMechanic,
-        treatment: finalTreatment,
-        localFinal: finalRoom || null,
-        observation,
-        localidade: finalRoom || null,
+        driverName, 
+        treatment, 
         timestamp: serverTimestamp(), 
         type: 'Vandalizada' 
-      }).catch(() => {});
-      apiCall({ action: 'markAsVandalizedNoRecovery', bikeNumber: bikePat, mechanicName: finalMechanic, treatment: observation }, 1, true).catch(() => {});
-      setSuccessMessage(`Bike ${bikePat} marcada como Vandalizada${finalRoom ? ` — ${finalRoom}` : ''}.`);
+      });
+      await apiCall({ action: 'markAsVandalizedNoRecovery', bikeNumber: bikePat, mechanicName: driverName, treatment }, 1, true);
+      refreshAll(true);
     } catch (err: any) {
       console.error('Erro ao marcar como vandalizada:', err);
     } finally {
       setIsLoading(false);
       setIsVandalizedConfirmOpen(null);
-      setVandalizedMechanicModal(null);
-      setVandalizedSelected(new Set());
-      setVandalizedRoom('');
     }
   };
 
@@ -1867,7 +1735,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicSelectionModalOpen(false);
     try {
       updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
-      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Em Manutenção', driverName, mecanico: mechanicName, mechanicName, observation: `Entrada na Mecânica — ${mechanicName}`, dataEntrada: serverTimestamp(), timestamp: serverTimestamp(), type: 'Mecânica' }).catch(e => console.warn('[Firebase] reports write:', e.code));
+      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Mecânica', driverName, mechanicName, timestamp: serverTimestamp(), type: 'Mecânica' }).catch(e => console.warn('[Firebase] reports write:', e.code));
       apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true).catch(() => {});
     } catch (err: any) {
       alert('Erro: ' + err.message);
@@ -1882,17 +1750,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
     // A notificação ao ADM só ocorre ao FINALIZAR A CARRETINHA (após QR + bateria + comunicação).
     // Atualização otimista
-    const mechanicName = selectedMechanicBike?.mecanico || driverName;
-    const now = new Date();
-    protectMechanicBike(bikeNumber, { status: 'Reserva', mecanico: mechanicName, tratativa: treatment, dataFinalizacao: now });
+    protectMechanicBike(bikeNumber, 'Reserva');
     setMechanicsList(prev => prev.map(b =>
-      b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', mecanico: mechanicName, tratativa: treatment, dataFinalizacao: now } : b
+      b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', tratativa: treatment } : b
     ));
     setIsMechanicRepairModalOpen(false);
     try {
-      updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: mechanicName, observacao: treatment, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
-      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Em Estação', driverName: mechanicName, mecanico: mechanicName, treatment, dataEntrada: selectedMechanicBike?.dataEntrada || null, timestamp: serverTimestamp(), type: 'Reparo' }).catch(e => console.warn('[Firebase] reports write:', e.code));
-      apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName, treatment }, 1, true).catch(() => {});
+      updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
+      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Em Estação', driverName, treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(e => console.warn('[Firebase] reports write:', e.code));
+      apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName: driverName, treatment }, 1, true).catch(() => {});
       setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
     } catch (err: any) {
       alert('Erro: ' + err.message);
@@ -1912,16 +1778,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       // Persiste no backend
       apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
-      await Promise.all(bikeNumbers.map(id => {
-        const bikeData = mechanicsList.find(b => b.patrimonio === id);
-        return updateDoc(doc(db, 'bikes', id), { 
+      await Promise.all(bikeNumbers.map(id =>
+        updateDoc(doc(db, 'bikes', id), { 
           carretinha: trailerName, 
-          status: 'Reserva',
-          responsavel: bikeData?.mecanico || null, // mantém mecânico associado
+          status: 'Reserva', 
           trailerStatus: null, // Reseta status se estiver sendo re-organizada
           ultimaAtualizacao: serverTimestamp() 
-        }, { merge: true }).catch(() => {});
-      }));
+        }, { merge: true }).catch(() => {})
+      ));
 
       setSuccessMessage(`Bikes organizadas na ${trailerName}!`);
       refreshAll(true);
@@ -1943,9 +1807,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
         ));
       } else if (action.type === 'status_change') {
         if (action.targetStatus === 'Reserva') {
-          updateDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: action.mechanicName || driverName, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
-          addDoc(collection(db, 'reports'), { bikeNumber: action.bikeNumber, status: 'Em Estação', driverName: action.mechanicName || driverName, treatment: action.treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(() => {});
-          const res = await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber: action.bikeNumber, mechanicName: action.mechanicName || driverName, treatment: action.treatment }, 1, true);
+          updateDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
+          addDoc(collection(db, 'reports'), { bikeNumber: action.bikeNumber, status: 'Em Estação', driverName: action.mechanicName, treatment: action.treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(() => {});
+          const res = await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber: action.bikeNumber, mechanicName: action.mechanicName, treatment: action.treatment }, 1, true);
           if (!res.success) throw new Error(res.error || 'Erro ao aprovar reparo.');
         } else {
           const res = await apiCall({
@@ -2011,20 +1875,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
         local: 'Atribuído via ADM', 
         recipient: targetDriverName
       }, 1, true);
-
-      // 2b. Registra no relatório de movimentação — aparece na busca por bike no ADM
-      bikes.forEach((id: string) => {
-        addDoc(collection(db, 'reports'), {
-          bikeNumber: id,
-          status: 'Carretinha',
-          driverName: targetDriverName,
-          observation: `${trailerName} → atribuída a ${targetDriverName} pelo ADM ${driverName}`,
-          timestamp: serverTimestamp(),
-          type: 'Carretinha',
-          trailerName,
-          assignedBy: driverName,
-        }).catch(() => {});
-      });
 
       // 3. Aprova a ação pendente
       await updateDoc(doc(db, 'pending_actions', action.id), {
@@ -2191,69 +2041,78 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const startTrailerScanner = async () => {
     if (isScannerBusy.current) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Câmera não suportada neste navegador.', scannerActive: false } : null);
+      setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Seu navegador não suporta acesso à câmera.', scannerActive: false } : null);
       return;
     }
-
     isScannerBusy.current = true;
-
-    // Para tudo e aguarda estado limpo
     try {
+      await internalStopScanner();
       await internalStopTrailerScanner();
-    } catch {}
-    await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 400));
+    } catch (e) {
+      console.warn('Error stopping existing scanners:', e);
+    }
 
     setTrailerQrModal(prev => prev ? { ...prev, scannerActive: true, lastError: null } : null);
-
-    // Aguarda DOM renderizar o elemento do modal
-    await new Promise(r => setTimeout(r, 600));
-
-    try {
-      const el = document.getElementById('qr-trailer-reader');
-      if (!el) throw new Error('Elemento qr-trailer-reader não encontrado no DOM.');
-
-      // Limpa innerHTML — força estado DOM fresco, evita "already under transition"
-      el.innerHTML = '';
-
-      const qr = new Html5Qrcode('qr-trailer-reader');
-      trailerScannerRef.current = qr;
-
-      // Tenta iniciar com zoom 2x para facilitar leitura — fallback sem zoom
-      const startWithConfig = async (zoom: boolean) => {
-        const cameraConfig = zoom
-          ? { facingMode: 'environment', advanced: [{ zoom: 2.0 }] } as any
-          : { facingMode: 'environment' };
-        await qr.start(
-          cameraConfig,
-          { fps: 10, qrbox: { width: 250, height: 250 } },
-          (decodedText) => handleTrailerQrSuccess(decodedText),
-          () => {}
-        );
-      };
+    setTimeout(async () => {
       try {
-        await startWithConfig(true);
-      } catch {
-        // Dispositivo não suporta zoom — inicia sem
-        el.innerHTML = '';
-        const qr2 = new Html5Qrcode('qr-trailer-reader');
-        trailerScannerRef.current = qr2;
-        await qr2.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 250, height: 250 } },
-          (decodedText) => handleTrailerQrSuccess(decodedText),
-          () => {}
-        );
+        const el = document.getElementById('qr-trailer-reader');
+        if (!el) throw new Error('Elemento do scanner não encontrado no DOM.');
+        
+        const checkStillActive = () => {
+          let active = false;
+          setTrailerQrModal(prev => {
+            if (prev && prev.scannerActive) active = true;
+            return prev;
+          });
+          return active;
+        };
+
+        if (!checkStillActive()) return;
+
+        const qr = new Html5Qrcode('qr-trailer-reader');
+        trailerScannerRef.current = qr;
+        
+        const startWithRetry = async (withZoom: boolean, retries = 3): Promise<void> => {
+          if (!checkStillActive()) return;
+          try {
+            const config = withZoom 
+              ? { facingMode: 'environment', advanced: [{ zoom: 2.0 }] } as any
+              : { facingMode: 'environment' };
+            
+            const promise = qr.start(
+              config,
+              { fps: 10, qrbox: { width: 220, height: 220 } },
+              (decodedText) => handleTrailerQrSuccess(decodedText),
+              () => {}
+            );
+            trailerScannerStartPromise.current = promise;
+            await promise;
+            trailerScannerStartPromise.current = null;
+          } catch (err: any) {
+            trailerScannerStartPromise.current = null;
+            if (err?.message?.includes('already under transition') && retries > 0) {
+              console.warn('Trailer Scanner transition error, retrying...', retries);
+              await new Promise(r => setTimeout(r, 500));
+              return startWithRetry(withZoom, retries - 1);
+            }
+            throw err;
+          }
+        };
+
+        try {
+          await startWithRetry(true);
+        } catch (err) {
+          console.warn('Zoom not supported or start failed, retrying without zoom:', err);
+          await startWithRetry(false);
+        }
+      } catch (err: any) {
+        console.error('Trailer Scanner error:', err);
+        setTrailerQrModal(prev => prev ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + (err.message || String(err)), scannerActive: false } : null);
+      } finally {
+        isScannerBusy.current = false;
       }
-    } catch (err: any) {
-      console.error('Trailer Scanner error:', err);
-      const msg = (err.message || String(err));
-      setTrailerQrModal(prev => prev
-        ? { ...prev, lastError: 'Não foi possível acessar a câmera: ' + msg, scannerActive: false }
-        : null
-      );
-    } finally {
-      isScannerBusy.current = false;
-    }
+    }, 500);
   };
 
   const handleFinalizeTrailer = async (trailerName: string) => {
@@ -2294,25 +2153,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     ));
     try {
       // Não limpa carretinha aqui; define trailerStatus como 'finalized'
-      await Promise.all(bikeIds.map(id => {
-        const bikeData = mechanicsList.find(b => b.patrimonio === id);
-        const mechanicName = bikeData?.mecanico || driverName;
-        // Atualiza status da bike
-        setDoc(doc(db, 'bikes', id), { 
-          trailerStatus: 'finalized', 
-          ultimaAtualizacao: serverTimestamp() 
-        }, { merge: true }).catch(() => {});
-        // Atualiza o report de Reparo desta bike com o trailerName
-        // (busca o report mais recente type=Reparo desta bike e adiciona trailerName)
-        import('firebase/firestore').then(({ query: _q, where: _w, getDocs: _gd, updateDoc: _upd, orderBy: _ob, limit: _lim, collection: _col }) => {
-          _gd(_q(_col(db, 'reports'), _w('bikeNumber', '==', id), _w('type', '==', 'Reparo'), _ob('timestamp', 'desc'), _lim(1)))
-            .then(snap => {
-              if (!snap.empty) {
-                _upd(snap.docs[0].ref, { trailerName, mecanico: mechanicName }).catch(() => {});
-              }
-            }).catch(() => {});
-        });
-      }));
+      await Promise.all(bikeIds.map(id => setDoc(doc(db, 'bikes', id), { 
+        trailerStatus: 'finalized', 
+        ultimaAtualizacao: serverTimestamp() 
+      }, { merge: true })));
       apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
       // Notifica ADM para alterar status das bikes — só ocorre aqui, após QR + bateria + comunicação
       const notifyMsg = `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
@@ -2752,17 +2596,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
 
       if (isAdm) {
-        if (d.alerts) {
-          // Deduplica por patrimônio — evita duplicatas entre Firebase e Sheets
-          const seen = new Set<string>();
-          const deduped = (d.alerts as any[]).filter((a: any) => {
-            const key = String(a.patrimonio || a.id);
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          });
-          setAlerts(deduped);
-        }
+        if (d.alerts) setAlerts(d.alerts);
         if (d.vandalized) setVandalizedBikes(d.vandalized);
         if (d.changeStatusData) setChangeStatusData(d.changeStatusData);
         if (d.adminAlerts) {
@@ -3434,6 +3268,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 {scannerActive ? (
                   <div className="relative overflow-hidden rounded-xl bg-black aspect-square w-full border-2 border-green-500 shadow-lg">
                     <div id="qr-trailer-reader" className="w-full h-full" />
+                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                      <div className="w-44 h-44 border-2 border-green-400/60 rounded-xl" />
+                    </div>
                     <button onClick={stopTrailerScanner} className="absolute top-2 right-2 bg-black/60 text-white p-1.5 rounded-full">
                       <XIcon className="w-4 h-4" />
                     </button>
@@ -3681,24 +3518,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       batteryFailed: prev.batteryFailed === patrimonio ? null : prev.batteryFailed,
                       lastError: null,
                     } : null);
-                    // Atualiza lista local — volta para Em Manutenção preservando mecânico
-                    setMechanicsList(prev => prev.map(b => {
-                      if (b.patrimonio !== patrimonio) return b;
-                      const mechanicName = b.mecanico || driverName;
-                      protectMechanicBike(patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
-                      return { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null, dataFinalizacao: null };
-                    }));
-                    // Firebase não-bloqueante
-                    const bikeData = mechanicsList.find(b => b.patrimonio === patrimonio);
-                    const mechanicName = bikeData?.mecanico || driverName;
-                    updateDoc(doc(db, 'bikes', patrimonio), {
-                      carretinha: null, trailerStatus: null,
-                      status: 'Mecânica', responsavel: mechanicName,
-                      ultimaAtualizacao: serverTimestamp()
-                    }).catch(() => {});
+                    // Atualiza lista local — volta para Em Manutenção sem carretinha
+                    setMechanicsList(prev => prev.map(b =>
+                      b.patrimonio === patrimonio
+                        ? { ...b, status: 'Em Manutenção', carretinha: null, dataFinalizacao: '' }
+                        : b
+                    ));
                     // Backend
                     try {
-                      await apiCall({ action: 'removeFromTrailer', bikeNumber: patrimonio, mechanicName }, 1, false);
+                      await apiCall({ action: 'removeFromTrailer', bikeNumber: patrimonio }, 1, false);
                     } catch (e: any) {
                       console.warn('[removeFromTrailer]', e.message);
                     }
@@ -3849,7 +3677,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   { label: 'Recolh.', value: driver.stats.recolhidas, c: 'green' },
                   { label: 'Remanej.', value: driver.stats.remanejada, c: 'indigo' },
                   { label: 'Não Enc.', value: driver.stats.naoEncontrada, c: 'red' },
-                  { label: 'Total', value: (driver.stats.recolhidas || 0) + (driver.stats.remanejada || 0), c: 'teal' },
+                  { label: 'Não Atend.', value: driver.stats.naoAtendida || 0, c: 'orange' },
                 ].map((item, i) => (
                   <div key={`stat-${item.label}-${i}`} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
                     <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.label}</p>
@@ -3877,17 +3705,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
           const activeStatuses = isTecnica
             ? ['Em Técnica', 'Aguardando Técnica']
             : ['Em Manutenção', 'Reserva'];
-          const byMechanic: Record<string, {manutencao: number, reserva: number, bikesMan: string[], bikesRes: string[]}> = {};
+          const byMechanic: Record<string, {manutencao: number, reserva: number}> = {};
           sourceList.filter(b => activeStatuses.includes(b.status)).forEach(b => {
             const m = b.mecanico || '—';
-            if (!byMechanic[m]) byMechanic[m] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
-            const isMainStatus = isTecnica ? b.status === 'Em Técnica' : b.status === 'Em Manutenção';
-            const refDate = isMainStatus
-              ? (b.dataEntrada ? new Date(b.dataEntrada) : null)
-              : (b.dataFinalizacao ? new Date(b.dataFinalizacao) : b.dataEntrada ? new Date(b.dataEntrada) : null);
-            if (!refDate || refDate >= cutoff) {
-              if (isMainStatus) { byMechanic[m].manutencao++; byMechanic[m].bikesMan.push(b.patrimonio); }
-              else { byMechanic[m].reserva++; byMechanic[m].bikesRes.push(b.patrimonio); }
+            if (!byMechanic[m]) byMechanic[m] = { manutencao: 0, reserva: 0 };
+            const entryDate = b.dataEntrada ? new Date(b.dataEntrada) : null;
+            if (!entryDate || entryDate >= cutoff) {
+              const isMainStatus = isTecnica ? b.status === 'Em Técnica' : b.status === 'Em Manutenção';
+              if (isMainStatus) byMechanic[m].manutencao++;
+              else byMechanic[m].reserva++;
             }
           });
           const mechs = Object.entries(byMechanic);
@@ -3911,20 +3737,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div key={name} className="flex items-center gap-2">
                       <span className="text-[10px] font-bold text-gray-500 uppercase w-16 truncate flex-shrink-0">{name}</span>
                       <div className="flex gap-1.5 flex-1">
-                        <button
-                          onClick={() => counts.manutencao > 0 && setProductionDrillDown({ mechanic: name, type: 'man', bikes: counts.bikesMan })}
-                          className={`flex flex-col items-center py-0.5 px-2 bg-orange-50 border border-orange-100 rounded-md flex-1 transition-all ${counts.manutencao > 0 ? 'hover:bg-orange-100 active:scale-95 cursor-pointer' : 'cursor-default'}`}
-                        >
+                        <div className="flex flex-col items-center py-0.5 px-2 bg-orange-50 border border-orange-100 rounded-md flex-1">
                           <span className="text-[7px] font-bold text-orange-400 uppercase leading-none">{isTecnica ? 'Téc' : 'Man'}</span>
                           <span className="text-sm font-black text-orange-500 leading-tight">{counts.manutencao}</span>
-                        </button>
-                        <button
-                          onClick={() => counts.reserva > 0 && setProductionDrillDown({ mechanic: name, type: 'res', bikes: counts.bikesRes })}
-                          className={`flex flex-col items-center py-0.5 px-2 bg-green-50 border border-green-100 rounded-md flex-1 transition-all ${counts.reserva > 0 ? 'hover:bg-green-100 active:scale-95 cursor-pointer' : 'cursor-default'}`}
-                        >
+                        </div>
+                        <div className="flex flex-col items-center py-0.5 px-2 bg-green-50 border border-green-100 rounded-md flex-1">
                           <span className="text-[7px] font-bold text-green-500 uppercase leading-none">{isTecnica ? 'Agu' : 'Res'}</span>
                           <span className="text-sm font-black text-green-600 leading-tight">{counts.reserva}</span>
-                        </button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -4125,7 +3945,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         {/* ÍCONES DE ATALHO MECÂNICA */}
         {isMecanica && (
-          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-6">
             <button 
               onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Alterar status' ? null : 'Alterar status')}
               className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Alterar status' ? 'bg-purple-600 border-purple-700 text-white' : 'bg-purple-50 border-purple-100 hover:bg-purple-100'}`}
@@ -4173,16 +3993,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Reserva' ? 'text-white' : 'text-green-600'}`}>
                 {mechanicsList.filter(b => b.status === 'Reserva').length}
               </span>
-            </button>
-            <button
-              onClick={() => { setIsMechanicHistoryOpen(true); fetchMechanicHistory(); }}
-              className="flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 bg-gray-50 border-gray-200 hover:bg-gray-100"
-            >
-              <div className="p-1.5 rounded-full mb-1 bg-gray-600 text-white">
-                <CalendarIcon className="w-4 h-4" />
-              </div>
-              <span className="text-[8px] font-bold text-center leading-tight h-5 flex items-center text-gray-800">Histórico</span>
-              <span className="mt-0.5 text-[10px] font-black text-gray-600">—</span>
             </button>
           </div>
         )}
@@ -4294,51 +4104,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
                   <h2 className="text-lg font-bold text-orange-800 flex items-center gap-2"><BicycleIcon className="w-5 h-5"/>Mecânica - Em Manutenção</h2>
                   
-                  {/* Filtros */}
-                  <div className="flex flex-col gap-1.5">
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs font-bold text-gray-600 w-12">Mecân.:</label>
-                      <select
-                        value={selectedMechanicFilter}
-                        onChange={(e) => setSelectedMechanicFilter(e.target.value)}
-                        className="text-xs p-1 border rounded bg-white font-semibold text-gray-700 focus:ring-1 focus:ring-orange-500 outline-none"
-                      >
-                        <option value="Todos">Todos os Mecânicos</option>
-                        {Array.from(new Set(mechanicsList.filter(b => b.status === 'Em Manutenção' && b.mecanico).map(b => b.mecanico))).sort().map(name => (
-                          <option key={name} value={name}>{name}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs font-bold text-gray-600 w-12">Bateria:</label>
-                      <button
-                        onClick={() => setSelectedBatteryFilter(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? 'Todos' : 'asc')}
-                        className={`text-xs px-2 py-1 rounded border font-bold transition-all ${
-                          selectedBatteryFilter === 'desc' ? 'bg-orange-500 text-white border-orange-500' :
-                          selectedBatteryFilter === 'asc'  ? 'bg-blue-500 text-white border-blue-500' :
-                          'bg-white text-gray-500 border-gray-300 hover:border-gray-400'
-                        }`}
-                      >
-                        {selectedBatteryFilter === 'desc' ? '🔋 Maior → Menor' :
-                         selectedBatteryFilter === 'asc'  ? '🔋 Menor → Maior' :
-                         '🔋 Ordenar'}
-                      </button>
-                    </div>
+                  {/* Filtro por Mecânico */}
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="mechanic-filter" className="text-xs font-bold text-gray-600">Filtrar:</label>
+                    <select 
+                      id="mechanic-filter"
+                      value={selectedMechanicFilter}
+                      onChange={(e) => setSelectedMechanicFilter(e.target.value)}
+                      className="text-xs p-1 border rounded bg-white font-semibold text-gray-700 focus:ring-1 focus:ring-orange-500 outline-none"
+                    >
+                      <option value="Todos">Todos os Mecânicos</option>
+                      {Array.from(new Set(mechanicsList.filter(b => b.status === 'Em Manutenção' && b.mecanico).map(b => b.mecanico))).sort().map(name => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
                 {(() => {
-                  const getBatPct = (b: any) => {
-                    const raw = b.bateria !== undefined ? Number(b.bateria) : undefined;
-                    return raw !== undefined ? (raw <= 1 && raw > 0 ? Math.round(raw * 100) : Math.round(raw)) : -1;
-                  };
-                  const filteredBikes = mechanicsList
-                    .filter(b => b.status === 'Em Manutenção' && (selectedMechanicFilter === 'Todos' || b.mecanico === selectedMechanicFilter))
-                    .sort((a, b) => {
-                      if (selectedBatteryFilter === 'desc') return getBatPct(b) - getBatPct(a);
-                      if (selectedBatteryFilter === 'asc')  return getBatPct(a) - getBatPct(b);
-                      return 0;
-                    });
+                  const filteredBikes = mechanicsList.filter(b => 
+                    b.status === 'Em Manutenção' && 
+                    (selectedMechanicFilter === 'Todos' || b.mecanico === selectedMechanicFilter)
+                  );
                   
                   return filteredBikes.length > 0 ? (
                     <div className="space-y-2">
@@ -4360,12 +4147,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             <button onClick={() => { setSelectedMechanicBike(bike); setIsMechanicRepairModalOpen(true); }} className="px-3 py-1.5 bg-orange-600 text-white text-xs font-bold rounded hover:bg-orange-700 active:scale-95">Finalizar Reparo</button>
                             <div className="flex gap-2">
                               <button onClick={() => setIsTechnicalConfirmOpen({ isOpen: true, bikePat: bike.patrimonio, mechanicName: bike.mecanico })} className="flex-1 px-2 py-1 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700 active:scale-95">Técnica</button>
-                              <button onClick={() => {
-                                const mec = bike.mecanico || driverName;
-                                setVandalizedMechanicModal({ bikePat: bike.patrimonio, mechanicName: mec });
-                                setVandalizedSelected(new Set());
-                                setVandalizedRoom('');
-                              }} className="flex-1 px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded hover:bg-red-700 active:scale-95">Vandalizada</button>
+                              <button onClick={() => setIsVandalizedConfirmOpen({ isOpen: true, bikePat: bike.patrimonio })} className="flex-1 px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded hover:bg-red-700 active:scale-95">Vandalizada</button>
                             </div>
                           </div>
                         </div>
@@ -4380,126 +4162,120 @@ const MainScreen: React.FC<MainScreenProps> = ({
               <div id="section-reserva" className="p-4 border rounded-lg bg-green-50 shadow-sm scroll-mt-4">
                 <div className="flex justify-between items-center mb-3">
                   <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
+                  <button 
+                    onClick={() => {
+                      // Abre scanner para qualquer bike na reserva (Sem Carretinha ou não)
+                      startScanner(); // Usa o scanner geral, mas vamos tratar o sucesso
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm transition-all active:scale-95"
+                  >
+                    <QrCodeIcon className="w-4 h-4"/>Escanear para Carretinha
+                  </button>
                 </div>
-                {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (() => {
-                  const grouped = mechanicsList.filter(b => b.status === 'Reserva').reduce((acc, bike) => {
-                    const key = bike.carretinha || 'Sem Carretinha';
-                    if (!acc[key]) acc[key] = [];
-                    acc[key].push(bike);
-                    return acc;
-                  }, {} as Record<string, any[]>);
-
-                  // Separa carretinhas ativas (sem status ou em montagem) das enviadas (finalized/assigned)
-                  const activeTrailers = Object.entries(grouped).filter(([t, b]) =>
-                    t === 'Sem Carretinha' || !b[0]?.trailerStatus
-                  );
-                  const sentTrailers = Object.entries(grouped).filter(([t, b]) =>
-                    t !== 'Sem Carretinha' && (b[0]?.trailerStatus === 'finalized' || b[0]?.trailerStatus === 'assigned')
-                  );
-
-                  return (
-                    <div className="space-y-3">
-                      {/* Carretinhas ativas — edição completa */}
-                      {activeTrailers.map(([trailer, bikes]) => (
-                        <div key={trailer} className="border border-green-200 rounded-xl bg-white p-3 shadow-sm">
-                          <div className="flex justify-between items-center mb-2 border-b pb-1.5">
-                            <h3 className="font-bold text-green-700 flex items-center gap-2 text-sm">
-                              <TrailerIcon className="w-4 h-4"/>{trailer}
-                            </h3>
-                            {trailer !== 'Sem Carretinha' && (
-                              <button onClick={() => handleFinalizeTrailer(trailer)}
-                                className="text-[10px] px-2 py-0.5 rounded font-bold bg-green-600 hover:bg-green-700 text-white transition-all">
-                                Finalizar Carretinha
-                              </button>
+                {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (
+                  <div className="space-y-4">
+                    {Object.entries(
+                      mechanicsList.filter(b => b.status === 'Reserva').reduce((acc, bike) => {
+                        const key = bike.carretinha || 'Sem Carretinha';
+                        if (!acc[key]) acc[key] = [];
+                        acc[key].push(bike);
+                        return acc;
+                      }, {} as Record<string, any[]>)
+                    ).map(([trailer, bikes]) => (
+                      <div key={trailer} className="border border-green-200 rounded-md bg-white p-3 shadow-sm">
+                        <div className="flex justify-between items-center mb-2 border-b pb-1">
+                          <div className="flex flex-col">
+                            <h3 className="font-bold text-green-700 flex items-center gap-2"><TrailerIcon className="w-4 h-4"/>{trailer}</h3>
+                            {trailer !== 'Sem Carretinha' && bikes[0]?.trailerStatus === 'finalized' && (
+                              <span className="text-[8px] font-bold text-orange-600 uppercase">Aguardando Validação ADM</span>
+                            )}
+                            {trailer !== 'Sem Carretinha' && bikes[0]?.trailerStatus === 'assigned' && (
+                              <span className="text-[8px] font-bold text-blue-600 uppercase">Aguardando Aceite Motorista</span>
                             )}
                           </div>
-                          <div className="space-y-1">
-                            {(bikes as any[]).map((bike, i) => (
-                              <div key={`tr-${bike.patrimonio}-${i}`} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 border rounded-lg text-[11px]">
-                                <span className="font-black text-gray-800 font-mono w-10 flex-shrink-0">{bike.patrimonio}</span>
-                                {bike.mecanico && <span className="text-blue-600 font-bold flex-shrink-0 truncate max-w-[80px]">{bike.mecanico}</span>}
-                                {bike.tratativa && bike.tratativa !== 'MANUAL' && <span className="text-gray-400 flex-1 truncate text-[9px]">{bike.tratativa}</span>}
-                                <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
-                                  {bike.bateria !== undefined && (
-                                    <span className={`text-[10px] font-bold ${Number(bike.bateria) < 85 ? 'text-red-500' : 'text-gray-500'}`}>🔋{bike.bateria}%</span>
-                                  )}
-                                  {trailer !== 'Sem Carretinha' && (
-                                    <button onClick={() => {
-                                      const mechanicName = bike.mecanico || driverName;
-                                      // 1. Atualiza estado local imediatamente
-                                      protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
-                                      setMechanicsList(prev => prev.map(b =>
-                                        b.patrimonio === bike.patrimonio
-                                          ? { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null, dataFinalizacao: null }
-                                          : b
-                                      ));
-                                      // 2. Firebase não-bloqueante
-                                      updateDoc(doc(db, 'bikes', bike.patrimonio), {
-                                        carretinha: null, trailerStatus: null,
-                                        status: 'Mecânica', responsavel: mechanicName,
-                                        ultimaAtualizacao: serverTimestamp()
-                                      }).catch(() => {});
-                                      // 3. Backend
-                                      apiCall({ action: 'removeFromTrailer', bikeNumber: bike.patrimonio, mechanicName }, 1, false).catch(() => {});
-                                    }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95 transition-all">
-                                      <XIcon className="w-3 h-3"/>
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          {trailer === 'Sem Carretinha' && (
-                            <button onClick={() => {
-                              const MAX_TRAILERS = 4;
-                              const today = localDateStr();
-                              const storageKey = `last_trailer_${driverName}_${today}`;
-                              let lastNum = 0;
-                              try { const saved = localStorage.getItem(storageKey); if (saved) lastNum = parseInt(saved) || 0; } catch {}
-                              const next = (lastNum % MAX_TRAILERS) + 1;
-                              try { localStorage.setItem(storageKey, String(next)); } catch {}
-                              handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
-                            }} className="mt-2 w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700">
-                              Organizar em Carretinha
-                            </button>
+                          {trailer !== 'Sem Carretinha' && (
+                            <div className="flex gap-1">
+                              {(!bikes[0]?.trailerStatus || bikes[0]?.trailerStatus === 'finalized') && (
+                                <button 
+                                  onClick={() => handleFinalizeTrailer(trailer)} 
+                                  className={`text-[10px] px-2 py-0.5 rounded font-bold transition-all ${bikes[0]?.trailerStatus === 'finalized' ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700'} text-white`}
+                                >
+                                  {bikes[0]?.trailerStatus === 'finalized' ? 'Re-Finalizar' : 'Finalizar Carretinha'}
+                                </button>
+                              )}
+                              {bikes[0]?.trailerStatus === 'finalized' && (
+                                <button 
+                                  onClick={() => {
+                                    // Permite editar: remove status finalized para permitir alteração
+                                    bikes.forEach(b => {
+                                      updateDoc(doc(db, 'bikes', b.patrimonio), { trailerStatus: null, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
+                                    });
+                                    alert('Carretinha aberta para edição!');
+                                    refreshAll(true);
+                                  }}
+                                  className="text-[10px] bg-blue-500 text-white px-2 py-0.5 rounded font-bold hover:bg-blue-600"
+                                >
+                                  Editar
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
-                      ))}
-
-                      {/* Carretinhas enviadas — visualização resumida até aceite do motorista */}
-                      {sentTrailers.length > 0 && (
-                        <div className="border border-dashed border-gray-300 rounded-xl p-3 bg-gray-50">
-                          <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-2">Aguardando Aceite do Motorista</p>
-                          <div className="space-y-2">
-                            {sentTrailers.map(([trailer, bikes]) => {
-                              const isAssigned = bikes[0]?.trailerStatus === 'assigned';
-                              const motorista = bikes[0]?.responsavel || bikes[0]?.assignedTo || null;
-                              return (
-                                <div key={trailer} className={`rounded-lg border p-2.5 ${isAssigned ? 'bg-blue-50 border-blue-200' : 'bg-orange-50 border-orange-200'}`}>
-                                  <div className="flex items-center justify-between mb-1.5">
-                                    <div className="flex items-center gap-2">
-                                      <TrailerIcon className={`w-3.5 h-3.5 ${isAssigned ? 'text-blue-500' : 'text-orange-500'}`}/>
-                                      <span className="font-black text-sm text-gray-700">{trailer}</span>
-                                      <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase ${isAssigned ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
-                                        {isAssigned ? `Enviada → ${motorista || '?'}` : 'Aguard. ADM'}
-                                      </span>
-                                    </div>
-                                    <span className="text-[9px] text-gray-400 font-bold">{bikes.length} bike{bikes.length > 1 ? 's' : ''}</span>
-                                  </div>
-                                  <div className="flex flex-wrap gap-1">
-                                    {(bikes as any[]).map(b => (
-                                      <span key={b.patrimonio} className="font-mono text-[10px] font-bold px-1.5 py-0.5 bg-white border rounded text-gray-600">{b.patrimonio}</span>
-                                    ))}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {(bikes as any[]).map((bike, i) => (
+                            <div key={`trailer-${bike.patrimonio}-${i}`} className="relative text-xs p-1.5 bg-gray-50 border rounded text-center font-medium text-gray-700 flex flex-col items-center gap-0.5">
+                              {trailer !== 'Sem Carretinha' && (!bike.trailerStatus) && (
+                                <button 
+                                  onClick={async () => {
+                                    if (window.confirm(`Remover bike ${bike.patrimonio} da ${trailer}?`)) {
+                                      await updateDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, ultimaAtualizacao: serverTimestamp() });
+                                      refreshAll(true);
+                                    }
+                                  }}
+                                  className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 shadow-sm hover:bg-red-600 z-10"
+                                >
+                                  <XIcon className="w-2.5 h-2.5" />
+                                </button>
+                              )}
+                              <span className="font-bold">{bike.patrimonio}</span>
+                              <div className="flex flex-col items-center scale-90 origin-top">
+                                {bike.bateria !== undefined && <span className="text-[8px] text-gray-500">{bike.bateria}%</span>}
+                                {bike.carregamento === 'Carregando' && <span className="text-[8px] text-green-600 font-bold">⚡</span>}
+                                {bike.carregamento === 'Não carregando' && <span className="text-[8px] text-red-500 font-bold">🔌</span>}
+                              </div>
+                              {bike.mecanico && <span className="text-[7px] text-blue-600 truncate max-w-full">{bike.mecanico}</span>}
+                            </div>
+                          ))}
                         </div>
-                      )}
-                    </div>
-                  );
-                })() : <p className="text-sm text-gray-500 italic">Nenhuma bike na reserva.</p>}
+                        {trailer === 'Sem Carretinha' && (
+                          <button onClick={() => {
+                            // Calcula próximo número de carretinha (1→2→3→4→1...)
+                            const MAX_TRAILERS = 4;
+                            const usedNumbers = mechanicsList
+                              .filter(b => b.carretinha && b.carretinha !== 'Sem Carretinha')
+                              .map(b => {
+                                const m = String(b.carretinha).match(/(\d+)$/);
+                                return m ? parseInt(m[1]) : 0;
+                              })
+                              .filter(n => n > 0);
+                            let next = 1;
+                            for (let i = 1; i <= MAX_TRAILERS; i++) {
+                              if (!usedNumbers.includes(i)) { next = i; break; }
+                            }
+                            // Se todos ocupados, reutiliza o 1
+                            const nextName = `Carretinha ${next}`;
+                            setSelectedBikesForTrailer((bikes as any[]).map(b => b.patrimonio));
+                            // Passa direto para handleOrganizeTrailer sem abrir modal de nome
+                            handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), nextName);
+                          }}
+                            className="mt-3 w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700">
+                            Organizar em Carretinha
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="text-sm text-gray-500 italic">Nenhuma bike na reserva.</p>}
               </div>
             )}
           </div>
@@ -4826,7 +4602,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               { l: 'Recolh.', v: driver.stats.recolhidas, c: 'green' },
                               { l: 'Remanej.', v: driver.stats.remanejada, c: 'indigo' },
                               { l: 'Não Enc.', v: driver.stats.naoEncontrada, c: 'red' },
-                              { l: 'Total', v: (driver.stats.recolhidas || 0) + (driver.stats.remanejada || 0), c: 'teal' },
+                              { l: 'Não Atend.', v: driver.stats.naoAtendida || 0, c: 'orange' },
                             ].map((item, i) => (
                               <div key={`adm-stat-${item.l}-${i}`} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
                                 <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.l}</p>
@@ -5075,10 +4851,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div className="flex justify-between items-center mb-2 border-b pb-1">
                       <h3 className="font-black text-gray-900 text-sm uppercase">Visão Geral</h3>
                     </div>
-                    <div className="grid grid-cols-4 gap-1.5">
+                    <div className="grid grid-cols-3 gap-1.5">
                       {[
-                        { l: 'Alterar Status', v: mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length, c: 'purple' },
-                        { l: 'Aguardando', v: mechanicsList.filter(b => b.status === 'Aguardando Manutenção').length, c: 'blue' },
+                        { l: 'Aguardando', v: mechanicsList.filter(b => b.status === 'Aguardando Confirmação').length, c: 'blue' },
                         { l: 'Manutenção', v: mechanicsList.filter(b => b.status === 'Em Manutenção').length, c: 'orange' },
                         { l: 'Reserva', v: mechanicsList.filter(b => b.status === 'Reserva').length, c: 'green' },
                       ].map(item => (
@@ -5089,80 +4864,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       ))}
                     </div>
                   </div>
-
-                  {/* Carretinhas */}
-                  {(() => {
-                    const trailersByName: Record<string, { bikes: any[], motorista: string, status: string }> = {};
-                    mechanicsList
-                      .filter(b => b.carretinha && b.carretinha !== 'Sem Carretinha')
-                      .forEach(b => {
-                        const t = b.carretinha;
-                        if (!trailersByName[t]) {
-                          trailersByName[t] = { bikes: [], motorista: b.responsavel || b.assignedTo || '—', status: b.trailerStatus || '' };
-                        }
-                        trailersByName[t].bikes.push(b);
-                      });
-
-                    const trailers = Object.entries(trailersByName);
-                    if (trailers.length === 0) return null;
-
-                    // Separa em montagem x enviadas
-                    const active = trailers.filter(([, d]) => !d.status);
-                    const sent   = trailers.filter(([, d]) => d.status === 'finalized' || d.status === 'assigned');
-
-                    return (
-                      <div className="bg-white p-3 rounded-lg border shadow-sm mb-3">
-                        <div className="flex justify-between items-center mb-2 border-b pb-1">
-                          <h3 className="font-black text-gray-900 text-sm uppercase flex items-center gap-2">
-                            <TrailerIcon className="w-4 h-4 text-green-600"/>Carretinhas
-                          </h3>
-                        </div>
-
-                        {/* Em montagem — detalhes completos */}
-                        {active.map(([trailerName, data]) => (
-                          <div key={trailerName} className="mb-2 p-2 bg-green-50 rounded-lg border border-green-200">
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-xs font-black text-green-700">{trailerName}</span>
-                              <span className="text-[8px] font-black px-1.5 py-0.5 rounded uppercase bg-green-100 text-green-700">Em Montagem</span>
-                            </div>
-                            <div className="flex flex-wrap gap-1">
-                              {data.bikes.map((b: any) => (
-                                <span key={b.patrimonio} className="px-1.5 py-0.5 bg-white border border-green-300 text-green-800 text-[9px] font-black rounded font-mono">
-                                  {b.patrimonio}
-                                </span>
-                              ))}
-                            </div>
-                            <p className="text-[9px] text-gray-400 mt-1">{data.bikes.length} bike(s)</p>
-                          </div>
-                        ))}
-
-                        {/* Enviadas — resumo compacto até aceite */}
-                        {sent.length > 0 && (
-                          <div className="border border-dashed border-gray-200 rounded-lg p-2 bg-gray-50">
-                            <p className="text-[8px] font-black text-gray-400 uppercase mb-1.5">Aguardando Aceite do Motorista</p>
-                            <div className="space-y-1.5">
-                              {sent.map(([trailerName, data]) => {
-                                const isAssigned = data.status === 'assigned';
-                                return (
-                                  <div key={trailerName} className={`flex items-center gap-2 p-1.5 rounded-lg border ${isAssigned ? 'bg-blue-50 border-blue-200' : 'bg-orange-50 border-orange-200'}`}>
-                                    <TrailerIcon className={`w-3.5 h-3.5 flex-shrink-0 ${isAssigned ? 'text-blue-500' : 'text-orange-500'}`}/>
-                                    <span className="font-black text-xs text-gray-700 flex-shrink-0">{trailerName}</span>
-                                    {isAssigned && data.motorista !== '—' && (
-                                      <span className="text-[10px] text-blue-600 font-bold flex-shrink-0">→ {data.motorista}</span>
-                                    )}
-                                    <span className={`text-[8px] font-black px-1 py-0.5 rounded ml-auto flex-shrink-0 ${isAssigned ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
-                                      {isAssigned ? 'Aguard. Aceite' : 'Aguard. ADM'}
-                                    </span>
-                                    <span className="text-[9px] text-gray-400 flex-shrink-0">{data.bikes.length}b</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
 
                   {/* Card por mecânico */}
                   {(() => {
@@ -5268,22 +4969,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div className="space-y-2">
                       {bikeSearchResult.map((record: any, i: number) => {
                         const statusLow = (record.status || '').toLowerCase();
-                        // Detecta origem do registro
-                        const isMecanicaRecord = record.origem === 'mecanica' || record.type === 'Mecânica' || record.type === 'Reparo';
-                        const isTecnicaRecord  = record.type === 'Técnica';
-                        const isCarretinha     = record.type === 'Carretinha';
+                        const isMecanicaRecord = record.origem === 'mecanica';
                         const isRecolhida   = statusLow === 'recolhida' || statusLow === 'filial';
                         const isEstacao     = statusLow === 'estação' || statusLow === 'estacao';
                         const isVandalizada = statusLow === 'vandalizada';
                         const isNaoEnc      = statusLow.includes('não encontrada') || statusLow.includes('nao encontrada');
-                        const isMec         = statusLow.includes('manutenção') || statusLow.includes('manutencao') || statusLow === 'em manutenção' || statusLow === 'aguardando manutenção';
-                        const isReserva     = statusLow === 'reserva' || statusLow.includes('reparo finalizado') || statusLow === 'em estação';
+                        const isMec         = statusLow.includes('manutenção') || statusLow.includes('manutencao') || statusLow === 'em manutenção';
+                        const isReserva     = statusLow === 'reserva' || statusLow.includes('reparo finalizado');
                         const isRemanejada  = statusLow === 'remanejada';
-                        const isTec         = statusLow.includes('técnica') || statusLow.includes('tecnica');
-
-                        const borderColor = isCarretinha ? 'border-l-purple-400' :
-                          isTecnicaRecord ? 'border-l-blue-400' :
-                          isMecanicaRecord ? 'border-l-orange-400' : 'border-l-gray-300';
 
                         const badgeClass = isRecolhida ? 'bg-green-700 text-white' :
                           isEstacao ? 'bg-indigo-500 text-white' :
@@ -5291,48 +4984,40 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           isMec ? 'bg-orange-500 text-white' :
                           isReserva ? 'bg-green-500 text-white' :
                           isRemanejada ? 'bg-teal-500 text-white' :
-                          isTec ? 'bg-blue-500 text-white' :
-                          isCarretinha ? 'bg-purple-500 text-white' :
                           'bg-gray-400 text-white';
 
-                        // Responsável pelo registro
-                        const responsavel = record.mecanico || record.motorista || record.driverName || null;
-
                         return (
-                          <div key={i} className={`bg-white border rounded-lg p-2.5 shadow-sm border-l-4 ${borderColor}`}>
+                          <div key={i} className={`bg-white border rounded-lg p-2.5 shadow-sm ${isMecanicaRecord ? 'border-l-4 border-l-orange-400' : 'border-l-4 border-l-blue-300'}`}>
                             <div className="flex items-start justify-between gap-2 mb-1.5">
-                              <div className="flex items-center gap-1.5 flex-wrap">
+                              <div className="flex items-center gap-1.5">
                                 <span className={`px-2 py-0.5 text-[9px] font-black uppercase rounded ${badgeClass}`}>
                                   {record.status}
                                 </span>
-                                {isTecnicaRecord && <span className="px-1.5 py-0.5 text-[8px] font-bold bg-blue-50 text-blue-500 border border-blue-200 rounded">🔬 Técnica</span>}
-                                {isMecanicaRecord && !isTecnicaRecord && <span className="px-1.5 py-0.5 text-[8px] font-bold bg-orange-50 text-orange-500 border border-orange-200 rounded">🔧 Mecânica</span>}
-                                {isCarretinha && <span className="px-1.5 py-0.5 text-[8px] font-bold bg-purple-50 text-purple-500 border border-purple-200 rounded">🚌 {record.trailerName || 'Carretinha'}</span>}
+                                {isMecanicaRecord && (
+                                  <span className="px-1.5 py-0.5 text-[8px] font-bold bg-orange-50 text-orange-500 border border-orange-200 rounded">🔧 Mecânica</span>
+                                )}
                               </div>
-                              <span className="text-[9px] text-gray-800 font-mono font-bold whitespace-nowrap flex-shrink-0">{record.timestamp}</span>
+                              <span className="text-[9px] text-gray-800 font-mono font-bold whitespace-nowrap">{record.timestamp}</span>
                             </div>
-                            {responsavel && (
+                            {record.motorista && (
                               <p className="text-[10px] font-semibold text-gray-700">
-                                {isTecnicaRecord ? '🔬' : isCarretinha ? '🚌' : isMecanicaRecord ? '🔧' : '👤'} {responsavel}
+                                {isMecanicaRecord ? '🔧' : '👤'} {record.motorista}
                               </p>
                             )}
-                            {record.observation && (
-                              <p className="text-[10px] text-gray-500 mt-0.5">📝 {record.observation}</p>
-                            )}
-                            {!record.observation && record.observacao && (
+                            {record.observacao && (
                               <p className="text-[10px] text-gray-500 mt-0.5">📝 {record.observacao}</p>
                             )}
-                            {record.treatment && (
-                              <p className="text-[10px] text-gray-500 mt-0.5">🛠 {record.treatment}</p>
-                            )}
                             {record.bateria && (() => {
+                              // Converte 0.3 → 30%, 0.8 → 80%, já 80% fica 80%
                               const raw = String(record.bateria).replace(',', '.');
                               const num = parseFloat(raw);
                               const pct = !isNaN(num) ? (num <= 1 && num > 0 ? Math.round(num * 100) : Math.round(num)) : null;
-                              return pct !== null ? <p className="text-[10px] text-gray-500 mt-0.5">🔋 {pct}%</p> : null;
+                              return pct !== null ? (
+                                <p className="text-[10px] text-gray-500 mt-0.5">🔋 {pct}%</p>
+                              ) : null;
                             })()}
-                            {(record.localFinal || record.localidade) && (
-                              <p className="text-[10px] text-red-600 font-bold mt-0.5">📍 Local final: {record.localFinal || record.localidade}</p>
+                            {record.localidade && (
+                              <p className="text-[10px] text-gray-400 mt-0.5">📍 {record.localidade}</p>
                             )}
 
                             {/* Botões de Ação Manual (Apenas Perfil Mecânica) */}
@@ -6082,101 +5767,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
         </div>
       )}
 
-      {/* Modal Vandalizada — Mecânica (com opções de reparo + sala) */}
-      {vandalizedMechanicModal && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col max-h-[90vh] overflow-hidden">
-            {/* Header */}
-            <div className="bg-red-600 p-4 text-white flex-shrink-0">
-              <p className="text-xs font-bold uppercase opacity-80">Finalizar como Vandalizada</p>
-              <h2 className="text-lg font-black">Bike {vandalizedMechanicModal.bikePat}</h2>
-              <p className="text-[11px] opacity-80 mt-0.5">Mecânico: <span className="font-bold">{vandalizedMechanicModal.mechanicName}</span></p>
-            </div>
-
-            {/* Opções de dano */}
-            <div className="flex-1 overflow-y-auto p-4">
-              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">O que foi reparado?</p>
-              <div className="grid grid-cols-2 gap-1.5">
-                {MECHANIC_REPAIR_OPTIONS.map(opt => {
-                  const selected = vandalizedSelected.has(opt);
-                  return (
-                    <button key={opt}
-                      onClick={() => setVandalizedSelected(prev => {
-                        const next = new Set(prev);
-                        if (next.has(opt)) next.delete(opt); else next.add(opt);
-                        return next;
-                      })}
-                      className={`text-left px-2.5 py-2 rounded-lg border-2 font-bold text-xs transition-all active:scale-95 flex items-center gap-2 ${
-                        selected ? 'bg-red-50 border-red-400 text-red-700' : 'bg-white border-gray-200 text-gray-500 hover:border-red-200'
-                      }`}
-                    >
-                      <span className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 text-[9px] font-black ${
-                        selected ? 'bg-red-500 border-red-500 text-white' : 'border-gray-300'
-                      }`}>{selected ? '✓' : ''}</span>
-                      {opt}
-                    </button>
-                  );
-                })}
-              </div>
-              {vandalizedSelected.size > 0 && (
-                <p className="text-[9px] text-gray-400 italic mt-2">Selecione todas as opções que se aplicam.</p>
-              )}
-
-              {/* Local final */}
-              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mt-4 mb-2">Local final da bike</p>
-              <div className="grid grid-cols-3 gap-2">
-                {VANDALIZED_ROOMS.map(room => (
-                  <button key={room}
-                    onClick={() => setVandalizedRoom(prev => prev === room ? '' : room)}
-                    className={`py-2 rounded-xl border-2 font-black text-xs transition-all active:scale-95 ${
-                      vandalizedRoom === room
-                        ? 'bg-gray-800 border-gray-800 text-white'
-                        : 'bg-white border-gray-200 text-gray-600 hover:border-gray-400'
-                    }`}
-                  >
-                    {room}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="p-4 border-t flex-shrink-0 space-y-2">
-              {(vandalizedSelected.size > 0 || vandalizedRoom) && (
-                <p className="text-[10px] text-red-600 font-bold text-center">
-                  {vandalizedSelected.size > 0 ? `${vandalizedSelected.size} componente(s)` : ''}
-                  {vandalizedSelected.size > 0 && vandalizedRoom ? ' · ' : ''}
-                  {vandalizedRoom || ''}
-                </p>
-              )}
-              <div className="flex gap-2">
-                <button
-                  onClick={() => { setVandalizedMechanicModal(null); setVandalizedSelected(new Set()); setVandalizedRoom(''); }}
-                  className="flex-1 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase hover:bg-gray-200"
-                >Cancelar</button>
-                <button
-                  onClick={() => {
-                    const treatment = vandalizedSelected.size > 0
-                      ? Array.from(vandalizedSelected).join(', ')
-                      : 'Vandalizada sem recuperação';
-                    handleMarkAsVandalizedNoRecovery(
-                      vandalizedMechanicModal.bikePat,
-                      treatment,
-                      vandalizedRoom,
-                      vandalizedMechanicModal.mechanicName
-                    );
-                  }}
-                  disabled={isLoading}
-                  className="flex-1 py-2.5 bg-red-600 text-white rounded-xl font-bold text-xs uppercase shadow-lg hover:bg-red-700 active:scale-95 disabled:bg-gray-300 transition-all"
-                >
-                  {isLoading ? '...' : 'Confirmar'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Modal de Confirmação "Bike Vandalizada" */}
       {isVandalizedConfirmOpen?.isOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
@@ -6214,154 +5804,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       <VehicleSwitchModal isOpen={isVehicleModalOpen} onClose={() => setIsVehicleModalOpen(false)} onSwitch={(p, km) => onUpdateUser({ plate: p, kmInicial: km })} driverName={driverName} currentPlate={plate}/>
       <AdminAlerts isOpen={isAdminAlertsOpen} onClose={() => setIsAdminAlertsOpen(false)} adminName={driverName}/>
       <ReporModal isOpen={isReporModalOpen} onClose={() => setIsReporModalOpen(false)} data={reporData} isLoading={isReporLoading}/>
-      {/* Modal Histórico de Manutenções */}
-      {isMechanicHistoryOpen && (() => {
-        const fmt = (ts: any) => {
-          if (!ts) return '—';
-          const d = ts.toDate ? ts.toDate() : new Date(ts);
-          if (isNaN(d.getTime())) return '—';
-          return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-        };
-
-        // Filtra por mecânico e pela data de saída (dataSaida)
-        const filtered = mechanicHistory.filter(r => {
-          const ts = r.dataSaida?.toDate ? r.dataSaida.toDate() : new Date(r.dataSaida || 0);
-          const recDate = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')}`;
-          const matchDate = mechanicHistoryFilter.date ? recDate === mechanicHistoryFilter.date : true;
-          const matchMechanic = mechanicHistoryFilter.mechanic === 'Todos' || r.mecanico === mechanicHistoryFilter.mechanic;
-          return matchDate && matchMechanic;
-        }).sort((a, b) => {
-          const ta = a.dataSaida?.toMillis?.() || 0;
-          const tb = b.dataSaida?.toMillis?.() || 0;
-          return tb - ta;
-        });
-
-        // Mecânicos únicos da lista completa
-        const uniqueMechanics = ['Todos', ...Array.from(new Set(mechanicHistory.map(r => r.mecanico).filter(Boolean))).sort()];
-
-        return (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh] overflow-hidden">
-
-              {/* Header */}
-              <div className="bg-gray-800 p-4 text-white flex items-center justify-between flex-shrink-0">
-                <div className="flex items-center gap-2">
-                  <CalendarIcon className="w-5 h-5"/>
-                  <div>
-                    <h2 className="text-base font-black">Histórico de Manutenções</h2>
-                    <p className="text-[10px] opacity-60">Data de entrada → saída para reserva</p>
-                  </div>
-                </div>
-                <button onClick={() => setIsMechanicHistoryOpen(false)} className="p-1 hover:bg-white/20 rounded-full">
-                  <XIcon className="w-5 h-5"/>
-                </button>
-              </div>
-
-              {/* Filtros */}
-              <div className="p-3 border-b bg-gray-50 flex gap-2 flex-shrink-0">
-                <div className="flex-1">
-                  <label className="text-[9px] font-black text-gray-400 uppercase block mb-1">Mecânico</label>
-                  <select
-                    value={mechanicHistoryFilter.mechanic}
-                    onChange={e => setMechanicHistoryFilter(prev => ({ ...prev, mechanic: e.target.value }))}
-                    className="w-full text-xs p-1.5 border rounded-lg bg-white font-bold text-gray-700 outline-none"
-                  >
-                    {uniqueMechanics.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </div>
-                <div className="flex-1">
-                  <label className="text-[9px] font-black text-gray-400 uppercase block mb-1">Data de Saída</label>
-                  <input
-                    type="date"
-                    value={mechanicHistoryFilter.date}
-                    max={localDateStr()}
-                    onChange={e => setMechanicHistoryFilter(prev => ({ ...prev, date: e.target.value }))}
-                    className="w-full text-xs p-1.5 border rounded-lg bg-white font-bold text-gray-700 outline-none"
-                  />
-                </div>
-                <div className="flex items-end gap-1">
-                  <button
-                    onClick={() => setMechanicHistoryFilter({ mechanic: 'Todos', date: localDateStr() })}
-                    className="px-2 py-1.5 bg-gray-200 text-gray-600 text-[10px] font-bold rounded-lg hover:bg-gray-300 whitespace-nowrap"
-                  >Hoje</button>
-                  <button
-                    onClick={() => { setMechanicHistoryFilter(prev => ({ ...prev, date: '' })); }}
-                    className="px-2 py-1.5 bg-gray-100 text-gray-500 text-[10px] font-bold rounded-lg hover:bg-gray-200 whitespace-nowrap"
-                  >Tudo</button>
-                </div>
-              </div>
-
-              {/* Lista */}
-              <div className="flex-1 overflow-y-auto p-3">
-                {isMechanicHistoryLoading ? (
-                  <div className="text-center py-10 text-gray-400 text-sm">Carregando...</div>
-                ) : filtered.length === 0 ? (
-                  <div className="text-center py-10 text-gray-400 text-sm italic">Nenhum registro encontrado.</div>
-                ) : (
-                  <div className="space-y-1">
-                    {filtered.map((r, i) => (
-                      <div key={r.id || i} className="flex items-center gap-1.5 px-2 py-1.5 bg-white border border-gray-100 rounded-lg text-[10px]">
-                        <span className="font-black text-gray-800 font-mono w-9 flex-shrink-0">{r.bikeNumber}</span>
-                        <span className="text-blue-600 font-bold w-14 truncate flex-shrink-0" title={r.mecanico || '—'}>{r.mecanico || '—'}</span>
-                        <span className="text-gray-500 flex-1 truncate min-w-0" title={r.treatment || '—'}>{r.treatment || '—'}</span>
-                        {r.trailerName && (
-                          <span className="text-purple-600 font-bold flex-shrink-0 bg-purple-50 px-1 rounded text-[9px] whitespace-nowrap">{r.trailerName}</span>
-                        )}
-                        <span className="text-orange-500 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataEntrada)}</span>
-                        <span className="text-gray-300 flex-shrink-0">→</span>
-                        <span className="text-green-600 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataSaida)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Footer */}
-              <div className="p-3 border-t bg-gray-50 flex justify-between items-center flex-shrink-0">
-                <span className="text-[10px] text-gray-400 font-bold">{filtered.length} registro(s)</span>
-                <button onClick={() => setIsMechanicHistoryOpen(false)}
-                  className="px-4 py-2 bg-gray-800 text-white text-xs font-bold rounded-lg hover:bg-gray-700">
-                  Fechar
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* Popup Drill-down Produção */}
-      {productionDrillDown && (
-        <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/40 p-4" onClick={() => setProductionDrillDown(null)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
-            {/* Header */}
-            <div className={`p-3 text-white flex items-center justify-between ${productionDrillDown.type === 'man' ? 'bg-orange-500' : 'bg-green-600'}`}>
-              <div>
-                <p className="text-[10px] font-bold uppercase opacity-80">{productionDrillDown.type === 'man' ? 'Em Manutenção' : 'Reserva (Liberadas)'}</p>
-                <h3 className="text-base font-black">{productionDrillDown.mechanic}</h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-2xl font-black">{productionDrillDown.bikes.length}</span>
-                <button onClick={() => setProductionDrillDown(null)} className="p-1 hover:bg-white/20 rounded-full ml-2">
-                  <XIcon className="w-4 h-4"/>
-                </button>
-              </div>
-            </div>
-            {/* Lista de bikes */}
-            <div className="p-3 max-h-64 overflow-y-auto">
-              <div className="flex flex-wrap gap-1.5">
-                {productionDrillDown.bikes.map(pat => (
-                  <span key={pat} className={`font-mono font-black text-sm px-2.5 py-1 rounded-lg border ${
-                    productionDrillDown.type === 'man'
-                      ? 'bg-orange-50 border-orange-200 text-orange-700'
-                      : 'bg-green-50 border-green-200 text-green-700'
-                  }`}>{pat}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       <MechanicRepairModal isOpen={isMechanicRepairModalOpen} onClose={() => setIsMechanicRepairModalOpen(false)} onConfirm={handleFinalizeMechanicsRepair} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <MechanicSelectionModal isOpen={isMechanicSelectionModalOpen} onClose={() => setIsMechanicSelectionModalOpen(false)} onConfirm={handleMechanicSelectionConfirm} isLoading={isLoading} bikeNumber={selectedMechanicBike?.patrimonio || ''}/>
       <TrailerSelectionModal isOpen={isTrailerSelectionModalOpen} onClose={() => setIsTrailerSelectionModalOpen(false)}
