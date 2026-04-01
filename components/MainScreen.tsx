@@ -2092,13 +2092,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
         recipient: targetDriverName
       }, 1, true);
 
-      // 3. Aprova a ação pendente
-      await updateDoc(doc(db, 'pending_actions', action.id), {
-        status: 'approved',
-        approvedBy: driverName, // Nome do ADM logado
-        approvedAt: serverTimestamp(),
-        assignedTo: targetDriverName
-      });
+      // 3. Aprova a ação pendente (se não for manual)
+      if (!action.id.startsWith('manual_assign_')) {
+        await updateDoc(doc(db, 'pending_actions', action.id), {
+          status: 'approved',
+          approvedBy: driverName, // Nome do ADM logado
+          approvedAt: serverTimestamp(),
+          assignedTo: targetDriverName
+        });
+      }
 
       setSuccessMessage(`Carretinha ${trailerName} enviada para ${targetDriverName}!`);
       setIsDriverSelectionModalOpen(false);
@@ -2365,16 +2367,30 @@ const MainScreen: React.FC<MainScreenProps> = ({
       b.carretinha === trailerName ? { ...b, trailerStatus: 'finalized' } : b
     ));
     try {
-      // Não limpa carretinha aqui; define trailerStatus como 'finalized'
+      // 1. Cria a ação pendente para o ADM validar (SE NÃO FOR ADM)
+      // Criamos ANTES de outras operações para garantir que a validação chegue
+      if (!isAdm) {
+        await addDoc(collection(db, 'pending_actions'), {
+          type: 'trailer_validation',
+          trailerName,
+          bikes: bikeIds,
+          mechanicName: driverName,
+          status: 'pending',
+          timestamp: serverTimestamp()
+        }).catch(e => console.error('Erro ao criar pending_action:', e));
+      }
+
+      // 2. Atualiza as bikes no Firestore
       await Promise.all(bikeIds.map(id => setDoc(doc(db, 'bikes', id), { 
         trailerStatus: 'finalized', 
         ultimaAtualizacao: serverTimestamp() 
       }, { merge: true })));
+
+      // 3. Notificações e Logs (não-bloqueantes)
       apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
-      // Notifica ADM para alterar status das bikes — só ocorre aqui, após QR + bateria + comunicação
+      
       const notifyMsg = `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
 
-      // Adiciona ao histórico de carretinhas liberadas do dia
       addDoc(collection(db, 'trailers_history'), {
         trailerName,
         finalizedBy: driverName,
@@ -2383,7 +2399,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
         bikeCount: bikeIds.length
       }).catch(e => console.warn('[Firebase] trailers_history write:', e.code));
 
-      // Limpa cache para garantir que o próximo sync venha do servidor
+      addDoc(collection(db, 'notifications'), {
+        type: 'trailer_finalizado',
+        message: notifyMsg,
+        bikes: bikeIds,
+        trailerName,
+        mechanic: driverName,
+        timestamp: serverTimestamp(),
+        recipient: 'ADM'
+      }).catch(() => {});
+
+      apiCall({
+        action: 'notifyAdmins',
+        message: notifyMsg,
+        bikes: bikeIds,
+        trailerName
+      }, 1, true).catch(() => {});
+
+      // Limpa cache
       clearCache('getMechanicsList');
       clearCache('sync');
       
@@ -2401,34 +2434,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
           type: 'Logística'
         }).catch(() => {})
       ));
-
-      addDoc(collection(db, 'notifications'), {
-        type: 'trailer_finalizado',
-        message: notifyMsg,
-        bikes: bikeIds,
-        trailerName,
-        mechanic: driverName,
-        timestamp: serverTimestamp(),
-        recipient: 'ADM'
-      }).catch(() => {});
-      apiCall({
-        action: 'notifyAdmins',
-        message: notifyMsg,
-        bikes: bikeIds,
-        trailerName
-      }, 1, true).catch(() => {});
-
-      // Se não for ADM, envia para Validação Mecânica (pending_actions)
-      if (!isAdm) {
-        await addDoc(collection(db, 'pending_actions'), {
-          type: 'trailer_validation',
-          trailerName,
-          bikes: bikeIds,
-          mechanicName: driverName,
-          status: 'pending',
-          timestamp: serverTimestamp()
-        });
-      }
 
       setSuccessMessage(`Carretinha "${trailerName}" finalizada! ADM notificado para remanejamento.`);
     } catch (err: any) {
@@ -4550,9 +4555,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   const activeEntries = Object.entries(grouped).filter(([t, b]) =>
                     t === 'Sem Carretinha' || !b[0]?.trailerStatus
                   );
-                  // Carretinhas enviadas — finalized ou assigned — aguardando aceite
+                  // Carretinhas enviadas — finalized, approved ou assigned — aguardando aceite
                   const sentEntries = Object.entries(grouped).filter(([t, b]) =>
-                    t !== 'Sem Carretinha' && (b[0]?.trailerStatus === 'finalized' || b[0]?.trailerStatus === 'assigned')
+                    t !== 'Sem Carretinha' && (['finalized', 'approved', 'assigned'].includes(b[0]?.trailerStatus))
                   );
 
                   return (
@@ -4679,6 +4684,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                       <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase ${isAssigned ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
                                         {isAssigned ? `Enviada → ${assignedTo || '?'}` : 'Aguard. ADM'}
                                       </span>
+                                      {isAdm && !isAssigned && (
+                                        <button
+                                          onClick={() => {
+                                            setSelectedActionForAssignment({
+                                              id: 'manual_assign_' + trailer,
+                                              type: 'trailer_validation',
+                                              trailerName: trailer,
+                                              bikes: (bikes as any[]).map(b => b.patrimonio),
+                                              mechanicName: (bikes as any[])[0]?.mecanico || 'Mecânica'
+                                            });
+                                            setIsDriverSelectionModalOpen(true);
+                                          }}
+                                          className="p-1 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors ml-1"
+                                          title="Atribuir Motorista"
+                                        >
+                                          <TrailerIcon className="w-3 h-3" />
+                                        </button>
+                                      )}
                                     </div>
                                     <span className="text-[9px] text-gray-400 font-bold">{bikes.length} bike{bikes.length > 1 ? 's' : ''}</span>
                                   </div>
