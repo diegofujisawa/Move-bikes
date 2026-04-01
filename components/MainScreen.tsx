@@ -1857,21 +1857,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
         ultimaAtualizacao: serverTimestamp() 
       }).catch(() => {});
 
-      addDoc(collection(db, 'reports'), { 
-        bikeNumber: bikePat, 
-        patrimonio: bikePat,
-        status: 'Vandalizada', 
-        driverName,
-        mecanico: driverName,
-        treatment: 'VANDALIZADA',
-        reasons,
-        localFinal: room || null,
-        observation,
-        localidade: room || null,
-        timestamp: serverTimestamp(), 
-        type: 'Vandalizada' 
-      }).catch(() => {});
-
       // Envia para o Sheets: tratativa como VANDALIZADA e sala no campo room (Coluna G)
       apiCall({ 
         action: 'markAsVandalizedNoRecovery', 

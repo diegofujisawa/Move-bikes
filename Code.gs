@@ -3426,25 +3426,6 @@ function markAsVandalizedNoRecovery(bikeNumber, mechanicName, room, reasons) {
     return { success: false, error: 'Bicicleta não encontrada na planilha mecânica.' };
   }
 
-  // Registrar no log geral (Relatório) para histórico
-  try {
-    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
-    if (reportSheet) {
-      const timestamp = new Date();
-      const newRow = new Array(reportSheet.getLastColumn() || 10).fill('');
-      newRow[COLUMN_INDICES.REPORTS.TIMESTAMP - 1] = timestamp;
-      newRow[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] = bikeNumber;
-      newRow[COLUMN_INDICES.REPORTS.STATUS - 1]     = 'Vandalizada';
-      newRow[COLUMN_INDICES.REPORTS.MOTORISTA - 1]  = mechanicName;
-      newRow[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] = 'SALA ' + room;
-      newRow[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = reasons;
-      newRow[COLUMN_INDICES.REPORTS.STATUS_SISTEMA - 1] = 'VANDALIZADA';
-      reportSheet.appendRow(newRow);
-    }
-  } catch (e) {
-    console.error('Erro ao registrar no relatório:', e);
-  }
-
   return { success: true };
 }
 
