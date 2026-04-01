@@ -356,6 +356,7 @@ function doPost(e) {
       case 'insertBikeMechanics':   response = { ...insertBikeMechanics(request.bikeNumber, request.driverName, request.targetStatus), version: BACKEND_VERSION }; break;
       case 'notifyAdmins':          response = { ...notifyAdmins(request.message, request.bikes, request.trailerName), version: BACKEND_VERSION }; break;
       case 'finalizeMechanicsRepair': response = { ...finalizeMechanicsRepair(request.bikeNumber, request.mechanicName, request.treatment), version: BACKEND_VERSION }; break;
+      case 'markAsVandalizedNoRecovery': response = { ...markAsVandalizedNoRecovery(request.bikeNumber, request.mechanicName, request.room, request.observation || request.reasons), version: BACKEND_VERSION }; break;
       case 'organizeTrailer':       response = { ...organizeTrailer(request.bikeNumbers, request.trailerName), version: BACKEND_VERSION }; break;
       case 'finalizeTrailer':       response = { ...finalizeTrailer(request.trailerName), version: BACKEND_VERSION }; break;
       default: response = { success: false, error: 'Ação desconhecida: ' + action, version: BACKEND_VERSION }; break;
@@ -3388,6 +3389,63 @@ function finalizeMechanicsRepair(bikeNumber, mechanicName, treatment) {
     }
   }
   return { success: false, error: 'Bicicleta não encontrada ou não está em manutenção.' };
+}
+
+/**
+ * Marca uma bicicleta como vandalizada sem recuperação (direto da mecânica)
+ * @param {string} bikeNumber Número do patrimônio
+ * @param {string} mechanicName Nome do mecânico
+ * @param {string} room Número da sala de destino
+ * @param {string} reasons Motivos da vandalização
+ */
+function markAsVandalizedNoRecovery(bikeNumber, mechanicName, room, reasons) {
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName(MECHANICS_SHEET_NAME);
+  if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
+  
+  const data = sheet.getDataRange().getValues();
+  let found = false;
+  
+  for (let i = 1; i < data.length; i++) {
+    const patrimonio = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim();
+    if (patrimonio === String(bikeNumber).trim()) {
+      const row = i + 1;
+      // Atualiza a linha na planilha mecânica
+      // Colunas: STATUS(2), MECANICO(4), TRATATIVA(5), DATA_FINALIZACAO(6), CARRETINHA(7)
+      sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Vandalizada');
+      sheet.getRange(row, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
+      sheet.getRange(row, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue('VANDALIZADA');
+      sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(new Date());
+      sheet.getRange(row, COLUMN_INDICES.MECHANICS.CARRETINHA).setValue(room); // Coluna G
+      found = true;
+      break;
+    }
+  }
+  
+  if (!found) {
+    return { success: false, error: 'Bicicleta não encontrada na planilha mecânica.' };
+  }
+
+  // Registrar no log geral (Relatório) para histórico
+  try {
+    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
+    if (reportSheet) {
+      const timestamp = new Date();
+      const newRow = new Array(reportSheet.getLastColumn() || 10).fill('');
+      newRow[COLUMN_INDICES.REPORTS.TIMESTAMP - 1] = timestamp;
+      newRow[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] = bikeNumber;
+      newRow[COLUMN_INDICES.REPORTS.STATUS - 1]     = 'Vandalizada';
+      newRow[COLUMN_INDICES.REPORTS.MOTORISTA - 1]  = mechanicName;
+      newRow[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] = 'SALA ' + room;
+      newRow[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = reasons;
+      newRow[COLUMN_INDICES.REPORTS.STATUS_SISTEMA - 1] = 'VANDALIZADA';
+      reportSheet.appendRow(newRow);
+    }
+  } catch (e) {
+    console.error('Erro ao registrar no relatório:', e);
+  }
+
+  return { success: true };
 }
 
 function organizeTrailer(bikeNumbers, trailerName) {

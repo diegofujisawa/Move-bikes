@@ -1636,7 +1636,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const fields = typeof data === 'string' ? { status: data } : data;
     mechanicOptimisticRef.current[String(patrimonio)] = {
       ...fields,
-      expiresAt: Date.now() + 60000, // 60s de proteção — cobre latência do Apps Script
+      expiresAt: Date.now() + 120000, // 120s de proteção — cobre latência maior do Apps Script
     };
   };
 
@@ -1839,11 +1839,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally { setIsLoading(false); }
   };
 
-  const handleMarkAsVandalizedNoRecovery = async (bikePat: string, treatment: string, room: string) => {
+  const handleMarkAsVandalizedNoRecovery = async (bikePat: string, reasons: string, room: string) => {
     setIsLoading(true);
-    const observation = [treatment, room ? `Local: ${room}` : ''].filter(Boolean).join(' | ');
+    const observation = [reasons, room ? `Local: ${room}` : ''].filter(Boolean).join(' | ');
     try {
-      // 1. Proteger a bike de ser revertida pelo sync
+      // 1. Proteger a bike de ser revertida pelo sync (120s)
       protectMechanicBike(bikePat, { status: 'Vandalizada', localidade: room });
       
       // 2. Atualização otimista — remove da lista imediatamente
@@ -1856,20 +1856,33 @@ const MainScreen: React.FC<MainScreenProps> = ({
         localFinal: room || null,
         ultimaAtualizacao: serverTimestamp() 
       }).catch(() => {});
+
       addDoc(collection(db, 'reports'), { 
         bikeNumber: bikePat, 
         patrimonio: bikePat,
         status: 'Vandalizada', 
         driverName,
         mecanico: driverName,
-        treatment,
+        treatment: 'VANDALIZADA',
+        reasons,
         localFinal: room || null,
         observation,
         localidade: room || null,
         timestamp: serverTimestamp(), 
         type: 'Vandalizada' 
       }).catch(() => {});
-      apiCall({ action: 'markAsVandalizedNoRecovery', bikeNumber: bikePat, mechanicName: driverName, treatment: observation }, 1, true).catch(() => {});
+
+      // Envia para o Sheets: tratativa como VANDALIZADA e sala no campo room (Coluna G)
+      apiCall({ 
+        action: 'markAsVandalizedNoRecovery', 
+        bikeNumber: bikePat, 
+        mechanicName: driverName, 
+        treatment: 'VANDALIZADA', 
+        observation: reasons,
+        room: room,
+        localFinal: room
+      }, 1, true).catch(() => {});
+
       setSuccessMessage(`Bike ${bikePat} marcada como Vandalizada${room ? ` — ${room}` : ''}.`);
     } catch (err: any) {
       console.error('Erro ao marcar como vandalizada:', err);
