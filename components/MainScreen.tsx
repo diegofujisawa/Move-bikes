@@ -250,7 +250,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isAlertsLoading, setIsAlertsLoading] = useState(false);
   const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
   const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
-  const [changeStatusData, setChangeStatusData] = useState<any>(null);
   const [statusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
   const [alertCount, setAlertCount] = useState(0);
   const [hasNewAlerts, setHasNewAlerts] = useState(false);
@@ -1411,7 +1410,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicHistoryLoading(true);
     try {
       // Busca reports de Reparo (saída) e Mecânica (entrada) do Firebase
-      const { getDocs: _gd, query: _q, where: _w, collection: _col, orderBy: _ob } = await import('firebase/firestore');
+      const { getDocs: _gd, query: _q, where: _w, collection: _col } = await import('firebase/firestore');
       const [snapReparo, snapEntrada] = await Promise.all([
         _gd(_q(_col(db, 'reports'), _w('type', '==', 'Reparo'))),
         _gd(_q(_col(db, 'reports'), _w('type', '==', 'Mecânica'))),
@@ -1653,7 +1652,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // 1. Move no backend imediatamente — evita que o refreshAll reverta o estado
         await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {});
         addDoc(collection(db, 'reports'), {
-          bikeNumber: bikeId, status: 'Aguardando Manutenção',
+          bikeNumber: bikeId,
+          patrimonio: bikeId,
+          status: 'Aguardando Manutenção',
           driverName, mecanico: driverName,
           observation: `Enviada para Aguardando Manutenção por ${driverName}`,
           timestamp: serverTimestamp(), type: 'Mecânica'
@@ -1738,16 +1739,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const handleSendToTechnical = async (bikePat: string, mechanicName?: string) => {
     setIsLoading(true);
-    // Otimista — remove da lista Mecânica imediatamente
+    const finalMechanic = mechanicName || driverName;
+    // Otimista — protege e remove da lista Mecânica imediatamente
+    protectMechanicBike(bikePat, { status: 'Aguardando Técnica', responsavel: finalMechanic });
     setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
     try {
-      const finalMechanic = mechanicName || driverName;
       // Firebase não-bloqueante
       setDoc(doc(db, 'bikes', bikePat), {
         status: 'Aguardando Técnica', responsavel: finalMechanic, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes:', e.code));
       addDoc(collection(db, 'reports'), {
-        bikeNumber: bikePat, status: 'Aguardando Técnica',
+        bikeNumber: bikePat, patrimonio: bikePat, status: 'Aguardando Técnica',
         driverName: finalMechanic, mecanico: finalMechanic,
         observation: `Enviada para Técnica por ${finalMechanic}`,
         timestamp: serverTimestamp(), type: 'Técnica'
@@ -1841,7 +1843,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     const observation = [treatment, room ? `Local: ${room}` : ''].filter(Boolean).join(' | ');
     try {
+      // 1. Proteger a bike de ser revertida pelo sync
+      protectMechanicBike(bikePat, { status: 'Vandalizada', localidade: room });
+      
+      // 2. Atualização otimista — remove da lista imediatamente
       setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
+
       updateDoc(doc(db, 'bikes', bikePat), { 
         status: 'Vandalizada', 
         responsavel: driverName, 
@@ -1851,6 +1858,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }).catch(() => {});
       addDoc(collection(db, 'reports'), { 
         bikeNumber: bikePat, 
+        patrimonio: bikePat,
         status: 'Vandalizada', 
         driverName,
         mecanico: driverName,
@@ -1905,7 +1913,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicSelectionModalOpen(false);
     try {
       updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
-      addDoc(collection(db, 'reports'), { bikeNumber, status: 'Mecânica', driverName, mechanicName, timestamp: serverTimestamp(), type: 'Mecânica' }).catch(e => console.warn('[Firebase] reports write:', e.code));
+      addDoc(collection(db, 'reports'), { bikeNumber, patrimonio: bikeNumber, status: 'Mecânica', driverName, mechanicName, timestamp: serverTimestamp(), type: 'Mecânica' }).catch(e => console.warn('[Firebase] reports write:', e.code));
       apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true).catch(() => {});
     } catch (err: any) {
       alert('Erro: ' + err.message);
@@ -1934,7 +1942,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     try {
       updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
       addDoc(collection(db, 'reports'), {
-        bikeNumber, status: 'Reserva',
+        bikeNumber,
+        patrimonio: bikeNumber,
+        status: 'Reserva',
         driverName: mechanicName, mecanico: mechanicName, treatment,
         observation: `Reparo finalizado por ${mechanicName} — ${treatment}`,
         dataEntrada: selectedMechanicBike?.dataEntrada || null,
@@ -1953,6 +1963,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     try {
       // Organiza localmente a carretinha
+      bikeNumbers.forEach(id => {
+        protectMechanicBike(id, { status: 'Reserva', carretinha: trailerName });
+      });
       setMechanicsList(prev => prev.map(b =>
         bikeNumbers.includes(b.patrimonio) ? { ...b, carretinha: trailerName, status: 'Reserva' } : b
       ));
@@ -1960,14 +1973,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       // Persiste no backend
       apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
-      await Promise.all(bikeNumbers.map(id =>
+      await Promise.all(bikeNumbers.map(id => {
+        const bike = mechanicsList.find(b => b.patrimonio === id);
         updateDoc(doc(db, 'bikes', id), { 
           carretinha: trailerName, 
           status: 'Reserva', 
           trailerStatus: null, // Reseta status se estiver sendo re-organizada
           ultimaAtualizacao: serverTimestamp() 
-        }, { merge: true }).catch(() => {})
-      ));
+        }, { merge: true }).catch(() => {});
+        
+        return addDoc(collection(db, 'reports'), {
+          bikeNumber: id,
+          patrimonio: id,
+          status: 'Carretinha',
+          carretinha: trailerName,
+          driverName: driverName,
+          mecanico: bike?.mecanico || driverName,
+          observation: `Adicionada à carretinha ${trailerName}`,
+          timestamp: serverTimestamp(),
+          type: 'Logística'
+        }).catch(() => {});
+      }));
 
       setSuccessMessage(`Bikes organizadas na ${trailerName}!`);
       refreshAll(true);
@@ -2323,7 +2349,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setTrailerQrModal(null);
     setIsLoading(true);
     const bikeIds = expectedBikes.map(b => b.patrimonio);
-    // Mantém status 'Reserva' para continuar exibindo na seção Reserva até aceite do motorista
+    // Protege e mantém status 'Reserva' para continuar exibindo na seção Reserva até aceite do motorista
+    bikeIds.forEach(id => {
+      protectMechanicBike(id, { trailerStatus: 'finalized' });
+    });
     setMechanicsList(prev => prev.map(b =>
       b.carretinha === trailerName ? { ...b, trailerStatus: 'finalized' } : b
     ));
@@ -2336,6 +2365,22 @@ const MainScreen: React.FC<MainScreenProps> = ({
       apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
       // Notifica ADM para alterar status das bikes — só ocorre aqui, após QR + bateria + comunicação
       const notifyMsg = `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
+      
+      // Logar no relatório para cada bike
+      await Promise.all(bikeIds.map(id => 
+        addDoc(collection(db, 'reports'), {
+          bikeNumber: id,
+          patrimonio: id,
+          status: 'Carretinha Finalizada',
+          carretinha: trailerName,
+          driverName,
+          mecanico: driverName,
+          observation: `Carretinha ${trailerName} finalizada e pronta para remanejamento`,
+          timestamp: serverTimestamp(),
+          type: 'Logística'
+        }).catch(() => {})
+      ));
+
       addDoc(collection(db, 'notifications'), {
         type: 'trailer_finalizado',
         message: notifyMsg,
@@ -2735,7 +2780,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
             const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
             if (protected_ && protected_.expiresAt > now) {
               // Aplica todos os campos protegidos (status, mecanico, tratativa, carretinha, etc)
-              const { expiresAt: _exp, ...protectedFields } = protected_;
+              const protectedFields = { ...protected_ };
+              delete (protectedFields as any).expiresAt;
               return { ...serverBike, ...protectedFields };
             }
             return serverBike;
@@ -2776,7 +2822,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (isAdm) {
         if (d.alerts) setAlerts(d.alerts);
         if (d.vandalized) setVandalizedBikes(d.vandalized);
-        if (d.changeStatusData) setChangeStatusData(d.changeStatusData);
+        if (d.changeStatusData) {
+          // changeStatusData is set but not used in UI, keeping it in state if needed for future
+          // but removing the unused state for now to satisfy lint
+        }
         if (d.adminAlerts) {
           const n = d.adminAlerts.length;
           setAlertCount(n);
@@ -2954,7 +3003,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
             const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
             if (protected_ && protected_.expiresAt > now) {
               // Aplica todos os campos protegidos (status, mecanico, tratativa, carretinha, etc)
-              const { expiresAt: _exp, ...protectedFields } = protected_;
+              const protectedFields = { ...protected_ };
+              delete (protectedFields as any).expiresAt;
               return { ...serverBike, ...protectedFields };
             }
             return serverBike;
@@ -2975,7 +3025,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
       if (d.alerts) setAlerts(d.alerts);
       if (d.vandalized) setVandalizedBikes(d.vandalized);
-      if (d.changeStatusData) setChangeStatusData(d.changeStatusData);
+        if (d.changeStatusData) {
+          // changeStatusData is set but not used in UI
+        }
     } catch {}
   }, []);
 
