@@ -2769,23 +2769,35 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (d.mechanicsList) {
         setMechanicsList(() => {
           const now = Date.now();
+          const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva'];
+          
           // Remove entradas expiradas do mapa de proteção
-          Object.keys(mechanicOptimisticRef.current).forEach(k => { const v = mechanicOptimisticRef.current[k];
+          Object.keys(mechanicOptimisticRef.current).forEach(k => { 
+            const v = mechanicOptimisticRef.current[k];
             if (v.expiresAt < now) delete mechanicOptimisticRef.current[k];
           });
-          // Se não há proteções ativas, usa lista do servidor diretamente
-          if (Object.keys(mechanicOptimisticRef.current).length === 0) return d.mechanicsList;
+          
           // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
-          return d.mechanicsList.map((serverBike: any) => {
-            const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
-            if (protected_ && protected_.expiresAt > now) {
-              // Aplica todos os campos protegidos (status, mecanico, tratativa, carretinha, etc)
-              const protectedFields = { ...protected_ };
-              delete (protectedFields as any).expiresAt;
-              return { ...serverBike, ...protectedFields };
-            }
-            return serverBike;
-          });
+          return d.mechanicsList
+            .filter((serverBike: any) => {
+              const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
+              // Se a bike está protegida com um status que NÃO está na lista de válidos, removemos do mechanicsList
+              if (protected_ && protected_.expiresAt > now) {
+                return validMechanicsStatuses.includes(protected_.status);
+              }
+              // Se não está protegida, mantemos apenas se o status do servidor for válido
+              return validMechanicsStatuses.includes(serverBike.status);
+            })
+            .map((serverBike: any) => {
+              const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
+              if (protected_ && protected_.expiresAt > now) {
+                // Aplica todos os campos protegidos (status, mecanico, tratativa, carretinha, etc)
+                const protectedFields = { ...protected_ };
+                delete (protectedFields as any).expiresAt;
+                return { ...serverBike, ...protectedFields };
+              }
+              return serverBike;
+            });
         });
       }
       if (d.driversSummary) {
@@ -2992,23 +3004,35 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (d.mechanicsList) {
         setMechanicsList(() => {
           const now = Date.now();
+          const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva'];
+          
           // Remove entradas expiradas do mapa de proteção
-          Object.keys(mechanicOptimisticRef.current).forEach(k => { const v = mechanicOptimisticRef.current[k];
+          Object.keys(mechanicOptimisticRef.current).forEach(k => { 
+            const v = mechanicOptimisticRef.current[k];
             if (v.expiresAt < now) delete mechanicOptimisticRef.current[k];
           });
-          // Se não há proteções ativas, usa lista do servidor diretamente
-          if (Object.keys(mechanicOptimisticRef.current).length === 0) return d.mechanicsList;
+          
           // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
-          return d.mechanicsList.map((serverBike: any) => {
-            const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
-            if (protected_ && protected_.expiresAt > now) {
-              // Aplica todos os campos protegidos (status, mecanico, tratativa, carretinha, etc)
-              const protectedFields = { ...protected_ };
-              delete (protectedFields as any).expiresAt;
-              return { ...serverBike, ...protectedFields };
-            }
-            return serverBike;
-          });
+          return d.mechanicsList
+            .filter((serverBike: any) => {
+              const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
+              // Se a bike está protegida com um status que NÃO está na lista de válidos, removemos do mechanicsList
+              if (protected_ && protected_.expiresAt > now) {
+                return validMechanicsStatuses.includes(protected_.status);
+              }
+              // Se não está protegida, mantemos apenas se o status do servidor for válido
+              return validMechanicsStatuses.includes(serverBike.status);
+            })
+            .map((serverBike: any) => {
+              const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
+              if (protected_ && protected_.expiresAt > now) {
+                // Aplica todos os campos protegidos (status, mecanico, tratativa, carretinha, etc)
+                const protectedFields = { ...protected_ };
+                delete (protectedFields as any).expiresAt;
+                return { ...serverBike, ...protectedFields };
+              }
+              return serverBike;
+            });
         });
       }
       if (d.driversSummary) {
