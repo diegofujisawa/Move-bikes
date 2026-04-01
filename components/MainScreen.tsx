@@ -4,7 +4,7 @@ import {
   LogoutIcon, PlusIcon, PlusPlusIcon, MapIcon, SheetIcon, SearchIcon,
   AlertIcon, CalendarIcon, CarIcon, XIcon, BicycleIcon, MovingIcon,
   UserIcon, AlertTriangleIcon, QrCodeIcon, TrailerIcon, SwitchIcon,
-  RefreshIcon, DatabaseIcon, CheckCircleIcon, DocumentTextIcon
+  RefreshIcon, DatabaseIcon, CheckCircleIcon, DocumentTextIcon, HistoryIcon
 } from './icons';
 import { 
   Settings, Battery, Lock, Map as MapIconLucide, 
@@ -236,6 +236,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   // --- Dados ADM ---
   const [driversSummary, setDriversSummary] = useState<any[]>([]);
+  const [trailersHistory, setTrailersHistory] = useState<any[]>([]);
   const [firebaseTimelineEvents, setFirebaseTimelineEvents] = useState<Record<string, Array<{tsMs: number, type: string, bikeNumber?: string}>>>({});
   const [timelineModal, setTimelineModal] = useState<{driver: string, events: any[], startMs: number, endMs: number} | null>(null);
   const [timelineDate, setTimelineDate] = useState<string>(localDateStr()); // YYYY-MM-DD
@@ -1260,21 +1261,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
           protectMechanicBike(bikePat, targetStatus);
 
           const finalMechanicName = mechanicName || driverName;
-          const jaExiste = mechanicsList.some(b => b.patrimonio === bikePat);
+          const jaExiste = mechanicsList.find(b => b.patrimonio === bikePat);
           if (jaExiste) {
-            setMechanicsList(prev => prev.map(b => 
-              b.patrimonio === bikePat ? { ...b, status: targetStatus, mecanico: finalMechanicName } : b
-            ));
-          } else {
-            setMechanicsList(prev => [...prev, {
-              patrimonio: bikePat,
-              status: targetStatus,
-              dataEntrada: new Date(),
-              mecanico: finalMechanicName,
-              tratativa: 'MANUAL',
-              manual: true,
-            }]);
+            alert(`A bike ${bikePat} já está na Mecânica (Status: ${jaExiste.status}). Não é permitido inserir duplicatas.`);
+            setIsBikeSearchLoading(false);
+            return;
           }
+          
+          setMechanicsList(prev => [...prev, {
+            patrimonio: bikePat,
+            status: targetStatus,
+            dataEntrada: new Date(),
+            mecanico: finalMechanicName,
+            tratativa: 'MANUAL',
+            manual: true,
+          }]);
           // Persiste no backend
           await apiCall({ action: 'insertBikeMechanics', bikeNumber: bikePat, mechanicName: finalMechanicName, targetStatus }, 1, true).catch(() => {});
           
@@ -1651,6 +1652,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
       try {
         // 1. Move no backend imediatamente — evita que o refreshAll reverta o estado
         await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {});
+        clearCache('getMechanicsList');
+        clearCache('sync');
         addDoc(collection(db, 'reports'), {
           bikeNumber: bikeId,
           patrimonio: bikeId,
@@ -1867,6 +1870,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
         room: room,
         localFinal: room
       }, 1, true).catch(() => {});
+      clearCache('getMechanicsList');
+      clearCache('sync');
 
       setSuccessMessage(`Bike ${bikePat} marcada como Vandalizada${room ? ` — ${room}` : ''}.`);
     } catch (err: any) {
@@ -1913,6 +1918,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
       updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
       addDoc(collection(db, 'reports'), { bikeNumber, patrimonio: bikeNumber, status: 'Mecânica', driverName, mechanicName, timestamp: serverTimestamp(), type: 'Mecânica' }).catch(e => console.warn('[Firebase] reports write:', e.code));
       apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true).catch(() => {});
+      clearCache('getMechanicsList');
+      clearCache('sync');
     } catch (err: any) {
       alert('Erro: ' + err.message);
     } finally { setIsLoading(false); }
@@ -1949,6 +1956,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
         timestamp: serverTimestamp(), type: 'Reparo'
       }).catch(e => console.warn('[Firebase] reports write:', e.code));
       apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName, treatment }, 1, true).catch(() => {});
+      clearCache('getMechanicsList');
+      clearCache('sync');
       setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
     } catch (err: any) {
       alert('Erro: ' + err.message);
@@ -1993,8 +2002,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }).catch(() => {});
       }));
 
+      clearCache('getMechanicsList');
+      clearCache('sync');
       setSuccessMessage(`Bikes organizadas na ${trailerName}!`);
-      refreshAll(true);
     } catch (err: any) {
       setError('Erro ao organizar carretinha: ' + err.message);
     } finally {
@@ -2363,6 +2373,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
       apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
       // Notifica ADM para alterar status das bikes — só ocorre aqui, após QR + bateria + comunicação
       const notifyMsg = `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
+
+      // Adiciona ao histórico de carretinhas liberadas do dia
+      addDoc(collection(db, 'trailers_history'), {
+        trailerName,
+        finalizedBy: driverName,
+        timestamp: serverTimestamp(),
+        date: localDateStr(),
+        bikeCount: bikeIds.length
+      }).catch(e => console.warn('[Firebase] trailers_history write:', e.code));
+
+      // Limpa cache para garantir que o próximo sync venha do servidor
+      clearCache('getMechanicsList');
+      clearCache('sync');
       
       // Logar no relatório para cada bike
       await Promise.all(bikeIds.map(id => 
@@ -2949,6 +2972,23 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (isAdm) { setIsSummaryLoading(false); setIsAlertsLoading(false); setIsVandalizedLoading(false); }
     }
   }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm]);
+
+  useEffect(() => {
+    if (isMecanica && activeMechanicCategory === 'Reserva') {
+      const fetchTrailersHistory = async () => {
+        try {
+          const today = localDateStr();
+          const { getDocs: _gd, query: _q, where: _w, collection: _col, orderBy: _ob } = await import('firebase/firestore');
+          const q = _q(_col(db, 'trailers_history'), _w('date', '==', today), _ob('timestamp', 'desc'));
+          const snap = await _gd(q);
+          setTrailersHistory(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        } catch (err) {
+          console.error('Erro ao buscar histórico de carretinhas:', err);
+        }
+      };
+      fetchTrailersHistory();
+    }
+  }, [isMecanica, activeMechanicCategory]);
 
   // Cache inicial por usuário e categoria e data
   useEffect(() => {
@@ -4557,40 +4597,65 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           ))}
                         </div>
                         {trailer === 'Sem Carretinha' && (
-                          <button onClick={() => {
-                            // Sequência diária estrita: 1→2→3→4→1→...
-                            // Usa localStorage com chave por data — reinicia no 1 a cada novo dia
-                            const MAX_TRAILERS = 4;
-                            const today = localDateStr();
-                            const storageKey = `trailer_seq_${today}`;
+                          <div className="mt-3 space-y-2">
+                            {/* Se houver uma carretinha ativa (não finalizada), permite adicionar a ela */}
+                            {activeEntries.filter(([t]) => t !== 'Sem Carretinha').map(([activeTrailer]) => (
+                              <button
+                                key={`add-to-${activeTrailer}`}
+                                onClick={() => handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), activeTrailer)}
+                                className="w-full py-1.5 bg-green-600 text-white text-[10px] font-bold rounded hover:bg-green-700 active:scale-95 transition-all"
+                              >
+                                Adicionar à {activeTrailer}
+                              </button>
+                            ))}
 
-                            // Lê o último número usado no dia
-                            let lastUsed = 0;
-                            try {
-                              const saved = localStorage.getItem(storageKey);
-                              if (saved) lastUsed = parseInt(saved) || 0;
-                            } catch {}
-
-                            // Próximo na sequência (1→2→3→4→1)
-                            const next = (lastUsed % MAX_TRAILERS) + 1;
-
-                            // Persiste imediatamente antes de organizar
-                            try {
-                              localStorage.setItem(storageKey, String(next));
-                              // Limpa chaves de dias anteriores
-                              for (let i = 0; i < localStorage.length; i++) {
-                                const k = localStorage.key(i);
-                                if (k && k.startsWith('trailer_seq_') && !k.endsWith(today)) {
-                                  localStorage.removeItem(k);
+                            <button onClick={async () => {
+                              // Sequência diária estrita: 1→2→3→4→...
+                              // Agora busca do histórico no Firestore para garantir sincronia entre dispositivos
+                              setIsLoading(true);
+                              try {
+                                const today = localDateStr();
+                                const { getDocs: _gd, query: _q, where: _w, collection: _col, orderBy: _ob, limit: _lim } = await import('firebase/firestore');
+                                
+                                // Busca a última carretinha liberada hoje
+                                const q = _q(_col(db, 'trailers_history'), _w('date', '==', today), _ob('timestamp', 'desc'), _lim(1));
+                                const snap = await _gd(q);
+                                
+                                let lastNumber = 0;
+                                if (!snap.empty) {
+                                  const lastTrailer = snap.docs[0].data().trailerName;
+                                  const match = lastTrailer.match(/Carretinha (\d+)/);
+                                  if (match) lastNumber = parseInt(match[1]) || 0;
                                 }
-                              }
-                            } catch {}
 
-                            handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
-                          }}
-                            className="mt-3 w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700">
-                            Organizar em Carretinha
-                          </button>
+                                // Também verifica se há carretinhas ativas no mechanicsList que ainda não foram para o histórico
+                                const activeTrailerNames = activeEntries
+                                  .filter(([t]) => t !== 'Sem Carretinha')
+                                  .map(([t]) => {
+                                    const m = t.match(/Carretinha (\d+)/);
+                                    return m ? parseInt(m[1]) : 0;
+                                  });
+                                
+                                if (activeTrailerNames.length > 0) {
+                                  const maxActive = Math.max(...activeTrailerNames);
+                                  lastNumber = Math.max(lastNumber, maxActive);
+                                }
+
+                                const next = lastNumber + 1;
+                                handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
+                              } catch (err: any) {
+                                console.error('Erro ao calcular sequência de carretinha:', err);
+                                // Fallback para o comportamento anterior se falhar
+                                const lastUsed = parseInt(localStorage.getItem(`trailer_seq_${localDateStr()}`) || '0');
+                                handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${lastUsed + 1}`);
+                              } finally {
+                                setIsLoading(false);
+                              }
+                            }}
+                              className="w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700 active:scale-95 transition-all">
+                              Criar Nova Carretinha
+                            </button>
+                          </div>
                         )}
                       </div>
                     ))}
@@ -4625,6 +4690,33 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 </div>
                               );
                             })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ── Histórico de Carretinhas Liberadas (Hoje) ── */}
+                      {trailersHistory.length > 0 && (
+                        <div className="mt-6 border-t pt-4">
+                          <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-3 flex items-center gap-2">
+                            <HistoryIcon className="w-3 h-3" />
+                            Histórico de Carretinhas Liberadas (Hoje)
+                          </p>
+                          <div className="grid grid-cols-1 gap-2">
+                            {trailersHistory.map((h) => (
+                              <div key={h.id} className="flex items-center justify-between p-2 bg-gray-50 border border-gray-200 rounded-lg">
+                                <div className="flex flex-col">
+                                  <span className="text-xs font-bold text-gray-700">{h.trailerName}</span>
+                                  <span className="text-[9px] text-gray-400 font-medium">
+                                    {h.timestamp?.toDate ? h.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''} • {h.finalizedBy}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
+                                    {h.bikeCount} bikes
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
                       )}

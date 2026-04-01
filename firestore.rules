@@ -97,6 +97,9 @@ service cloud.firestore {
     match /pending_actions/{id} {
       allow get, list, create, update, delete: if isAuthenticated();
     }
+    match /trailers_history/{id} {
+      allow get, list, create, update, delete: if isAuthenticated();
+    }
     match /sync/{id} {
       allow read, write: if isAuthenticated();
     }

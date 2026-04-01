@@ -163,6 +163,20 @@
         "status": { "type": "string", "enum": ["pending", "approved", "rejected"] }
       },
       "required": ["type", "status", "timestamp"]
+    },
+    "TrailerHistory": {
+      "title": "Trailer History",
+      "description": "History of released trailers for the day.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "trailerName": { "type": "string" },
+        "finalizedBy": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "date": { "type": "string", "description": "YYYY-MM-DD" },
+        "bikeCount": { "type": "number" }
+      },
+      "required": ["trailerName", "timestamp", "date"]
     }
   },
   "firestore": {
@@ -205,6 +219,10 @@
     "/pending_actions/{id}": {
       "schema": "PendingAction",
       "description": "Collection of actions pending admin approval."
+    },
+    "/trailers_history/{id}": {
+      "schema": "TrailerHistory",
+      "description": "Collection of released trailers history."
     }
   }
 }
