@@ -1944,13 +1944,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
 
       try {
-        await updateDoc(doc(db, 'bikes', bikePat), { 
+        await setDoc(doc(db, 'bikes', bikePat), { 
           status: 'Vandalizada', 
           responsavel: driverName, 
           observacao: observation,
           localFinal: room || null,
           ultimaAtualizacao: serverTimestamp() 
-        });
+        }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikePat}`);
       }
@@ -2011,7 +2011,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicSelectionModalOpen(false);
     try {
       try {
-        await updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() });
+        await setDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikeNumber}`);
       }
@@ -2051,7 +2051,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicRepairModalOpen(false);
     try {
       try {
-        await updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() });
+        await setDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikeNumber}`);
       }
@@ -2097,7 +2097,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
       await Promise.all(bikeNumbers.map(id => {
         const bike = mechanicsList.find(b => b.patrimonio === id);
-        updateDoc(doc(db, 'bikes', id), { 
+        return setDoc(doc(db, 'bikes', id), { 
           carretinha: trailerName, 
           status: 'Reserva', 
           trailerStatus: null, // Reseta status se estiver sendo re-organizada
@@ -2139,7 +2139,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       } else if (action.type === 'status_change') {
         if (action.targetStatus === 'Reserva') {
           try {
-            await updateDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() });
+            await setDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }, { merge: true });
           } catch (e) {
             handleFirestoreError(e, OperationType.UPDATE, `bikes/${action.bikeNumber}`);
           }
@@ -2163,11 +2163,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }
       } else if (action.type === 'trailer_validation') {
         try {
-          await Promise.all(action.bikes.map((id: string) => updateDoc(doc(db, 'bikes', id), { 
+          await Promise.all(action.bikes.map((id: string) => setDoc(doc(db, 'bikes', id), { 
             carretinha: action.trailerName, 
             trailerStatus: 'approved',
             ultimaAtualizacao: serverTimestamp() 
-          })));
+          }, { merge: true })));
         } catch (e) {
           handleFirestoreError(e, OperationType.WRITE, `bikes/${action.bikes.join(',')}`);
         }
@@ -2208,13 +2208,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       // 1. Atualiza as bikes no Firestore para entrar em posse do motorista
       await Promise.all(bikes.map((id: string) => 
-        updateDoc(doc(db, 'bikes', id), { 
+        setDoc(doc(db, 'bikes', id), { 
           status: 'Reserva', // Mantém em reserva até o motorista aceitar
           responsavel: targetDriverName,
           carretinha: trailerName,
           trailerStatus: 'assigned',
           ultimaAtualizacao: serverTimestamp() 
-        })
+        }, { merge: true })
       ));
 
       // 2. Cria a notificação para o motorista
@@ -4734,7 +4734,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                     setMechanicsList(prev => prev.map(b =>
                                       b.patrimonio === bike.patrimonio ? { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null } : b
                                     ));
-                                    updateDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
+                                    setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
                                     apiCall({ action: 'removeFromTrailer', bikeNumber: bike.patrimonio, mechanicName }, 1, false).catch(() => {});
                                   }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95">
                                     <XIcon className="w-3 h-3"/>
@@ -4955,7 +4955,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   ? <p className="text-sm text-gray-400 italic">Carregando...</p>
                   : technicaList.filter(b => b.status === 'Aguardando Técnica').length > 0 ? (
                     <div className="space-y-2">
-                      {technicaList.filter(b => b.status === 'Aguardando Técnica').map((bike, i) => (
+                      {technicaList
+                        .filter(b => b.status === 'Aguardando Técnica')
+                        .sort((a, b) => String(a.patrimonio).localeCompare(String(b.patrimonio), undefined, { numeric: true }))
+                        .map((bike, i) => (
                         <div key={`tec-agu-${bike.patrimonio}-${i}`} className="flex justify-between items-center p-3 bg-white border rounded-md shadow-sm">
                           <div>
                             <p className="font-bold text-gray-700">Bike: {bike.patrimonio}</p>
@@ -4990,7 +4993,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 </div>
                 {technicaList.filter(b => b.status === 'Em Técnica').length > 0 ? (
                   <div className="space-y-2">
-                    {technicaList.filter(b => b.status === 'Em Técnica').map((bike, i) => (
+                    {technicaList
+                      .filter(b => b.status === 'Em Técnica')
+                      .sort((a, b) => String(a.patrimonio).localeCompare(String(b.patrimonio), undefined, { numeric: true }))
+                      .map((bike, i) => (
                       <div key={`tec-em-${bike.patrimonio}-${i}`} className="flex justify-between items-center p-3 bg-white border rounded-md shadow-sm">
                         <div>
                           <p className="font-bold text-gray-700">Bike: {bike.patrimonio}</p>
