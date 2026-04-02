@@ -1783,7 +1783,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const handleSendToTechnical = async (bikePat: string, mechanicName?: string) => {
     setIsLoading(true);
-    const finalMechanic = mechanicName || driverName;
+    // Se isTecnica for true e não houver mechanicName passado, mecanico deve ser null.
+    // Se isMecanica for true, usamos o nome do mecânico logado como fallback.
+    const finalMechanic = mechanicName || (isMecanica ? driverName : null);
+
     // Otimista — protege e remove da lista Mecânica imediatamente
     protectMechanicBike(bikePat, { status: 'Aguardando Técnica', responsavel: finalMechanic, mecanico: finalMechanic });
     setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
@@ -1793,7 +1796,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         await setDoc(doc(db, 'bikes', bikePat), {
           status: 'Aguardando Técnica', 
           responsavel: finalMechanic, 
-          mecanico: finalMechanic, // Garante que o nome do mecânico seja gravado para devolução
+          mecanico: finalMechanic, // Garante que o nome do mecânico seja gravado para devolução (ou null se não houver)
           ultimaAtualizacao: serverTimestamp()
         }, { merge: true });
       } catch (e) {
@@ -1803,8 +1806,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
       try {
         await addDoc(collection(db, 'reports'), {
           bikeNumber: bikePat, patrimonio: bikePat, status: 'Aguardando Técnica',
-          driverName: finalMechanic, mecanico: finalMechanic,
-          observation: `Enviada para Técnica por ${finalMechanic}`,
+          driverName: finalMechanic || driverName, mecanico: finalMechanic,
+          observation: `Enviada para Técnica por ${driverName}`,
           timestamp: serverTimestamp(), type: 'Técnica'
         });
       } catch (e) {
@@ -1881,8 +1884,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (!technicaRepairModal || technicaRepairSelected.size === 0) return;
     const { bike } = technicaRepairModal;
     const bikeNumber = bike.patrimonio;
-    // O mecânico original é quem enviou a bike. Se não houver, originalMechanic será vazio.
-    const originalMechanic = bike.mecanico || '';
+    // O mecânico original é quem enviou a bike. 
+    // Se o mecânico for o mesmo que o técnico, consideramos que não há mecânico original (foi erro de registro anterior)
+    const originalMechanic = (bike.mecanico && bike.mecanico !== bike.tecnico) ? bike.mecanico : '';
     const treatment = Array.from(technicaRepairSelected).join(', ');
     
     // Lógica solicitada: Se tiver mecânico, volta para 'Em Manutenção'. Se não, 'Aguardando Manutenção'.
@@ -3859,7 +3863,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             <div className="bg-orange-600 p-4 text-white flex-shrink-0">
               <p className="text-xs font-bold uppercase opacity-80">Finalizar Reparo</p>
               <h2 className="text-lg font-black">Bike {technicaRepairModal.bike.patrimonio}</h2>
-              {technicaRepairModal.bike.mecanico ? (
+              {technicaRepairModal.bike.mecanico && technicaRepairModal.bike.mecanico !== technicaRepairModal.bike.tecnico ? (
                 <p className="text-[11px] opacity-80 mt-0.5">
                   Retornará para: <span className="font-bold">{technicaRepairModal.bike.mecanico}</span>
                 </p>
@@ -4370,14 +4374,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 <div className="col-span-2 grid grid-cols-2 gap-2 mt-2">
                   <button onClick={async () => {
                     const pat = String(searchedBike['Patrimônio']);
-                    setIsLoading(true);
-                    try {
-                      await apiCall({ action: 'sendToTechnical', bikeNumber: pat, mechanicName: driverName }, 1, false);
-                      await fetchTechnicaList();
-                      setSearchedBike(null); setSearchTerm('');
-                      setSuccessMessage(`Bike ${pat} em Aguardando Técnica.`);
-                    } catch(e: any) { setError(e.message); }
-                    finally { setIsLoading(false); }
+                    await handleSendToTechnical(pat);
+                    setSearchedBike(null);
+                    setSearchTerm('');
+                    setSuccessMessage(`Bike ${pat} em Aguardando Técnica.`);
                   }} className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-[10px] font-black uppercase shadow-sm col-span-2">
                     Aguardando Técnica
                   </button>
@@ -4996,7 +4996,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           <p className="font-bold text-gray-700">Bike: {bike.patrimonio}</p>
                           {bike.bateria !== undefined && <p className="text-[10px] text-gray-500">Bateria: {bike.bateria}%</p>}
                           {bike.tecnico && <p className="text-[10px] text-orange-600 font-semibold">Técnico: {bike.tecnico}</p>}
-                          {bike.mecanico && <p className="text-[10px] text-blue-600 font-medium">Mecânico Orig.: {bike.mecanico}</p>}
+                          {bike.mecanico && bike.mecanico !== bike.tecnico && <p className="text-[10px] text-blue-600 font-medium">Mecânico Orig.: {bike.mecanico}</p>}
                           {bike.dataEntrada && <p className="text-[10px] text-gray-400">{new Date(bike.dataEntrada).toLocaleString('pt-BR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</p>}
                           {bike.tratativa && bike.tratativa !== 'MANUAL' && <p className="text-[10px] text-gray-500 italic">Obs: {bike.tratativa}</p>}
                         </div>
