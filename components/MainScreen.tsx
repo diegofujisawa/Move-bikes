@@ -1875,18 +1875,33 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally { setIsLoading(false); }
   };
 
-  const handleFinalizeTechnicaRepair = (bike: any) => {
+  const handleFinalizeTechnicaRepair = async (bike: any) => {
     setTechnicaRepairModal({ bike });
     setTechnicaRepairSelected(new Set());
+    
+    // Busca o mecânico original no Firestore para garantir que não usamos dados possivelmente 
+    // sobrescritos no Sheets durante o processo técnico
+    try {
+      const bikeDoc = await getDocFromServer(doc(db, 'bikes', bike.patrimonio));
+      if (bikeDoc.exists()) {
+        const data = bikeDoc.data();
+        if (data.mecanico) {
+          setTechnicaRepairModal(prev => prev ? { ...prev, bike: { ...prev.bike, mecanico: data.mecanico } } : null);
+        }
+      }
+    } catch (e) {
+      console.warn('[Firebase] Erro ao buscar mecânico original:', e);
+    }
   };
 
   const executeFinalizeTechnicaRepair = async () => {
     if (!technicaRepairModal || technicaRepairSelected.size === 0) return;
     const { bike } = technicaRepairModal;
     const bikeNumber = bike.patrimonio;
+    
     // O mecânico original é quem enviou a bike. 
-    // Se o mecânico for o mesmo que o técnico, consideramos que não há mecânico original (foi erro de registro anterior)
-    const originalMechanic = (bike.mecanico && bike.mecanico !== bike.tecnico) ? bike.mecanico : '';
+    // Comparamos com o driverName (técnico atual) para garantir que não devolvemos para o próprio técnico
+    const originalMechanic = (bike.mecanico && bike.mecanico !== driverName) ? bike.mecanico : '';
     const treatment = Array.from(technicaRepairSelected).join(', ');
     
     // Lógica solicitada: Se tiver mecânico, volta para 'Em Manutenção'. Se não, 'Aguardando Manutenção'.
@@ -3863,7 +3878,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             <div className="bg-orange-600 p-4 text-white flex-shrink-0">
               <p className="text-xs font-bold uppercase opacity-80">Finalizar Reparo</p>
               <h2 className="text-lg font-black">Bike {technicaRepairModal.bike.patrimonio}</h2>
-              {technicaRepairModal.bike.mecanico && technicaRepairModal.bike.mecanico !== technicaRepairModal.bike.tecnico ? (
+              {technicaRepairModal.bike.mecanico && technicaRepairModal.bike.mecanico !== driverName ? (
                 <p className="text-[11px] opacity-80 mt-0.5">
                   Retornará para: <span className="font-bold">{technicaRepairModal.bike.mecanico}</span>
                 </p>
@@ -5002,7 +5017,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           <p className="font-bold text-gray-700">Bike: {bike.patrimonio}</p>
                           {bike.bateria !== undefined && <p className="text-[10px] text-gray-500">Bateria: {bike.bateria}%</p>}
                           {bike.tecnico && <p className="text-[10px] text-orange-600 font-semibold">Técnico: {bike.tecnico}</p>}
-                          {bike.mecanico && bike.mecanico !== bike.tecnico && <p className="text-[10px] text-blue-600 font-medium">Mecânico Orig.: {bike.mecanico}</p>}
+                          {bike.mecanico && bike.mecanico !== driverName && <p className="text-[10px] text-blue-600 font-medium">Mecânico Orig.: {bike.mecanico}</p>}
                           {bike.dataEntrada && <p className="text-[10px] text-gray-400">{new Date(bike.dataEntrada).toLocaleString('pt-BR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</p>}
                           {bike.tratativa && bike.tratativa !== 'MANUAL' && <p className="text-[10px] text-gray-500 italic">Obs: {bike.tratativa}</p>}
                         </div>
