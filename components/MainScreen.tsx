@@ -1785,13 +1785,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     const finalMechanic = mechanicName || driverName;
     // Otimista — protege e remove da lista Mecânica imediatamente
-    protectMechanicBike(bikePat, { status: 'Aguardando Técnica', responsavel: finalMechanic });
+    protectMechanicBike(bikePat, { status: 'Aguardando Técnica', responsavel: finalMechanic, mecanico: finalMechanic });
     setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
     try {
       // Firebase não-bloqueante
       try {
         await setDoc(doc(db, 'bikes', bikePat), {
-          status: 'Aguardando Técnica', responsavel: finalMechanic, ultimaAtualizacao: serverTimestamp()
+          status: 'Aguardando Técnica', 
+          responsavel: finalMechanic, 
+          mecanico: finalMechanic, // Garante que o nome do mecânico seja gravado para devolução
+          ultimaAtualizacao: serverTimestamp()
         }, { merge: true });
       } catch (e) {
         console.warn('[Firebase] bikes write failed:', e);
@@ -1837,12 +1840,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setTechnicaReceiptModal(null);
     setIsLoading(true);
     setTechnicaList(prev => prev.map(b =>
-      b.patrimonio === bikeNumber ? { ...b, status: 'Em Técnica', mecanico: technicianName } : b
+      b.patrimonio === bikeNumber ? { ...b, status: 'Em Técnica', tecnico: technicianName } : b
     ));
     try {
       try {
         await setDoc(doc(db, 'bikes', bikeNumber), {
-          status: 'Em Técnica', responsavel: technicianName, ultimaAtualizacao: serverTimestamp()
+          status: 'Em Técnica', 
+          responsavel: technicianName, 
+          tecnico: technicianName, // Armazena o técnico separadamente
+          ultimaAtualizacao: serverTimestamp()
         }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeNumber}`);
@@ -1851,7 +1857,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       try {
         await addDoc(collection(db, 'reports'), {
           bikeNumber, status: 'Em Técnica',
-          driverName: technicianName, mecanico: technicianName,
+          driverName: technicianName, tecnico: technicianName,
           observation: `Recebida pela Técnica — ${technicianName}`,
           timestamp: serverTimestamp(), type: 'Técnica'
         });
@@ -1875,8 +1881,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (!technicaRepairModal || technicaRepairSelected.size === 0) return;
     const { bike } = technicaRepairModal;
     const bikeNumber = bike.patrimonio;
+    // O mecânico original é quem enviou a bike. Se não houver, originalMechanic será vazio.
     const originalMechanic = bike.mecanico || '';
     const treatment = Array.from(technicaRepairSelected).join(', ');
+    
+    // Lógica solicitada: Se tiver mecânico, volta para 'Em Manutenção'. Se não, 'Aguardando Manutenção'.
+    const finalStatus = originalMechanic ? 'Em Manutenção' : 'Aguardando Manutenção';
+    const finalResponsavel = originalMechanic || null;
+
     setTechnicaRepairModal(null);
     setTechnicaRepairSelected(new Set());
     setIsLoading(true);
@@ -1884,7 +1896,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
     try {
       try {
         await setDoc(doc(db, 'bikes', bikeNumber), {
-          status: 'Em Manutenção', responsavel: originalMechanic || null, ultimaAtualizacao: serverTimestamp()
+          status: finalStatus, 
+          responsavel: finalResponsavel, 
+          mecanico: finalResponsavel,
+          tecnico: null, // Limpa o técnico ao finalizar
+          ultimaAtualizacao: serverTimestamp()
         }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeNumber}`);
@@ -1893,9 +1909,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
       try {
         await addDoc(collection(db, 'reports'), {
           bikeNumber, status: 'Devolvida da Técnica',
-          driverName, mecanico: driverName,
+          driverName, tecnico: driverName,
           treatment, originalMechanic,
-          observation: `Técnica finalizada por ${driverName} — ${treatment}. Devolvida para ${originalMechanic || 'Mecânica'}`,
+          observation: `Técnica finalizada por ${driverName} — ${treatment}. Devolvida para ${originalMechanic || 'Aguardando Manutenção'}`,
           timestamp: serverTimestamp(), type: 'Técnica'
         });
       } catch (e) {
@@ -1906,7 +1922,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         action: 'finalizeTechnicaRepair', bikeNumber,
         technicianName: driverName, treatment, originalMechanic
       }, 1, false);
-      setSuccessMessage(`Bike ${bikeNumber} devolvida para ${originalMechanic || 'Mecânica'} — Em Manutenção.`);
+      setSuccessMessage(`Bike ${bikeNumber} devolvida para ${originalMechanic || 'Mecânica'} — ${finalStatus}.`);
     } catch (err: any) {
       setError('Erro: ' + err.message);
       fetchTechnicaList();
@@ -3843,9 +3859,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
             <div className="bg-orange-600 p-4 text-white flex-shrink-0">
               <p className="text-xs font-bold uppercase opacity-80">Finalizar Reparo</p>
               <h2 className="text-lg font-black">Bike {technicaRepairModal.bike.patrimonio}</h2>
-              {technicaRepairModal.bike.mecanico && (
+              {technicaRepairModal.bike.mecanico ? (
                 <p className="text-[11px] opacity-80 mt-0.5">
                   Retornará para: <span className="font-bold">{technicaRepairModal.bike.mecanico}</span>
+                </p>
+              ) : (
+                <p className="text-[11px] opacity-80 mt-0.5 italic">
+                  Retornará para: Aguardando Manutenção
                 </p>
               )}
             </div>
@@ -4975,7 +4995,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         <div>
                           <p className="font-bold text-gray-700">Bike: {bike.patrimonio}</p>
                           {bike.bateria !== undefined && <p className="text-[10px] text-gray-500">Bateria: {bike.bateria}%</p>}
-                          {bike.mecanico && <p className="text-[10px] text-orange-600 font-semibold">Técnico: {bike.mecanico}</p>}
+                          {bike.tecnico && <p className="text-[10px] text-orange-600 font-semibold">Técnico: {bike.tecnico}</p>}
+                          {bike.mecanico && <p className="text-[10px] text-blue-600 font-medium">Mecânico Orig.: {bike.mecanico}</p>}
                           {bike.dataEntrada && <p className="text-[10px] text-gray-400">{new Date(bike.dataEntrada).toLocaleString('pt-BR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</p>}
                           {bike.tratativa && bike.tratativa !== 'MANUAL' && <p className="text-[10px] text-gray-500 italic">Obs: {bike.tratativa}</p>}
                         </div>
