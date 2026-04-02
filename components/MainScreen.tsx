@@ -701,25 +701,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsPendingActionsLoading(true);
       unsubPending = onSnapshot(collection(db, 'pending_actions'), snapshot => {
         const actions: any[] = [];
-        // Mapa para consolidar lotes por mecânico (pega o doc mais recente de cada)
-        const loteByMechanic: Record<string, any> = {};
         snapshot.forEach(d => {
           const data = d.data();
-          if (data.status !== 'pending') return;
-          if (data.type === 'alterar_status_lote') {
-            const key = data.mechanicName || 'desconhecido';
-            const existing = loteByMechanic[key];
-            const ts = data.timestamp?.toMillis?.() || 0;
-            if (!existing || ts > (existing.timestamp?.toMillis?.() || 0)) {
-              loteByMechanic[key] = { id: d.id, ...data };
-            }
-          } else {
+          if (data.status === 'pending') {
             actions.push({ id: d.id, ...data });
           }
         });
-        // Adiciona lotes consolidados
-        Object.values(loteByMechanic).forEach(lote => actions.push(lote));
-        setPendingActions(actions.sort((a, b) => (b.timestamp?.toMillis?.() || 0) - (a.timestamp?.toMillis?.() || 0)));
+        setPendingActions(actions.sort((a, b) => {
+          const tsA = a.timestamp?.toMillis?.() || 0;
+          const tsB = b.timestamp?.toMillis?.() || 0;
+          return tsB - tsA;
+        }));
         setIsPendingActionsLoading(false);
       }, err => {
         console.error('Listener pending_actions:', err);
@@ -3916,11 +3908,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
           )}
           {!isMecanica && !isTecnica && <>
             <button onClick={() => setRequestModalOpen(true)} disabled={isLoading} title="Nova Solicitação" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
+            <button onClick={() => setRouteModalOpen(true)} disabled={isLoading} title="Criar Roteiro" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusPlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             {!isAdm && (
-              <>
-                <button onClick={() => setRouteModalOpen(true)} disabled={isLoading} title="Criar Roteiro" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusPlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
-                <button onClick={() => setTrailerModalOpen(true)} disabled={isLoading} title="Carretinha" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><TrailerIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
-              </>
+              <button onClick={() => setTrailerModalOpen(true)} disabled={isLoading} title="Carretinha" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><TrailerIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             )}
             <button onClick={() => {
               setIsAdminAlertsOpen(true);
