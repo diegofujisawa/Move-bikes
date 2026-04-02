@@ -16,7 +16,7 @@ import { auth, db } from '../firebase';
 import { signInWithPopup, GoogleAuthProvider, signInAnonymously } from 'firebase/auth';
 import {
   collection, onSnapshot, doc, updateDoc, addDoc, getDocs,
-  serverTimestamp, setDoc, query, where
+  serverTimestamp, setDoc, query, where, getDocFromServer
 } from 'firebase/firestore';
 import ScheduleModal from './ScheduleModal';
 import ReporModal from './ReporModal';
@@ -106,6 +106,71 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
 
 const getDistanceInMeters = (lat1: number, lon1: number, lat2: number, lon2: number) =>
   calculateDistance(lat1, lon1, lat2, lon2) * 1000;
+
+// =================================================================
+// FIREBASE ERROR HANDLING & UTILS
+// =================================================================
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+};
+
+async function testConnection() {
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (error) {
+    if(error instanceof Error && error.message.includes('the client is offline')) {
+      console.error("Please check your Firebase configuration. ");
+    }
+  }
+}
+testConnection();
 
 // =================================================================
 // COMPONENTE PRINCIPAL
@@ -382,52 +447,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // =================================================================
   // HELPERS DE ESTADO
   // =================================================================
-
-  enum OperationType {
-    CREATE = 'create',
-    UPDATE = 'update',
-    DELETE = 'delete',
-    LIST = 'list',
-    GET = 'get',
-    WRITE = 'write',
-  }
-
-  interface FirestoreErrorInfo {
-    error: string;
-    operationType: OperationType;
-    path: string | null;
-    authInfo: {
-      userId: string | undefined;
-      email: string | null | undefined;
-      emailVerified: boolean | undefined;
-      isAnonymous: boolean | undefined;
-      tenantId: string | null | undefined;
-      providerInfo: any[];
-    }
-  }
-
-  const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
-    const errInfo: FirestoreErrorInfo = {
-      error: error instanceof Error ? error.message : String(error),
-      authInfo: {
-        userId: auth.currentUser?.uid,
-        email: auth.currentUser?.email,
-        emailVerified: auth.currentUser?.emailVerified,
-        isAnonymous: auth.currentUser?.isAnonymous,
-        tenantId: auth.currentUser?.tenantId,
-        providerInfo: auth.currentUser?.providerData.map(provider => ({
-          providerId: provider.providerId,
-          displayName: provider.displayName,
-          email: provider.email,
-          photoUrl: provider.photoURL
-        })) || []
-      },
-      operationType,
-      path
-    };
-    console.error('Firestore Error: ', JSON.stringify(errInfo));
-    throw new Error(JSON.stringify(errInfo));
-  };
 
   /**
    * Marca que o motorista acabou de executar uma ação.
@@ -1029,15 +1048,23 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     try {
       // 4. Firebase — não-bloqueante (resposta imediata ao motorista)
-      setDoc(doc(db, 'bikes', bikeNumber), {
-        status: finalStatus, responsavel: null,
-        observacao: observation, ultimaAtualizacao: serverTimestamp()
-      }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
+      try {
+        await setDoc(doc(db, 'bikes', bikeNumber), {
+          status: finalStatus, responsavel: null,
+          observacao: observation, ultimaAtualizacao: serverTimestamp()
+        }, { merge: true });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeNumber}`);
+      }
 
-      addDoc(collection(db, 'reports'), {
-        driverName, bikeNumber, status: finalStatus,
-        observation, timestamp: serverTimestamp()
-      }).catch(e => console.warn('[Firebase] reports write:', e.code));
+      try {
+        await addDoc(collection(db, 'reports'), {
+          driverName, bikeNumber, status: finalStatus,
+          observation, timestamp: serverTimestamp()
+        });
+      } catch (e) {
+        console.warn('[Firebase] reports write failed:', e);
+      }
 
       // 5. Sheets — fire-and-forget em paralelo (não bloqueia a UI)
       //    updateDriverState remove a bike do estado persistido
@@ -1047,7 +1074,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       apiCall({
         action: 'finalizeCollectedBike', driverName, bikeNumber,
         finalStatus, finalObservation: observation
-      }, 1, true).catch(e => console.warn('[Sheets] finalizeCollectedBike:', e));
+      }, 1, true).then(() => {
+        if (finalStatus === 'Mecânica') {
+          clearCache('getMechanicsList');
+          clearCache('sync');
+        }
+      }).catch(e => console.warn('[Sheets] finalizeCollectedBike:', e));
 
       setSuccessMessage(`Bicicleta ${bikeNumber} finalizada!`);
     } catch (err: any) {
@@ -1646,49 +1678,66 @@ const MainScreen: React.FC<MainScreenProps> = ({
         await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {});
         clearCache('getMechanicsList');
         clearCache('sync');
-        addDoc(collection(db, 'reports'), {
-          bikeNumber: bikeId,
-          patrimonio: bikeId,
-          status: 'Aguardando Manutenção',
-          driverName, mecanico: driverName,
-          observation: `Enviada para Aguardando Manutenção por ${driverName}`,
-          timestamp: serverTimestamp(), type: 'Mecânica'
-        }).catch(() => {});
+        
+        try {
+          await addDoc(collection(db, 'reports'), {
+            bikeNumber: bikeId,
+            patrimonio: bikeId,
+            status: 'Aguardando Manutenção',
+            driverName, mecanico: driverName,
+            observation: `Enviada para Aguardando Manutenção por ${driverName}`,
+            timestamp: serverTimestamp(), type: 'Mecânica'
+          });
+        } catch (e) {
+          console.warn('[Firebase] reports write failed, but continuing:', e);
+        }
 
         // 2. Agrupa num único doc no Firebase — busca doc pendente existente antes de criar novo
         const { arrayUnion, getDocs: _getDocs, query: _query, where: _where } = await import('firebase/firestore');
         
         if (!alterarStatusDocRef.current) {
-          // Busca doc pendente já existente deste mecânico para não criar duplicata
-          const existingSnap = await _getDocs(
-            _query(
-              collection(db, 'pending_actions'),
-              _where('type', '==', 'alterar_status_lote'),
-              _where('mechanicName', '==', driverName),
-              _where('status', '==', 'pending')
-            )
-          );
-          if (!existingSnap.empty) {
-            alterarStatusDocRef.current = existingSnap.docs[0].id;
+          try {
+            // Busca doc pendente já existente deste mecânico para não criar duplicata
+            const existingSnap = await _getDocs(
+              _query(
+                collection(db, 'pending_actions'),
+                _where('type', '==', 'alterar_status_lote'),
+                _where('mechanicName', '==', driverName),
+                _where('status', '==', 'pending')
+              )
+            );
+            if (!existingSnap.empty) {
+              alterarStatusDocRef.current = existingSnap.docs[0].id;
+            }
+          } catch (e) {
+            handleFirestoreError(e, OperationType.LIST, 'pending_actions');
           }
         }
 
         if (alterarStatusDocRef.current) {
-          // Adiciona bike ao doc existente
-          await updateDoc(doc(db, 'pending_actions', alterarStatusDocRef.current), {
-            bikes: arrayUnion(bikeId),
-            timestamp: serverTimestamp(),
-          });
+          try {
+            // Adiciona bike ao doc existente
+            await updateDoc(doc(db, 'pending_actions', alterarStatusDocRef.current), {
+              bikes: arrayUnion(bikeId),
+              timestamp: serverTimestamp(),
+            });
+          } catch (e) {
+            handleFirestoreError(e, OperationType.UPDATE, `pending_actions/${alterarStatusDocRef.current}`);
+          }
         } else {
-          // Cria novo doc agregador
-          const docRef = await addDoc(collection(db, 'pending_actions'), {
-            type: 'alterar_status_lote',
-            bikes: [bikeId],
-            mechanicName: driverName,
-            status: 'pending',
-            timestamp: serverTimestamp(),
-          });
-          alterarStatusDocRef.current = docRef.id;
+          try {
+            // Cria novo doc agregador
+            const docRef = await addDoc(collection(db, 'pending_actions'), {
+              type: 'alterar_status_lote',
+              bikes: [bikeId],
+              mechanicName: driverName,
+              status: 'pending',
+              timestamp: serverTimestamp(),
+            });
+            alterarStatusDocRef.current = docRef.id;
+          } catch (e) {
+            handleFirestoreError(e, OperationType.CREATE, 'pending_actions');
+          }
         }
 
         setSuccessMessage(`Bike ${bikeId} → Aguardando Manutenção.`);
@@ -1740,15 +1789,25 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
     try {
       // Firebase não-bloqueante
-      setDoc(doc(db, 'bikes', bikePat), {
-        status: 'Aguardando Técnica', responsavel: finalMechanic, ultimaAtualizacao: serverTimestamp()
-      }, { merge: true }).catch(e => console.warn('[Firebase] bikes:', e.code));
-      addDoc(collection(db, 'reports'), {
-        bikeNumber: bikePat, patrimonio: bikePat, status: 'Aguardando Técnica',
-        driverName: finalMechanic, mecanico: finalMechanic,
-        observation: `Enviada para Técnica por ${finalMechanic}`,
-        timestamp: serverTimestamp(), type: 'Técnica'
-      }).catch(() => {});
+      try {
+        await setDoc(doc(db, 'bikes', bikePat), {
+          status: 'Aguardando Técnica', responsavel: finalMechanic, ultimaAtualizacao: serverTimestamp()
+        }, { merge: true });
+      } catch (e) {
+        console.warn('[Firebase] bikes write failed:', e);
+      }
+
+      try {
+        await addDoc(collection(db, 'reports'), {
+          bikeNumber: bikePat, patrimonio: bikePat, status: 'Aguardando Técnica',
+          driverName: finalMechanic, mecanico: finalMechanic,
+          observation: `Enviada para Técnica por ${finalMechanic}`,
+          timestamp: serverTimestamp(), type: 'Técnica'
+        });
+      } catch (e) {
+        console.warn('[Firebase] reports write failed:', e);
+      }
+
       // Backend — fire-and-forget, não bloqueia UI
       apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: finalMechanic }, 1, false).catch(() => {});
     } catch (err: any) {
@@ -1781,15 +1840,25 @@ const MainScreen: React.FC<MainScreenProps> = ({
       b.patrimonio === bikeNumber ? { ...b, status: 'Em Técnica', mecanico: technicianName } : b
     ));
     try {
-      setDoc(doc(db, 'bikes', bikeNumber), {
-        status: 'Em Técnica', responsavel: technicianName, ultimaAtualizacao: serverTimestamp()
-      }, { merge: true }).catch(e => console.warn('[Firebase]', e.code));
-      addDoc(collection(db, 'reports'), {
-        bikeNumber, status: 'Em Técnica',
-        driverName: technicianName, mecanico: technicianName,
-        observation: `Recebida pela Técnica — ${technicianName}`,
-        timestamp: serverTimestamp(), type: 'Técnica'
-      }).catch(() => {});
+      try {
+        await setDoc(doc(db, 'bikes', bikeNumber), {
+          status: 'Em Técnica', responsavel: technicianName, ultimaAtualizacao: serverTimestamp()
+        }, { merge: true });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeNumber}`);
+      }
+
+      try {
+        await addDoc(collection(db, 'reports'), {
+          bikeNumber, status: 'Em Técnica',
+          driverName: technicianName, mecanico: technicianName,
+          observation: `Recebida pela Técnica — ${technicianName}`,
+          timestamp: serverTimestamp(), type: 'Técnica'
+        });
+      } catch (e) {
+        console.warn('[Firebase] reports write failed:', e);
+      }
+
       await apiCall({ action: 'confirmTechnicaReceipt', bikeNumber, technicianName }, 1, false);
     } catch (err: any) {
       setError('Erro: ' + err.message);
@@ -1813,16 +1882,26 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
     setTechnicaList(prev => prev.filter(b => b.patrimonio !== bikeNumber));
     try {
-      setDoc(doc(db, 'bikes', bikeNumber), {
-        status: 'Em Manutenção', responsavel: originalMechanic || null, ultimaAtualizacao: serverTimestamp()
-      }, { merge: true }).catch(e => console.warn('[Firebase]', e.code));
-      addDoc(collection(db, 'reports'), {
-        bikeNumber, status: 'Devolvida da Técnica',
-        driverName, mecanico: driverName,
-        treatment, originalMechanic,
-        observation: `Técnica finalizada por ${driverName} — ${treatment}. Devolvida para ${originalMechanic || 'Mecânica'}`,
-        timestamp: serverTimestamp(), type: 'Técnica'
-      }).catch(() => {});
+      try {
+        await setDoc(doc(db, 'bikes', bikeNumber), {
+          status: 'Em Manutenção', responsavel: originalMechanic || null, ultimaAtualizacao: serverTimestamp()
+        }, { merge: true });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeNumber}`);
+      }
+
+      try {
+        await addDoc(collection(db, 'reports'), {
+          bikeNumber, status: 'Devolvida da Técnica',
+          driverName, mecanico: driverName,
+          treatment, originalMechanic,
+          observation: `Técnica finalizada por ${driverName} — ${treatment}. Devolvida para ${originalMechanic || 'Mecânica'}`,
+          timestamp: serverTimestamp(), type: 'Técnica'
+        });
+      } catch (e) {
+        console.warn('[Firebase] reports write failed:', e);
+      }
+
       await apiCall({
         action: 'finalizeTechnicaRepair', bikeNumber,
         technicianName: driverName, treatment, originalMechanic
@@ -1844,13 +1923,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
       // 2. Atualização otimista — remove da lista imediatamente
       setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
 
-      updateDoc(doc(db, 'bikes', bikePat), { 
-        status: 'Vandalizada', 
-        responsavel: driverName, 
-        observacao: observation,
-        localFinal: room || null,
-        ultimaAtualizacao: serverTimestamp() 
-      }).catch(() => {});
+      try {
+        await updateDoc(doc(db, 'bikes', bikePat), { 
+          status: 'Vandalizada', 
+          responsavel: driverName, 
+          observacao: observation,
+          localFinal: room || null,
+          ultimaAtualizacao: serverTimestamp() 
+        });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikePat}`);
+      }
 
       // Envia para o Sheets: tratativa como VANDALIZADA e sala no campo room (Coluna G)
       apiCall({ 
@@ -1907,8 +1990,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
     ));
     setIsMechanicSelectionModalOpen(false);
     try {
-      updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
-      addDoc(collection(db, 'reports'), { bikeNumber, patrimonio: bikeNumber, status: 'Mecânica', driverName, mechanicName, timestamp: serverTimestamp(), type: 'Mecânica' }).catch(e => console.warn('[Firebase] reports write:', e.code));
+      try {
+        await updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikeNumber}`);
+      }
+      
+      try {
+        await addDoc(collection(db, 'reports'), { bikeNumber, patrimonio: bikeNumber, status: 'Mecânica', driverName, mechanicName, timestamp: serverTimestamp(), type: 'Mecânica' });
+      } catch (e) {
+        console.warn('[Firebase] reports write failed:', e);
+      }
+
       apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true).catch(() => {});
       clearCache('getMechanicsList');
       clearCache('sync');
@@ -1937,16 +2030,26 @@ const MainScreen: React.FC<MainScreenProps> = ({
     ));
     setIsMechanicRepairModalOpen(false);
     try {
-      updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() }).catch(e => console.warn('[Firebase] bikes write:', e.code));
-      addDoc(collection(db, 'reports'), {
-        bikeNumber,
-        patrimonio: bikeNumber,
-        status: 'Reserva',
-        driverName: mechanicName, mecanico: mechanicName, treatment,
-        observation: `Reparo finalizado por ${mechanicName} — ${treatment}`,
-        dataEntrada: selectedMechanicBike?.dataEntrada || null,
-        timestamp: serverTimestamp(), type: 'Reparo'
-      }).catch(e => console.warn('[Firebase] reports write:', e.code));
+      try {
+        await updateDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikeNumber}`);
+      }
+
+      try {
+        await addDoc(collection(db, 'reports'), {
+          bikeNumber,
+          patrimonio: bikeNumber,
+          status: 'Reserva',
+          driverName: mechanicName, mecanico: mechanicName, treatment,
+          observation: `Reparo finalizado por ${mechanicName} — ${treatment}`,
+          dataEntrada: selectedMechanicBike?.dataEntrada || null,
+          timestamp: serverTimestamp(), type: 'Reparo'
+        });
+      } catch (e) {
+        console.warn('[Firebase] reports write failed:', e);
+      }
+
       apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName, treatment }, 1, true).catch(() => {});
       clearCache('getMechanicsList');
       clearCache('sync');
@@ -2015,8 +2118,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
         ));
       } else if (action.type === 'status_change') {
         if (action.targetStatus === 'Reserva') {
-          updateDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }).catch(() => {});
-          addDoc(collection(db, 'reports'), { bikeNumber: action.bikeNumber, status: 'Em Estação', driverName: action.mechanicName, treatment: action.treatment, timestamp: serverTimestamp(), type: 'Reparo' }).catch(() => {});
+          try {
+            await updateDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() });
+          } catch (e) {
+            handleFirestoreError(e, OperationType.UPDATE, `bikes/${action.bikeNumber}`);
+          }
+          
+          try {
+            await addDoc(collection(db, 'reports'), { bikeNumber: action.bikeNumber, status: 'Em Estação', driverName: action.mechanicName, treatment: action.treatment, timestamp: serverTimestamp(), type: 'Reparo' });
+          } catch (e) {
+            console.warn('[Firebase] reports write failed:', e);
+          }
+
           const res = await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber: action.bikeNumber, mechanicName: action.mechanicName, treatment: action.treatment }, 1, true);
           if (!res.success) throw new Error(res.error || 'Erro ao aprovar reparo.');
         } else {
@@ -2029,20 +2142,29 @@ const MainScreen: React.FC<MainScreenProps> = ({
           if (!res.success) throw new Error(res.error || 'Erro ao aprovar status.');
         }
       } else if (action.type === 'trailer_validation') {
-        await Promise.all(action.bikes.map((id: string) => updateDoc(doc(db, 'bikes', id), { 
-          carretinha: action.trailerName, 
-          trailerStatus: 'approved',
-          ultimaAtualizacao: serverTimestamp() 
-        })));
+        try {
+          await Promise.all(action.bikes.map((id: string) => updateDoc(doc(db, 'bikes', id), { 
+            carretinha: action.trailerName, 
+            trailerStatus: 'approved',
+            ultimaAtualizacao: serverTimestamp() 
+          })));
+        } catch (e) {
+          handleFirestoreError(e, OperationType.WRITE, `bikes/${action.bikes.join(',')}`);
+        }
+
         const res = await apiCall({ action: 'organizeTrailer', bikeNumbers: action.bikes, trailerName: action.trailerName }, 1, true);
         if (!res.success) throw new Error(res.error || 'Erro ao aprovar carretinha.');
       }
 
-      await updateDoc(doc(db, 'pending_actions', action.id), {
-        status: 'approved',
-        approvedBy: driverName,
-        approvedAt: serverTimestamp()
-      });
+      try {
+        await updateDoc(doc(db, 'pending_actions', action.id), {
+          status: 'approved',
+          approvedBy: driverName,
+          approvedAt: serverTimestamp()
+        });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.UPDATE, `pending_actions/${action.id}`);
+      }
       // Reseta ref do lote se era o doc aprovado
       if (action.type === 'alterar_status_lote' && alterarStatusDocRef.current === action.id) {
         alterarStatusDocRef.current = null;
@@ -2362,21 +2484,29 @@ const MainScreen: React.FC<MainScreenProps> = ({
       // 1. Cria a ação pendente para o ADM validar (SE NÃO FOR ADM)
       // Criamos ANTES de outras operações para garantir que a validação chegue
       if (!isAdm) {
-        await addDoc(collection(db, 'pending_actions'), {
-          type: 'trailer_validation',
-          trailerName,
-          bikes: bikeIds,
-          mechanicName: driverName,
-          status: 'pending',
-          timestamp: serverTimestamp()
-        }).catch(e => console.error('Erro ao criar pending_action:', e));
+        try {
+          await addDoc(collection(db, 'pending_actions'), {
+            type: 'trailer_validation',
+            trailerName,
+            bikes: bikeIds,
+            mechanicName: driverName,
+            status: 'pending',
+            timestamp: serverTimestamp()
+          });
+        } catch (e) {
+          handleFirestoreError(e, OperationType.CREATE, 'pending_actions');
+        }
       }
 
       // 2. Atualiza as bikes no Firestore
-      await Promise.all(bikeIds.map(id => setDoc(doc(db, 'bikes', id), { 
-        trailerStatus: 'finalized', 
-        ultimaAtualizacao: serverTimestamp() 
-      }, { merge: true })));
+      try {
+        await Promise.all(bikeIds.map(id => setDoc(doc(db, 'bikes', id), { 
+          trailerStatus: 'finalized', 
+          ultimaAtualizacao: serverTimestamp() 
+        }, { merge: true })));
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeIds.join(',')}`);
+      }
 
       // 3. Notificações e Logs (não-bloqueantes)
       apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
