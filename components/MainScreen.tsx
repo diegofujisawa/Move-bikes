@@ -31,7 +31,7 @@ import DestinationModal from './DestinationModal';
 import HistoryModal from './HistoryModal';
 import VehicleSwitchModal from './VehicleSwitchModal';
 import EditDriverModal from './EditDriverModal';
-import { apiCall, apiGetCall } from '../api';
+import { apiCall, apiGetCall, clearCache } from '../api';
 import { User } from '../types';
 import { migrateDataToFirebase } from '../migrationService';
 
