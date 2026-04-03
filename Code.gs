@@ -874,6 +874,11 @@ function getDriverLocations(providedData) {
   const TWO_HOURS = 2 * 60 * 60 * 1000;
 
   data.forEach(row => {
+    const user = (row[COLUMN_INDICES.ACCESS.USUARIO - 1] || '').toString().trim();
+    const lowerUser = user.toLowerCase();
+    const cat = normalizeCategory(row[COLUMN_INDICES.ACCESS.CATEGORIA - 1]);
+    if (!cat.includes('MOTORISTA') || lowerUser.includes('aline') || lowerUser.includes('diego')) return;
+
     const status = (row[COLUMN_INDICES.ACCESS.STATUS_ONLINE - 1] || '').toString().toUpperCase();
     const gpsString = (row[COLUMN_INDICES.ACCESS.GPS - 1] || '').toString().trim();
     if (status !== STATUS.LOGADO || !gpsString) return;
@@ -1449,7 +1454,12 @@ function getMotoristas(providedData) {
   }
 
   const motoristas = data
-    .filter(row => normalizeCategory(row[COLUMN_INDICES.ACCESS.CATEGORIA - 1]).includes('MOTORISTA'))
+    .filter(row => {
+      const cat = normalizeCategory(row[COLUMN_INDICES.ACCESS.CATEGORIA - 1]);
+      const user = (row[COLUMN_INDICES.ACCESS.USUARIO - 1] || '').toString().trim();
+      const lowerUser = user.toLowerCase();
+      return cat.includes('MOTORISTA') && !lowerUser.includes('aline') && !lowerUser.includes('diego');
+    })
     .map(row => row[COLUMN_INDICES.ACCESS.USUARIO - 1])
     .filter(Boolean);
 
@@ -2357,7 +2367,12 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
       if (lastRowA < 2) return { success: true, data: [] };
       const driversData = accessSheet.getRange(2, 1, lastRowA - 1, accessSheet.getLastColumn()).getValues();
       drivers = [...new Set(driversData
-        .filter(row => normalizeCategory(row[COLUMN_INDICES.ACCESS.CATEGORIA - 1]).includes('MOTORISTA'))
+        .filter(row => {
+          const cat = normalizeCategory(row[COLUMN_INDICES.ACCESS.CATEGORIA - 1]);
+          const user = (row[COLUMN_INDICES.ACCESS.USUARIO - 1] || '').toString().trim();
+          const lowerUser = user.toLowerCase();
+          return cat.includes('MOTORISTA') && !lowerUser.includes('aline') && !lowerUser.includes('diego');
+        })
         .map(row => row[COLUMN_INDICES.ACCESS.USUARIO - 1].toString().trim()))];
     }
 
@@ -2552,8 +2567,22 @@ function getAnalyticalDashboardData(timeRange) {
     }
 
     const reportSheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
+    const accessSheet = getSpreadsheet().getSheetByName(ACCESS_SHEET_NAME);
     
     if (!reportSheet) return { success: false, error: 'Planilha de relatórios não encontrada.' };
+
+    const motoristasSet = new Set();
+    if (accessSheet) {
+      const lastRowA = accessSheet.getLastRow();
+      if (lastRowA > 1) {
+        const accessData = accessSheet.getRange(2, 1, lastRowA - 1, accessSheet.getLastColumn()).getValues();
+        accessData.forEach(row => {
+          if (normalizeCategory(row[COLUMN_INDICES.ACCESS.CATEGORIA - 1]).includes('MOTORISTA')) {
+            motoristasSet.add(row[COLUMN_INDICES.ACCESS.USUARIO - 1].toString().trim());
+          }
+        });
+      }
+    }
 
     const lastRowR = reportSheet.getLastRow();
     let reportData = [];
@@ -2572,6 +2601,11 @@ function getAnalyticalDashboardData(timeRange) {
 
       const driver = (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
       if (!driver) continue;
+
+      // Filter: Only include users with MOTORISTA category and exclude Aline/Diego explicitly
+      if (!motoristasSet.has(driver)) continue;
+      const lowerDriver = driver.toLowerCase();
+      if (lowerDriver.includes('aline') || lowerDriver.includes('diego')) continue;
 
       if (!stats[driver]) {
         stats[driver] = { 
