@@ -9,7 +9,7 @@ import {
 import { 
   Settings, Battery, Lock, Map as MapIconLucide, 
   WifiOff, AlertCircle, RefreshCw, ChevronUp, ChevronDown, ChevronLeft, 
-  ChevronRight, Circle, Play, Locate, Map, Wrench, Loader2
+  ChevronRight, Circle, Play, Locate, Map, Wrench, Loader2, TrendingUp
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
@@ -31,6 +31,7 @@ import DestinationModal from './DestinationModal';
 import HistoryModal from './HistoryModal';
 import VehicleSwitchModal from './VehicleSwitchModal';
 import EditDriverModal from './EditDriverModal';
+import { AnalyticalDashboard } from './AnalyticalDashboard';
 import { apiCall, apiGetCall, clearCache } from '../api';
 import { User } from '../types';
 import { migrateDataToFirebase } from '../migrationService';
@@ -276,6 +277,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isReporModalOpen, setIsReporModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [isEditDriverModalOpen, setIsEditDriverModalOpen] = useState(false);
+  const [showAnalyticalDashboard, setShowAnalyticalDashboard] = useState(false);
   const [isNotFoundConfirmOpen, setIsNotFoundConfirmOpen] = useState(false);
   const [isMechanicRepairModalOpen, setIsMechanicRepairModalOpen] = useState(false);
   const [technicaList, setTechnicaList] = useState<any[]>([]);
@@ -4093,6 +4095,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
             </button>
             {isAdm && <button onClick={onShowMap} disabled={isLoading} title="Mapa" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><MapIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>}
             {isAdm && (
+              <button 
+                onClick={() => setShowAnalyticalDashboard(true)} 
+                title="Dashboard Analítico" 
+                className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+              >
+                <TrendingUp className="w-6 h-6 sm:w-7 sm:h-7" />
+              </button>
+            )}
+            {isAdm && (
               <button onClick={handleForceReload} disabled={isForceReloading} title="Forçar atualização em todos os usuários"
                 className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-orange-50 hover:text-orange-600 disabled:opacity-50 relative">
                 <svg viewBox="0 0 24 24" className={`w-6 h-6 sm:w-7 sm:h-7 ${isForceReloading ? 'animate-spin text-orange-500' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -6317,6 +6328,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         onConfirm={obs => executeCollectedBikeAction(destinationModal.bikeNumber, destinationModal.type === 'Estação' ? 'Enviada para Estação' : destinationModal.type === 'Filial' ? 'Enviada para Filial' : 'Vandalizada', obs)}
         type={destinationModal.type} bikeNumber={destinationModal.bikeNumber} stationName={destinationModal.stationName} isLoading={isLoading} onRecalculate={recalculateStation}/>
       <HistoryModal isOpen={isHistoryModalOpen} onClose={() => setIsHistoryModalOpen(false)} history={requestsHistory} isLoading={isHistoryLoading} driverName={driverName}/>
+      {showAnalyticalDashboard && <AnalyticalDashboard onClose={() => setShowAnalyticalDashboard(false)} apiCall={apiCall} />}
       
       {/* Modal de Seleção de Mecânico para Inserção Manual */}
       {manualMechanicModal.isOpen && (

@@ -359,6 +359,7 @@ function doPost(e) {
       case 'markAsVandalizedNoRecovery': response = { ...markAsVandalizedNoRecovery(request.bikeNumber, request.mechanicName, request.room, request.observation || request.reasons), version: BACKEND_VERSION }; break;
       case 'organizeTrailer':       response = { ...organizeTrailer(request.bikeNumbers, request.trailerName), version: BACKEND_VERSION }; break;
       case 'finalizeTrailer':       response = { ...finalizeTrailer(request.trailerName), version: BACKEND_VERSION }; break;
+      case 'getAnalyticalDashboardData': response = { ...getAnalyticalDashboardData(request.timeRange), version: BACKEND_VERSION }; break;
       default: response = { success: false, error: 'Ação desconhecida: ' + action, version: BACKEND_VERSION }; break;
     }
 
@@ -2509,6 +2510,109 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
     return { success: true, data: summary };
   } catch (e) {
     return { success: false, error: 'Erro ao gerar resumo: ' + e.message };
+  }
+}
+
+function getAnalyticalDashboardData(timeRange) {
+  try {
+    const now = new Date();
+    let filterDate = new Date(now);
+    filterDate.setHours(0, 0, 0, 0);
+    let endDate = new Date(now);
+    endDate.setHours(23, 59, 59, 999);
+    let rowsToRead = 5000;
+
+    if (timeRange === 'week') {
+      const day = now.getDay();
+      const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+      filterDate.setDate(diff);
+      rowsToRead = 10000;
+    } else if (timeRange === 'month') {
+      filterDate.setDate(1);
+      rowsToRead = 20000;
+    } else if (timeRange === '-1') {
+      filterDate.setDate(now.getDate() - 1);
+      endDate.setDate(now.getDate() - 1);
+      endDate.setHours(23, 59, 59, 999);
+      rowsToRead = 5000;
+    } else if (timeRange === '-7') {
+      // Previous Week (Monday to Sunday)
+      const day = now.getDay();
+      const mondayThisWeek = now.getDate() - day + (day === 0 ? -6 : 1);
+      filterDate.setDate(mondayThisWeek - 7);
+      endDate.setDate(mondayThisWeek - 1);
+      endDate.setHours(23, 59, 59, 999);
+      rowsToRead = 10000;
+    } else if (timeRange === '-30') {
+      // Previous Month
+      filterDate.setMonth(now.getMonth() - 1);
+      filterDate.setDate(1);
+      endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      rowsToRead = 20000;
+    }
+
+    const reportSheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
+    
+    if (!reportSheet) return { success: false, error: 'Planilha de relatórios não encontrada.' };
+
+    const lastRowR = reportSheet.getLastRow();
+    let reportData = [];
+    if (lastRowR > 1) {
+      const numRows = Math.min(lastRowR - 1, rowsToRead);
+      reportData = reportSheet.getRange(lastRowR - numRows + 1, 1, numRows, reportSheet.getLastColumn()).getValues();
+    }
+
+    const stats = {}; 
+
+    // Process Report Data for counts
+    for (let i = 0; i < reportData.length; i++) {
+      const row = reportData[i];
+      const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+      if (!ts || ts < filterDate || ts > endDate) continue;
+
+      const driver = (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
+      if (!driver) continue;
+
+      if (!stats[driver]) {
+        stats[driver] = { 
+          recolhidas: 0, 
+          remanejadas: 0, 
+          ocorrencias: 0, 
+          naoEncontradas: 0
+        };
+      }
+
+      const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
+      const obs = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().toLowerCase();
+
+      // Logic consistent with getDriversSummary and getDailyReportData
+      if (status.includes('filial') || status.includes('recolhida') || status === 'vandalizada') {
+        stats[driver].recolhidas++;
+        if (obs.includes('solicitado recolha') || status.includes('solicitado recolha') || obs.includes('ocorrência') || obs.includes('ocorrencia')) {
+          stats[driver].ocorrencias++;
+        }
+      } else if (status.includes('estação') || status.includes('estacao')) {
+        stats[driver].remanejadas++;
+      } else if (status.includes('não encontrada') || status.includes('nao encontrada')) {
+        stats[driver].naoEncontradas++;
+      }
+    }
+
+    const result = Object.keys(stats).map(driver => {
+      const d = stats[driver];
+      
+      return {
+        driver,
+        recolhidas: d.recolhidas,
+        remanejadas: d.remanejadas,
+        totalBikes: d.recolhidas + d.remanejadas,
+        percOcorrencia: (d.ocorrencias + d.naoEncontradas) > 0 ? (d.ocorrencias / (d.ocorrencias + d.naoEncontradas)) * 100 : 0
+      };
+    });
+
+    return { success: true, data: result };
+  } catch (e) {
+    return { success: false, error: e.message };
   }
 }
 
