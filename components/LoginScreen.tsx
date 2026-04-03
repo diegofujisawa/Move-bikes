@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { UserIcon, LockClosedIcon, AlertTriangleIcon } from './icons';
 import { User } from '../types';
 import { apiCall, checkApiConnection } from '../api';
@@ -20,7 +20,21 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const [connectionError, setConnectionError] = useState('');
   const [apiVersion, setApiVersion] = useState('');
 
-  const testConnection = async () => {
+  const fetchPlates = useCallback(async () => {
+    setIsLoadingPlates(true);
+    try {
+      const result = await apiCall({ action: 'getVehiclePlates' });
+      if (result.success) {
+        setPlates(result.data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch plates:", err);
+    } finally {
+      setIsLoadingPlates(false);
+    }
+  }, []);
+
+  const testConnection = useCallback(async () => {
     try {
       const result = await checkApiConnection();
       if (result.status === 'ok') {
@@ -34,25 +48,11 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
       setConnectionStatus('error');
       setConnectionError(err.message || 'Erro desconhecido.');
     }
-  };
-
-  const fetchPlates = async () => {
-    setIsLoadingPlates(true);
-    try {
-      const result = await apiCall({ action: 'getVehiclePlates' });
-      if (result.success) {
-        setPlates(result.data);
-      }
-    } catch (err) {
-      console.error("Failed to fetch plates:", err);
-    } finally {
-      setIsLoadingPlates(false);
-    }
-  };
+  }, [fetchPlates]);
 
   useEffect(() => {
     testConnection();
-  }, []);
+  }, [testConnection]);
 
   const handleRetryConnectionTest = () => {
     setConnectionStatus('testing');

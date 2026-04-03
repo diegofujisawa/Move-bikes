@@ -60,7 +60,7 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   // independente da distância, eliminando teletransporte
   const ANIM_DURATION = 3000; // ms — igual ao intervalo de envio do GPS
 
-  const animationLoop = useCallback(() => {
+  const animationLoop = useCallback(function loop() {
     const map = mapRef.current;
     if (!map) return;
 
@@ -78,7 +78,7 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       if (marker) marker.setLatLng([lat, lng]);
     });
 
-    animFrameRef.current = requestAnimationFrame(animationLoop);
+    animFrameRef.current = requestAnimationFrame(loop);
   }, []);
 
   const startAnimationLoop = useCallback(() => {

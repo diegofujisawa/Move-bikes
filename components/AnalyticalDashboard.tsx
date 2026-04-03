@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer 
 } from 'recharts';
@@ -35,7 +35,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
     { key: '-30', label: 'Mês Anterior' },
   ];
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -50,11 +50,11 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiCall, timeRange]);
 
   useEffect(() => {
     fetchData();
-  }, [timeRange]);
+  }, [fetchData]);
 
   const totalRecolhidas = data.reduce((acc, curr) => acc + curr.recolhidas, 0);
   const totalRemanejadas = data.reduce((acc, curr) => acc + curr.remanejadas, 0);

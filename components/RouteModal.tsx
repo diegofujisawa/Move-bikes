@@ -42,7 +42,10 @@ const RouteModal: React.FC<RouteModalProps> = ({
 
   useEffect(() => {
     if (!isOpen && prevIsOpen) {
-      setRouteName(''); setBikeListText(''); setRecipient('Todos'); stopScanner();
+      setRouteName(''); 
+      setBikeListText(''); 
+      setRecipient('Todos'); 
+      stopScanner();
     }
   }, [isOpen, prevIsOpen]);
 

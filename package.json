@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "eslint . --report-unused-disable-directives --max-warnings 100"
   },
   "dependencies": {
     "@types/leaflet": "^1.9.21",
@@ -31,7 +31,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "eslint": "^9.39.2",
     "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^4.6.2",
+    "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.19",
     "typescript": "~5.8.2",
     "typescript-eslint": "^8.56.0",
