@@ -2006,9 +2006,14 @@ function saveDailySummary(summaryData) {
       sheet.setFrozenRows(1);
     }
     sheet.appendRow([new Date(), summaryData.driverName, summaryData.plates, summaryData.totalKm,
-      summaryData.bateriaCount, summaryData.manutBikeCount, summaryData.manutLockerCount,
-      summaryData.solicitadoRecolhaCount || 0, summaryData.remanejadasCount,
-      summaryData.ocorrenciasCount, summaryData.naoEncontradasCount, summaryData.vandalizadasCount,
+      summaryData.bateria || summaryData.bateriaCount || 0,
+      summaryData.manutBike || summaryData.manutBikeCount || 0,
+      summaryData.manutLocker || summaryData.manutLockerCount || 0,
+      summaryData.solicitadoRecolha || summaryData.solicitadoRecolhaCount || 0,
+      summaryData.remanejadas || summaryData.remanejadasCount || 0,
+      summaryData.ocorrencias || summaryData.ocorrenciasCount || 0,
+      summaryData.naoEncontradas || summaryData.naoEncontradasCount || 0,
+      summaryData.vandalizadas || summaryData.vandalizadasCount || 0,
       summaryData.startTime, summaryData.endTime, summaryData.obs || '']);
     return { success: true };
   } catch (e) {
@@ -2079,11 +2084,11 @@ function getDailyReportData(driverName, timeRange = 'day') {
         else if (obsLower.includes('manutenção bicicleta') || obsLower.includes('manutencao bicicleta')) report.counts.manutencaoBicicleta++;
         else if (obsLower.includes('manutenção locker') || obsLower.includes('manutencao locker')) report.counts.manutencaoLocker++;
         else if (obsLower.includes('solicitado recolha')) report.counts.solicitadoRecolha++;
-      } else if (statusLower === 'estação' || statusLower === 'estacao') {
+      } else if (statusLower.includes('estação') || statusLower.includes('estacao')) {
         if (!report.remanejadas.includes(patrimonio)) report.remanejadas.push(patrimonio);
         const stationName = observacao || 'Estação';
         report.estacoes[stationName] = (report.estacoes[stationName] || 0) + 1;
-      } else if (statusLower === 'não encontrada' || statusLower === 'nao encontrada') {
+      } else if (statusLower.includes('não encontrada') || statusLower.includes('nao encontrada')) {
         if (!report.naoEncontrada.includes(patrimonio)) report.naoEncontrada.push(patrimonio);
       } else if (statusLower === 'não atendida' || statusLower === 'nao atendida') {
         if (!report.naoAtendida.includes(patrimonio)) report.naoAtendida.push(patrimonio);
@@ -2405,9 +2410,9 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
       if (!driverKey) return;
       const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
       if (status.includes('filial') || status.includes('recolhida') || status === 'vandalizada') stats[driverKey].recolhidas++;
-      else if (status === 'estação' || status === 'estacao') stats[driverKey].remanejada++;
-      else if (status === 'não encontrada' || status === 'nao encontrada') stats[driverKey].naoEncontrada++;
-      else if (status === 'não atendida' || status === 'nao atendida') stats[driverKey].naoAtendida++;
+      else if (status.includes('estação') || status.includes('estacao')) stats[driverKey].remanejada++;
+      else if (status.includes('não encontrada') || status.includes('nao encontrada')) stats[driverKey].naoEncontrada++;
+      else if (status.includes('não atendida') || status.includes('nao atendida')) stats[driverKey].naoAtendida++;
     });
 
     const lastRowSt = stateSheet.getLastRow();
