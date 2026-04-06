@@ -3085,9 +3085,12 @@ function getMechanicsList() {
     
     // SÓ usa o status da Mecânica se ele for MAIS RECENTE que o registro do Relatório
     // OU se o status da Mecânica for um status ativo e o do Relatório for apenas uma sinalização inicial (recolhida/vandalizada)
+    // A ÚLTIMA AÇÃO DEVE SER SOBERANA: Se o mecânico mexeu na bike recentemente, o status da aba Mecânica prevalece.
     const isMechActive = (mechData.status === 'Aguardando Manutenção' || mechData.status === 'Em Manutenção' || mechData.status === 'Reserva' || mechData.status === 'Aguardando Técnica' || mechData.status === 'Em Técnica');
     const isReportInitial = (entry.status === 'recolhida' || entry.status === 'vandalizada');
 
+    // Se a bike está na mecânica e o registro é manual ou ativo, damos preferência a ele
+    // a menos que haja um registro de saída (estação) posterior à última ação do mecânico.
     if (mechData && (mechData.tsMs >= entry.tsMs || (isMechActive && isReportInitial))) {
       // Se foi marcada como Remanejada APÓS o último registro do Relatório → suprime
       if (mechData.status === 'Remanejada') return;
@@ -3310,9 +3313,21 @@ function deleteMechanicsBike(bikeNumber) {
   const data = sheet.getDataRange().getValues();
   const pStr = String(bikeNumber).trim().replace(/^0+/, '');
   
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr
-        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] !== 'Remanejada') {
+  for (let i = data.length - 1; i >= 1; i--) {
+    const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
+    if (rowPat === pStr) {
+      const rowStatus = String(data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
+      
+      // Se a bike está na Reserva, "excluir" significa voltar para Manutenção (conforme pedido do usuário)
+      if (rowStatus === 'Reserva') {
+        const row = i + 1;
+        sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Em Manutenção');
+        sheet.getRange(row, COLUMN_INDICES.MECHANICS.CARRETINHA).setValue('');
+        sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
+        return { success: true, movedToMaintenance: true };
+      }
+      
+      // Caso contrário, deleta a linha normalmente
       sheet.deleteRow(i + 1);
       return { success: true };
     }
@@ -3483,6 +3498,8 @@ function removeFromTrailer(bikeNumber, targetStatus) {
         // Se um novo status foi solicitado (ex: 'Em Manutenção'), atualiza
         if (targetStatus) {
           sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue(targetStatus);
+          // Atualiza timestamp para ser soberano
+          sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
         }
         
         return { 

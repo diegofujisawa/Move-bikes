@@ -4837,7 +4837,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 {bike.bateria !== undefined && (
                                   <span className={`text-[10px] font-bold ${Number(bike.bateria) < 85 ? 'text-red-500' : 'text-gray-500'}`}>🔋{bike.bateria}%</span>
                                 )}
-                                {trailer !== 'Sem Carretinha' && (
+                                {trailer !== 'Sem Carretinha' ? (
                                   <button onClick={() => {
                                     const mechanicName = bike.mecanico || driverName;
                                     protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
@@ -4847,6 +4847,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                     setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
                                     apiCall({ action: 'removeFromTrailer', bikeNumber: bike.patrimonio, targetStatus: 'Em Manutenção' }, 1, false).catch(() => {});
                                   }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95">
+                                    <XIcon className="w-3 h-3"/>
+                                  </button>
+                                ) : (
+                                  <button onClick={async () => {
+                                    const mechanicName = bike.mecanico || driverName;
+                                    // Para bikes Sem Carretinha, usamos deleteMechanicsBike que agora move para Manutenção se estiver na Reserva
+                                    protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
+                                    setMechanicsList(prev => prev.map(b =>
+                                      b.patrimonio === bike.patrimonio ? { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null } : b
+                                    ));
+                                    setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
+                                    await apiCall({ action: 'deleteMechanicsBike', bikeNumber: bike.patrimonio }, 1, false);
+                                    refreshAll();
+                                  }} className="p-0.5 bg-orange-100 text-orange-600 rounded hover:bg-orange-200 active:scale-95" title="Voltar para Manutenção">
                                     <XIcon className="w-3 h-3"/>
                                   </button>
                                 )}
