@@ -3084,7 +3084,11 @@ function getMechanicsList() {
     const info = bikeInfoMap[pat] || {};
     
     // SÓ usa o status da Mecânica se ele for MAIS RECENTE que o registro do Relatório
-    if (mechData && mechData.tsMs >= entry.tsMs) {
+    // OU se o status da Mecânica for um status ativo e o do Relatório for apenas uma sinalização inicial (recolhida/vandalizada)
+    const isMechActive = (mechData.status === 'Aguardando Manutenção' || mechData.status === 'Em Manutenção' || mechData.status === 'Reserva' || mechData.status === 'Aguardando Técnica' || mechData.status === 'Em Técnica');
+    const isReportInitial = (entry.status === 'recolhida' || entry.status === 'vandalizada');
+
+    if (mechData && (mechData.tsMs >= entry.tsMs || (isMechActive && isReportInitial))) {
       // Se foi marcada como Remanejada APÓS o último registro do Relatório → suprime
       if (mechData.status === 'Remanejada') return;
       

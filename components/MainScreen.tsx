@@ -2986,7 +2986,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (d.mechanicsList) {
         setMechanicsList(() => {
           const now = Date.now();
-          const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva'];
+          const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
           
           // Remove entradas expiradas do mapa de proteção
           Object.keys(mechanicOptimisticRef.current).forEach(k => { 
@@ -3264,7 +3264,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (d.mechanicsList) {
         setMechanicsList(() => {
           const now = Date.now();
-          const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva'];
+          const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
           
           // Remove entradas expiradas do mapa de proteção
           Object.keys(mechanicOptimisticRef.current).forEach(k => { 
