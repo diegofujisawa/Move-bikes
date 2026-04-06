@@ -3960,7 +3960,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
               <h2 className="text-xl font-black text-gray-800 uppercase mb-2">Remover da Carretinha?</h2>
               <p className="text-sm text-gray-500 mb-2">
-                A bike <span className="font-bold text-gray-800">{removeFromTrailerConfirm.patrimonio}</span> será removida da carretinha e voltará para <span className="font-bold text-orange-600">Em Manutenção</span> com o mecânico designado.
+                A bike <span className="font-bold text-gray-800">{removeFromTrailerConfirm.patrimonio}</span> será removida da carretinha e permanecerá na <span className="font-bold text-green-600">Reserva</span>.
               </p>
               <div className="grid grid-cols-2 gap-3 w-full mt-4">
                 <button
@@ -3980,10 +3980,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       batteryFailed: prev.batteryFailed === patrimonio ? null : prev.batteryFailed,
                       lastError: null,
                     } : null);
-                    // Atualiza lista local — volta para Em Manutenção sem carretinha
+                    // Atualiza lista local — mantém na Reserva mas sem carretinha
                     setMechanicsList(prev => prev.map(b =>
                       b.patrimonio === patrimonio
-                        ? { ...b, status: 'Em Manutenção', carretinha: null, dataFinalizacao: '' }
+                        ? { ...b, status: 'Reserva', carretinha: null }
                         : b
                     ));
                     // Backend

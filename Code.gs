@@ -3023,46 +3023,45 @@ function getMechanicsList() {
   // que foram limpas via clearAlterarStatus. Bikes Remanejadas são filtradas no retorno final.
   const mechanicsStatus = {};
   if (sheet) {
-    sheet.getDataRange().getValues().slice(1).forEach((row, idx) => {
-      const pat    = String(row[COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
+    const mechValues = sheet.getDataRange().getValues();
+    for (let i = mechValues.length - 1; i >= 1; i--) {
+      const row = mechValues[i];
+      const pat = String(row[COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
+      if (!pat) continue;
+      
       const status = (row[COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
-      if (!pat) return;
-
-      const tsMs = toMs(row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
       const tratativa = (row[COLUMN_INDICES.MECHANICS.TRATATIVA - 1] || '').toString().trim();
+      const tsMs = toMs(row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
 
-      // Remanejada: inclui sem restrição de CUTOFF — usada para suprimir bikes do Relatório
+      if (mechanicsStatus[pat]) continue;
+
       if (status === 'Remanejada') {
-        const tsOrNow = tsMs || new Date().getTime();
-        if (!mechanicsStatus[pat] || tsOrNow > (mechanicsStatus[pat].tsMs || 0)) {
-          mechanicsStatus[pat] = {
-            row: idx + 2, status, tsMs: tsOrNow,
-            dataEntrada: row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1],
-            mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1],
-            tratativa, dataFinalizacao: row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1],
-            carretinha: row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1],
-            manual: false
-          };
-        }
-        return;
-      }
-
-      // Demais status: aplica CUTOFF_MS normalmente
-      if (tsMs !== null && tsMs < CUTOFF_MS) return;
-      if (tsMs === null) return;
-
-      if (!mechanicsStatus[pat] || tsMs > (mechanicsStatus[pat].tsMs || 0)) {
+        if (tsMs !== null && tsMs < CUTOFF_MS) continue;
         mechanicsStatus[pat] = {
-          row: idx + 2, status, tsMs: tsMs || 0,
+          row: i + 1, status, tsMs: tsMs || 0,
           dataEntrada: row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1],
-          mecanico:    row[COLUMN_INDICES.MECHANICS.MECANICO - 1],
-          tratativa,
-          dataFinalizacao: row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1],
-          carretinha:      row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1],
-          manual: tratativa.toUpperCase() === 'MANUAL'
+          mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1],
+          tratativa, dataFinalizacao: row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1],
+          carretinha: row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1],
+          manual: false
         };
+        continue;
       }
-    });
+
+      const isActiveStatus = (status === 'Aguardando Manutenção' || status === 'Em Manutenção' || status === 'Reserva' || status === 'Aguardando Técnica' || status === 'Em Técnica');
+      if (!isActiveStatus && tsMs !== null && tsMs < CUTOFF_MS) continue;
+      if (tsMs === null && !isActiveStatus) continue;
+
+      mechanicsStatus[pat] = {
+        row: i + 1, status, tsMs: tsMs || 0,
+        dataEntrada: row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1],
+        mecanico:    row[COLUMN_INDICES.MECHANICS.MECANICO - 1],
+        tratativa,
+        dataFinalizacao: row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1],
+        carretinha:      row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1],
+        manual: tratativa.toUpperCase() === 'MANUAL'
+      };
+    }
   }
 
   // Passo 3: Monta resultado final
@@ -3454,16 +3453,16 @@ function removeFromTrailer(bikeNumber) {
     if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
     const pStr = String(bikeNumber).trim().replace(/^0+/, '');
     const data = sheet.getDataRange().getValues();
-    for (let i = 1; i < data.length; i++) {
+
+    // Itera de trás para frente para pegar a entrada mais recente
+    for (let i = data.length - 1; i >= 1; i--) {
       const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
       const rowStatus = String(data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
       if (rowPat === pStr && rowStatus === 'Reserva') {
         const row = i + 1;
-        // Volta para Em Manutenção mantendo o mecânico designado
-        sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Em Manutenção');
+        // Mantém em Reserva, apenas remove da carretinha
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.CARRETINHA).setValue('');
-        sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue('');
-        return { success: true, mecanico: (data[i][COLUMN_INDICES.MECHANICS.MECANICO - 1] || '').toString().trim() };
+        return { success: true, status: 'Reserva', mecanico: (data[i][COLUMN_INDICES.MECHANICS.MECANICO - 1] || '').toString().trim() };
       }
     }
     return { success: false, error: 'Bike não encontrada na Reserva.' };
@@ -3537,9 +3536,18 @@ function finalizeMechanicsRepair(bikeNumber, mechanicName, treatment) {
   const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
   if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
   const data = sheet.getDataRange().getValues();
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]) === String(bikeNumber)
-        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] === 'Em Manutenção') {
+  const pStr = String(bikeNumber).trim().replace(/^0+/, '');
+
+  // Itera de trás para frente para pegar a entrada mais recente
+  for (let i = data.length - 1; i >= 1; i--) {
+    const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
+    const rowStatus = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
+    const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+
+    if (rowPat === pStr && rowStatus === 'Em Manutenção') {
+      // Ignora se for muito antigo (antes do cutoff)
+      if (tsMs && tsMs < CUTOFF_MS) continue;
+
       const row = i + 1;
       // Atualiza cada coluna individualmente para evitar escrita nas colunas erradas
       // Colunas: STATUS(2), MECANICO(4), TRATATIVA(5), DATA_FINALIZACAO(6)
@@ -3595,12 +3603,24 @@ function organizeTrailer(bikeNumbers, trailerName) {
   const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
   if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
   const data = sheet.getDataRange().getValues();
-  const bikes = Array.isArray(bikeNumbers) ? bikeNumbers : [bikeNumbers];
+  const bikes = (Array.isArray(bikeNumbers) ? bikeNumbers : [bikeNumbers]).map(b => String(b).trim().replace(/^0+/, ''));
+  
   let count = 0;
-  for (let i = 1; i < data.length; i++) {
-    if (bikes.includes(String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]))
-        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] === 'Reserva') {
+  // Itera de trás para frente para garantir que estamos pegando a entrada RECENTE de cada bike
+  // Como uma bike pode estar em Reserva apenas uma vez no período ativo, podemos usar um Set para evitar processar a mesma bike duas vezes
+  const processedBikes = new Set();
+
+  for (let i = data.length - 1; i >= 1; i--) {
+    const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
+    const rowStatus = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
+    const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+
+    if (bikes.includes(rowPat) && rowStatus === 'Reserva' && !processedBikes.has(rowPat)) {
+      // Ignora se for muito antigo
+      if (tsMs && tsMs < CUTOFF_MS) continue;
+
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.CARRETINHA).setValue(trailerName);
+      processedBikes.add(rowPat);
       count++;
     }
   }
@@ -3613,15 +3633,25 @@ function finalizeTrailer(trailerName) {
   const data = sheet.getDataRange().getValues();
   let count = 0;
   const remanejadas = [];
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][COLUMN_INDICES.MECHANICS.CARRETINHA - 1]) === String(trailerName)
-        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] === 'Reserva') {
+  
+  // Itera de trás para frente
+  const processedBikes = new Set();
+
+  for (let i = data.length - 1; i >= 1; i--) {
+    const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
+    const rowStatus = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
+    const rowTrailer = String(data[i][COLUMN_INDICES.MECHANICS.CARRETINHA - 1] || '').trim();
+    const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+
+    if (rowTrailer === String(trailerName) && rowStatus === 'Reserva' && !processedBikes.has(rowPat)) {
+      // Ignora se for muito antigo
+      if (tsMs && tsMs < CUTOFF_MS) continue;
+
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada');
-      remanejadas.push(String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]));
+      remanejadas.push(rowPat);
+      processedBikes.add(rowPat);
       count++;
     }
-  }
-  if (count > 0) {
   }
   return { success: true, message: `${count} bikes finalizadas da carretinha ${trailerName}.` };
 }
