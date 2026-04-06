@@ -21,6 +21,7 @@
 
 // --- VERSÃO ---
 const BACKEND_VERSION = '85.1-search-fix';
+const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
 // IMPORTANTE: Defina SPREADSHEET_ID via:
@@ -175,6 +176,16 @@ function parseTimestamp(raw) {
   }
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Converte qualquer valor de data para ms (timestamp).
+ * @param {any} raw Valor bruto da célula.
+ * @returns {number|null}
+ */
+function toMs(raw) {
+  const d = parseTimestamp(raw);
+  return d ? d.getTime() : null;
 }
 
 /**
@@ -2914,8 +2925,6 @@ function getMechanicsList() {
     } catch (e) {}
   }
 
-  const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
-
   // Mapa de bateria/carregamento — lê direto da planilha sem cache
   const bikeInfoMap = {};
   try {
@@ -2937,24 +2946,6 @@ function getMechanicsList() {
       });
     }
   } catch(e) { console.error('getMechanicsList - erro ao ler bikes:', e); }
-
-  // Helper: converte qualquer valor de data para ms
-  const toMs = (raw) => {
-    if (!raw) return null;
-    if (raw instanceof Date) return raw.getTime();
-    const s = raw.toString().trim();
-    if (!s) return null;
-    if (s.includes('/')) {
-      const parts = s.split(' ');
-      const dp = parts[0].split('/');
-      if (dp.length === 3) {
-        const d = new Date(`${dp[2]}-${dp[1]}-${dp[0]}${parts[1] ? 'T' + parts[1] : ''}`);
-        return isNaN(d.getTime()) ? null : d.getTime();
-      }
-    }
-    const d = new Date(s);
-    return isNaN(d.getTime()) ? null : d.getTime();
-  };
 
   // =================================================================
   // LÓGICA:
@@ -3144,12 +3135,17 @@ function insertBikeMechanics(bikeNumber, mechanicName, targetStatus) {
   const pStr = String(bikeNumber).trim().replace(/^0+/, '');
   const data = sheet.getDataRange().getValues();
 
-  // Verifica se já existe entrada ativa
-  for (let i = 1; i < data.length; i++) {
+  // Verifica se já existe entrada ativa RECENTE (itera de trás para frente)
+  for (let i = data.length - 1; i >= 1; i--) {
     const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
     const rowStatus = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
+    const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+
     if (rowPat === pStr && rowStatus !== 'Remanejada') {
-      // Atualiza entrada existente
+      // Se for uma entrada antiga (antes do cutoff), ignoramos e inserimos nova
+      if (tsMs && tsMs < CUTOFF_MS) continue;
+
+      // Atualiza entrada existente recente
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue(targetStatus);
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
@@ -3168,9 +3164,17 @@ function confirmMechanicsReceipt(bikeNumber, mechanicName) {
   if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
   const data = sheet.getDataRange().getValues();
   const pStr = String(bikeNumber).trim().replace(/^0+/, '');
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr
-        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] === 'Aguardando Manutenção') {
+
+  // Itera de trás para frente para pegar a entrada mais recente
+  for (let i = data.length - 1; i >= 1; i--) {
+    const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
+    const rowStatus = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
+    const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+
+    if (rowPat === pStr && rowStatus === 'Aguardando Manutenção') {
+      // Ignora se for muito antigo
+      if (tsMs && tsMs < CUTOFF_MS) continue;
+
       const row = i + 1;
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Em Manutenção');
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
@@ -3190,24 +3194,33 @@ function moveToAguardandoManutencao(bikeNumber) {
   let foundIndex = -1;
   let currentStatus = '';
 
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr) {
-      const status = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
-      // Se já estiver em um status "avançado", não retrocede nem duplica
+  // Itera de trás para frente para pegar a entrada mais recente
+  for (let i = data.length - 1; i >= 1; i--) {
+    const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
+    const status = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
+    const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+
+    if (rowPat === pStr) {
+      // Ignora se for muito antigo
+      if (tsMs && tsMs < CUTOFF_MS) continue;
+
+      // Se já estiver em um status "avançado" RECENTE, não retrocede nem duplica
       if (status === 'Em Manutenção' || status === 'Reserva' || status === 'Aguardando Técnica' || status === 'Em Técnica') {
         return { success: true, message: 'Bicicleta já está em processo avançado.' };
       }
       if (status !== 'Remanejada' && status !== 'Não encontrada') {
         foundIndex = i;
         currentStatus = status;
+        break; // Pega a mais recente e para
       }
     }
   }
   
   if (foundIndex !== -1) {
-    if (currentStatus === 'Alterar Status') {
-      sheet.getRange(foundIndex + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Aguardando Manutenção');
-    }
+    // Se encontrou uma entrada recente (que não seja avançada), atualiza para Aguardando Manutenção
+    // Independente de ser 'Alterar Status' ou outro status inicial (como 'Recolhida')
+    sheet.getRange(foundIndex + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Aguardando Manutenção');
+    sheet.getRange(foundIndex + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
     return { success: true };
   }
   
@@ -3221,9 +3234,15 @@ function declineMechanicsReceipt(bikeNumber, mechanicName) {
   const data = sheet.getDataRange().getValues();
   const pStr = String(bikeNumber).trim().replace(/^0+/, '');
   
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '') === pStr
-        && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] === 'Aguardando Manutenção') {
+  // Itera de trás para frente
+  for (let i = data.length - 1; i >= 1; i--) {
+    const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
+    const rowStatus = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
+    const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+
+    if (rowPat === pStr && rowStatus === 'Aguardando Manutenção') {
+      if (tsMs && tsMs < CUTOFF_MS) continue;
+
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Não encontrada');
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
       return { success: true };
@@ -3629,7 +3648,6 @@ function testTimestamp() {
   if (!sheet) { Logger.log('Aba Relatorio não encontrada'); return; }
   const lastRow = sheet.getLastRow();
   const sample = sheet.getRange(lastRow - 10, 1, 10, 3).getValues();
-  const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
   sample.forEach((row, i) => {
     const raw = row[0];
     const ts = raw instanceof Date ? raw : parseTimestamp(raw);
