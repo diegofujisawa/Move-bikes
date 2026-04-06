@@ -2955,9 +2955,9 @@ function getMechanicsList() {
   // Se após a última Recolhida existir saída (Estação, etc.), bike não aparece
   let reportEntries = {};
   let lastStatusByBike = {};
-  const cache = getScriptCache();
+  const cache = CacheService.getScriptCache();
   const cacheKey = 'mechanics_report_scan_v2';
-  const cached = cache.get(cacheKey);
+  let cached = cache.get(cacheKey);
   
   if (cached) {
     try {
