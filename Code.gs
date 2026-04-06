@@ -3038,7 +3038,11 @@ function getMechanicsList() {
       
       const status = (row[COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
       const tratativa = (row[COLUMN_INDICES.MECHANICS.TRATATIVA - 1] || '').toString().trim();
-      const tsMs = toMs(row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+      
+      // Usa o mais recente entre Entrada e Finalização para comparação com o Relatório
+      const tsEnt = toMs(row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+      const tsFin = toMs(row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1]);
+      const tsMs = Math.max(tsEnt || 0, tsFin || 0) || null;
 
       if (mechanicsStatus[pat]) continue;
 
@@ -3078,10 +3082,12 @@ function getMechanicsList() {
   Object.entries(reportEntries).forEach(([pat, entry]) => {
     const mechData = mechanicsStatus[pat];
     const info = bikeInfoMap[pat] || {};
-    if (mechData) {
+    
+    // SÓ usa o status da Mecânica se ele for MAIS RECENTE que o registro do Relatório
+    if (mechData && mechData.tsMs >= entry.tsMs) {
       // Se foi marcada como Remanejada APÓS o último registro do Relatório → suprime
-      // Se o registro do Relatório for mais recente que o Remanejada → bike nova, deve aparecer
-      if (mechData.status === 'Remanejada' && mechData.tsMs >= entry.tsMs) return;
+      if (mechData.status === 'Remanejada') return;
+      
       // Já processada pelo mecânico — usa status da aba, mas mantém motorista/observacao do Relatório
       bikeMap[pat] = {
         row: mechData.row, patrimonio: pat, status: mechData.status,
@@ -3093,7 +3099,7 @@ function getMechanicsList() {
         observacao: entry.observacao || ''
       };
     } else {
-      // Ainda não processada → Alterar Status
+      // Ainda não processada OU o registro do Relatório é mais recente (bike voltou para a rua e foi recolhida de novo)
       bikeMap[pat] = {
         row: -1, patrimonio: pat, status: 'Alterar Status',
         dataEntrada: new Date(entry.tsMs), mecanico: '', tratativa: '',
@@ -3184,6 +3190,7 @@ function confirmMechanicsReceipt(bikeNumber, mechanicName) {
       const row = i + 1;
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Em Manutenção');
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
+      sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date()); // Atualiza para refletir atividade recente
       return { success: true };
     }
   }
@@ -3561,6 +3568,7 @@ function finalizeMechanicsRepair(bikeNumber, mechanicName, treatment) {
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Reserva');
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue(treatment);
+      sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date()); // Atualiza para refletir atividade recente
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(new Date());
       return { success: true };
     }
