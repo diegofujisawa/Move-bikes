@@ -358,7 +358,7 @@ function doPost(e) {
       case 'editMechanicsBike': response = { ...editMechanicsBike(request.oldPat, request.newPat), version: BACKEND_VERSION }; break;
       case 'deleteMechanicsBike': response = { ...deleteMechanicsBike(request.bikeNumber), version: BACKEND_VERSION }; break;
       case 'clearAlterarStatus':   response = { ...clearAlterarStatus(request.bikes), version: BACKEND_VERSION }; break;
-      case 'removeFromTrailer':     response = { ...removeFromTrailer(request.bikeNumber), version: BACKEND_VERSION }; break;
+      case 'removeFromTrailer':     response = { ...removeFromTrailer(request.bikeNumber, request.targetStatus), version: BACKEND_VERSION }; break;
       case 'sendToTechnical':       response = { ...sendToTechnical(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
       case 'getTechnicaList':       response = { ...getTechnicaList(), version: BACKEND_VERSION }; break;
       case 'getChassiInfo':         response = { ...getChassiInfo(request.bikeNumber), version: BACKEND_VERSION }; break;
@@ -3464,7 +3464,7 @@ function finalizeTechnicaRepair(bikeNumber, technicianName, treatment, originalM
 // --- REMOVER BIKE DA CARRETINHA ---
 // Limpa o campo CARRETINHA da bike na aba Mecânica, voltando para "Sem Carretinha"
 // =================================================================
-function removeFromTrailer(bikeNumber) {
+function removeFromTrailer(bikeNumber, targetStatus) {
   if (!bikeNumber) return { success: false, error: 'Patrimônio não informado.' };
   try {
     const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
@@ -3475,15 +3475,26 @@ function removeFromTrailer(bikeNumber) {
     // Itera de trás para frente para pegar a entrada mais recente
     for (let i = data.length - 1; i >= 1; i--) {
       const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
-      const rowStatus = String(data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
-      if (rowPat === pStr && rowStatus === 'Reserva') {
+      if (rowPat === pStr) {
         const row = i + 1;
-        // Mantém em Reserva, apenas remove da carretinha
+        // Remove da carretinha
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.CARRETINHA).setValue('');
-        return { success: true, status: 'Reserva', mecanico: (data[i][COLUMN_INDICES.MECHANICS.MECANICO - 1] || '').toString().trim() };
+        
+        // Se um novo status foi solicitado (ex: 'Em Manutenção'), atualiza
+        if (targetStatus) {
+          sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue(targetStatus);
+        }
+        
+        return { 
+          success: true, 
+          status: targetStatus || (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim(),
+          mecanico: (data[i][COLUMN_INDICES.MECHANICS.MECANICO - 1] || '').toString().trim() 
+        };
       }
     }
-    return { success: false, error: 'Bike não encontrada na Reserva.' };
+    // Se não encontrou na mecânica, retornamos sucesso para não travar o app, 
+    // já que o objetivo era garantir que não estivesse em nenhuma carretinha.
+    return { success: true, warning: 'Bike não encontrada na planilha de Mecânica.' };
   } catch (e) {
     return { success: false, error: e.message };
   }

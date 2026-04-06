@@ -4845,7 +4845,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                       b.patrimonio === bike.patrimonio ? { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null } : b
                                     ));
                                     setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
-                                    apiCall({ action: 'removeFromTrailer', bikeNumber: bike.patrimonio, mechanicName }, 1, false).catch(() => {});
+                                    apiCall({ action: 'removeFromTrailer', bikeNumber: bike.patrimonio, targetStatus: 'Em Manutenção' }, 1, false).catch(() => {});
                                   }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95">
                                     <XIcon className="w-3 h-3"/>
                                   </button>
