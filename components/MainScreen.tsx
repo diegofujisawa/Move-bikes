@@ -255,6 +255,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // --- Dados principais ---
   const [routeBikes, setRouteBikes] = useState<string[]>([]);
   const [collectedBikes, setCollectedBikes] = useState<string[]>([]);
+  const routeBikesRef = useRef<string[]>([]);
+  const collectedBikesRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    routeBikesRef.current = routeBikes;
+  }, [routeBikes]);
+
+  useEffect(() => {
+    collectedBikesRef.current = collectedBikes;
+  }, [collectedBikes]);
   const [routeBikesDetails, setRouteBikesDetails] = useState<Record<string, any>>({});
   const [collectedBikesDetails, setCollectedBikesDetails] = useState<Record<string, any>>({});
   const [pendingRequests, setPendingRequests] = useState<PickupRequest[]>([]);
@@ -526,14 +536,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }, { merge: true }).catch(e => console.warn('[Firebase] users write:', e.code));
 
     // 2. Sheets em paralelo — fonte de verdade para estado
-    apiCall({
+    return apiCall({
       action: 'updateDriverState',
       driverName,
       routeBikes: dedupRoute,
       collectedBikes: dedupCollected,
     }, 1, true).then(() => {
       setTimeout(() => refreshAllRef.current?.(true), 0);
-    }).catch(e => console.warn('[Sheets] updateDriverState falhou:', e));
+    }).catch(e => {
+      console.warn('[Sheets] updateDriverState falhou:', e);
+      throw e;
+    });
   }, [driverName]);
 
   // =================================================================
@@ -899,11 +912,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     try {
       // Usa estado local — protegido por isUpdatingStateRef=true, nenhum sync externo altera durante a operação
-      let newRoute: string[] = [...routeBikes];
-      let newCollected: string[] = [...collectedBikes];
+      // Usa refs para garantir o estado mais recente mesmo em cliques rápidos
+      const currentRoute = routeBikesRef.current;
+      const currentCollected = collectedBikesRef.current;
+      
+      let newRoute: string[] = [...currentRoute];
+      let newCollected: string[] = [...currentCollected];
 
       if (status === 'Recolhida') {
-        if (collectedBikes.includes(bikeNumber)) {
+        if (currentCollected.includes(bikeNumber)) {
           alert(`Você já está em posse da bicicleta ${bikeNumber}.`);
           return;
         }
@@ -911,9 +928,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
         newCollected = [...new Set([...newCollected, bikeNumber])];
         newRoute = newRoute.filter(b => String(b) !== bikeNumber);
 
-        // 1. Atualiza UI imediatamente
+        // 1. Atualiza UI e Refs imediatamente
         setCollectedBikes(newCollected);
         setRouteBikes(newRoute);
+        collectedBikesRef.current = newCollected;
+        routeBikesRef.current = newRoute;
         setSearchedBike(null);
         setSearchTerm('');
 
@@ -931,15 +950,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
           date: localDateStr()
         }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
 
-        persistDriverState(newRoute, newCollected);
-
+        await persistDriverState(newRoute, newCollected);
         setSuccessMessage(`Bicicleta ${bikeNumber} recolhida!`);
 
       } else if (status === 'Não encontrada') {
         newRoute = newRoute.filter(b => String(b) !== bikeNumber);
 
-        // 1. Atualiza UI imediatamente
+        // 1. Atualiza UI e Refs imediatamente
         setRouteBikes(newRoute);
+        routeBikesRef.current = newRoute;
         setSearchedBike(null);
         setSearchTerm('');
 
@@ -955,8 +974,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           driverName, bikeNumber, status: 'Não encontrada', timestamp: serverTimestamp(), observation: ''
         }).catch(err => console.warn('[Firebase] reports write:', err.code));
 
-        persistDriverState(newRoute, newCollected);
-
+        await persistDriverState(newRoute, newCollected);
         apiCall({
           action: 'finalizeRouteBike', driverName, bikeNumber,
           finalStatus: 'Não encontrada', finalObservation: ''
@@ -982,11 +1000,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (!silent) setIsLoading(true);
     try {
       // Usa estado local — protegido por isUpdatingStateRef=true
-      const newRoute = routeBikes.filter((b: string) => String(b) !== bikeNumber);
-      const newCollected = [...collectedBikes];
+      // Usa refs para garantir o estado mais recente mesmo em cliques rápidos
+      const currentRoute = routeBikesRef.current;
+      const currentCollected = collectedBikesRef.current;
+      
+      const newRoute = currentRoute.filter((b: string) => String(b) !== bikeNumber);
+      const newCollected = [...currentCollected];
 
-      // 1. Atualiza UI imediatamente
+      // 1. Atualiza UI e Refs imediatamente
       setRouteBikes(newRoute);
+      routeBikesRef.current = newRoute;
 
       // 2. Registra ação antes das chamadas ao Sheets
       markDriverAction();
@@ -1000,8 +1023,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         driverName, bikeNumber, status: 'Não atendida', timestamp: serverTimestamp(), observation: ''
       }).catch(e => console.warn('[Firebase] reports write:', e.code));
 
-      persistDriverState(newRoute, newCollected);
-
+      await persistDriverState(newRoute, newCollected);
       apiCall({
         action: 'finalizeRouteBike', driverName, bikeNumber,
         finalStatus: 'Não atendida', finalObservation: ''
@@ -1032,14 +1054,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setProcessingBikes(new Set(processingBikesRef.current));
     setIsLoading(true);
 
-    // 1. Remove da UI imediatamente — motorista não espera o Sheets
-    setCollectedBikes(prev => prev.filter(b => String(b) !== bikeNumber));
+    // 1. Calcula novo estado com base no estado local já protegido por isUpdatingStateRef
+    //    Usa refs para evitar stale closures em ações rápidas
+    const currentCollected = collectedBikesRef.current;
+    const currentRoute = routeBikesRef.current;
+    
+    const newCollected = currentCollected.filter(b => String(b) !== bikeNumber);
+    const newRoute = currentRoute;
 
-    // 2. Calcula novo estado com base no estado local já protegido por isUpdatingStateRef
-    //    (não precisa consultar o Sheets — nenhum sync externo altera o estado enquanto
-    //     isUpdatingStateRef = true)
-    const newCollected = collectedBikes.filter(b => String(b) !== bikeNumber);
-    const newRoute = routeBikes;
+    // 2. Update local state (optimistic) and Refs
+    setCollectedBikes(newCollected);
+    collectedBikesRef.current = newCollected;
+    routeBikesRef.current = newRoute;
 
     const finalStatus = status === 'Enviada para Estação' ? 'Estação'
       : status === 'Enviada para Filial' ? 'Filial'
@@ -1068,11 +1094,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
         console.warn('[Firebase] reports write failed:', e);
       }
 
-      // 5. Sheets — fire-and-forget em paralelo (não bloqueia a UI)
-      //    updateDriverState remove a bike do estado persistido
-      //    finalizeCollectedBike grava o relatório e aciona addToMechanics se necessário
-      persistDriverState(newRoute, newCollected);
-
+      // 5. Sheets — aguarda persistência para evitar race condition
+      await persistDriverState(newRoute, newCollected);
+      
       apiCall({
         action: 'finalizeCollectedBike', driverName, bikeNumber,
         finalStatus, finalObservation: observation
@@ -1123,16 +1147,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }).catch(e => console.warn('[Firebase] requests update:', e.code));
       }
 
-      // Lê estado atual do Sheets (fonte de verdade) em vez do Firebase
-      const stateResult = await apiCall({ action: 'getDriverState', driverName }, 1, true);
-      let newRoute: string[] = stateResult.success ? (stateResult.data?.routeBikes || []) : routeBikes;
-      let newCollected: string[] = stateResult.success ? (stateResult.data?.collectedBikes || []) : collectedBikes;
+      // Usa estado local — protegido por isUpdatingStateRef=true
+      // Usa refs para garantir o estado mais recente mesmo em cliques rápidos
+      const currentRoute = routeBikesRef.current;
+      const currentCollected = collectedBikesRef.current;
+      
+      let newRoute: string[] = [...currentRoute];
+      let newCollected: string[] = [...currentCollected];
 
       if (isTrailer) {
         newCollected = [...new Set([...newCollected, ...bikesToAdd])];
         newRoute = newRoute.filter(b => !bikesToAdd.includes(String(b)));
         setCollectedBikes(newCollected);
         setRouteBikes(newRoute);
+        collectedBikesRef.current = newCollected;
+        routeBikesRef.current = newRoute;
         // Firebase não-bloqueante
         bikesToAdd.forEach(id => {
           setDoc(doc(db, 'bikes', id), {
@@ -1166,8 +1195,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
       } else {
         newRoute = [...new Set([...newRoute, ...bikesToAdd])];
         newCollected = newCollected.filter(b => !bikesToAdd.includes(String(b)));
+        
         setRouteBikes(newRoute);
         setCollectedBikes(newCollected);
+        routeBikesRef.current = newRoute;
+        collectedBikesRef.current = newCollected;
         // Firebase não-bloqueante
         bikesToAdd.forEach(id => {
           setDoc(doc(db, 'bikes', id), {
