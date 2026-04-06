@@ -3590,7 +3590,9 @@ function finalizeMechanicsRepair(bikeNumber, mechanicName, treatment) {
     const rowStatus = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
     const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
 
-    if (rowPat === pStr && rowStatus === 'Em Manutenção') {
+    const isActiveStatus = (rowStatus === 'Aguardando Manutenção' || rowStatus === 'Em Manutenção' || rowStatus === 'Aguardando Técnica' || rowStatus === 'Em Técnica');
+
+    if (rowPat === pStr && (rowStatus === 'Em Manutenção' || isActiveStatus)) {
       // Ignora se for muito antigo (antes do cutoff)
       if (tsMs && tsMs < CUTOFF_MS) continue;
 
@@ -3605,7 +3607,7 @@ function finalizeMechanicsRepair(bikeNumber, mechanicName, treatment) {
       return { success: true };
     }
   }
-  return { success: false, error: 'Bicicleta não encontrada ou não está em manutenção.' };
+  return { success: false, error: 'Bicicleta não encontrada ou não está em um status ativo na mecânica.' };
 }
 
 /**

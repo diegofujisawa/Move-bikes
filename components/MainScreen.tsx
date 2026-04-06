@@ -2071,7 +2071,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
         console.warn('[Firebase] reports write failed:', e);
       }
 
-      apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true).catch(() => {});
+      try {
+        await apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true);
+      } catch (e) {
+        console.warn('[Backend] confirmMechanicsReceipt failed:', e);
+      }
       clearCache('getMechanicsList');
       clearCache('sync');
     } catch (err: any) {
@@ -2100,7 +2104,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicRepairModalOpen(false);
     try {
       try {
-        await setDoc(doc(db, 'bikes', bikeNumber), { status: 'Em Estação', responsavel: null, observacao: treatment, ultimaAtualizacao: serverTimestamp() }, { merge: true });
+        await setDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, observacao: treatment, ultimaAtualizacao: serverTimestamp() }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikeNumber}`);
       }
@@ -2119,7 +2123,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
         console.warn('[Firebase] reports write failed:', e);
       }
 
-      apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName, treatment }, 1, true).catch(() => {});
+      try {
+        await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName, treatment }, 1, true);
+      } catch (e) {
+        console.warn('[Backend] finalizeMechanicsRepair failed:', e);
+      }
       clearCache('getMechanicsList');
       clearCache('sync');
       setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
@@ -2142,8 +2150,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
       ));
       setIsTrailerSelectionModalOpen(false);
 
-      // Persiste no backend
-      apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true).catch(() => {});
+      try {
+        await apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true);
+      } catch (e) {
+        console.warn('[Backend] organizeTrailer failed:', e);
+      }
       await Promise.all(bikeNumbers.map(id => {
         const bike = mechanicsList.find(b => b.patrimonio === id);
         return setDoc(doc(db, 'bikes', id), { 
@@ -4838,14 +4849,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                   <span className={`text-[10px] font-bold ${Number(bike.bateria) < 85 ? 'text-red-500' : 'text-gray-500'}`}>🔋{bike.bateria}%</span>
                                 )}
                                 {trailer !== 'Sem Carretinha' ? (
-                                  <button onClick={() => {
+                                  <button onClick={async () => {
                                     const mechanicName = bike.mecanico || driverName;
                                     protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
                                     setMechanicsList(prev => prev.map(b =>
                                       b.patrimonio === bike.patrimonio ? { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null } : b
                                     ));
                                     setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
-                                    apiCall({ action: 'removeFromTrailer', bikeNumber: bike.patrimonio, targetStatus: 'Em Manutenção' }, 1, false).catch(() => {});
+                                    try {
+                                      await apiCall({ action: 'removeFromTrailer', bikeNumber: bike.patrimonio, targetStatus: 'Em Manutenção' }, 1, false);
+                                    } catch (e) {
+                                      console.warn('[Backend] removeFromTrailer failed:', e);
+                                    }
                                   }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95">
                                     <XIcon className="w-3 h-3"/>
                                   </button>
