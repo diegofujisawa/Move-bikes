@@ -1288,20 +1288,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
           const finalMechanicName = mechanicName || driverName;
           const jaExiste = mechanicsList.find(b => b.patrimonio === bikePat);
-          if (jaExiste) {
-            alert(`A bike ${bikePat} já está na Mecânica (Status: ${jaExiste.status}). Não é permitido inserir duplicatas.`);
-            setIsBikeSearchLoading(false);
-            return;
-          }
           
-          setMechanicsList(prev => [...prev, {
-            patrimonio: bikePat,
-            status: targetStatus,
-            dataEntrada: new Date(),
-            mecanico: finalMechanicName,
-            tratativa: 'MANUAL',
-            manual: true,
-          }]);
+          setMechanicsList(prev => {
+            if (jaExiste) {
+              return prev.map(b => b.patrimonio === bikePat ? { ...b, status: targetStatus, mecanico: finalMechanicName, tratativa: 'MANUAL' } : b);
+            }
+            return [...prev, {
+              patrimonio: bikePat,
+              status: targetStatus,
+              dataEntrada: new Date(),
+              mecanico: finalMechanicName,
+              tratativa: 'MANUAL',
+              manual: true,
+            }];
+          });
           // Persiste no backend
           await apiCall({ action: 'insertBikeMechanics', bikeNumber: bikePat, mechanicName: finalMechanicName, targetStatus }, 1, true).catch(() => {});
           
@@ -2963,26 +2963,52 @@ const MainScreen: React.FC<MainScreenProps> = ({
           });
           
           // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
-          return d.mechanicsList
+          const serverBikes = d.mechanicsList || [];
+          const serverPatrimonios = new Set(serverBikes.map((b: any) => String(b.patrimonio)));
+          
+          // 1. Processa bikes que vieram do servidor
+          const processedServerBikes = serverBikes
             .filter((serverBike: any) => {
-              const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
-              // Se a bike está protegida com um status que NÃO está na lista de válidos, removemos do mechanicsList
+              const pat = String(serverBike.patrimonio);
+              const protected_ = mechanicOptimisticRef.current[pat];
               if (protected_ && protected_.expiresAt > now) {
                 return validMechanicsStatuses.includes(protected_.status);
               }
-              // Se não está protegida, mantemos apenas se o status do servidor for válido
               return validMechanicsStatuses.includes(serverBike.status);
             })
             .map((serverBike: any) => {
-              const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
+              const pat = String(serverBike.patrimonio);
+              const protected_ = mechanicOptimisticRef.current[pat];
               if (protected_ && protected_.expiresAt > now) {
-                // Aplica todos os campos protegidos (status, mecanico, tratativa, carretinha, etc)
                 const protectedFields = { ...protected_ };
                 delete (protectedFields as any).expiresAt;
                 return { ...serverBike, ...protectedFields };
               }
               return serverBike;
             });
+
+          // 2. Adiciona bikes que estão protegidas mas NÃO vieram do servidor (novas inserções)
+          const newlyInsertedBikes = Object.keys(mechanicOptimisticRef.current)
+            .filter(pat => !serverPatrimonios.has(pat))
+            .map(pat => {
+              const protected_ = mechanicOptimisticRef.current[pat];
+              if (protected_.expiresAt > now && validMechanicsStatuses.includes(protected_.status)) {
+                const protectedFields = { ...protected_ };
+                delete (protectedFields as any).expiresAt;
+                return {
+                  patrimonio: pat,
+                  dataEntrada: new Date(),
+                  mecanico: '',
+                  tratativa: 'MANUAL',
+                  manual: true,
+                  ...protectedFields
+                };
+              }
+              return null;
+            })
+            .filter(Boolean) as any[];
+
+          return [...processedServerBikes, ...newlyInsertedBikes];
         });
       }
       if (d.driversSummary) {
@@ -3215,26 +3241,52 @@ const MainScreen: React.FC<MainScreenProps> = ({
           });
           
           // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
-          return d.mechanicsList
+          const serverBikes = d.mechanicsList || [];
+          const serverPatrimonios = new Set(serverBikes.map((b: any) => String(b.patrimonio)));
+          
+          // 1. Processa bikes que vieram do servidor
+          const processedServerBikes = serverBikes
             .filter((serverBike: any) => {
-              const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
-              // Se a bike está protegida com um status que NÃO está na lista de válidos, removemos do mechanicsList
+              const pat = String(serverBike.patrimonio);
+              const protected_ = mechanicOptimisticRef.current[pat];
               if (protected_ && protected_.expiresAt > now) {
                 return validMechanicsStatuses.includes(protected_.status);
               }
-              // Se não está protegida, mantemos apenas se o status do servidor for válido
               return validMechanicsStatuses.includes(serverBike.status);
             })
             .map((serverBike: any) => {
-              const protected_ = mechanicOptimisticRef.current[String(serverBike.patrimonio)];
+              const pat = String(serverBike.patrimonio);
+              const protected_ = mechanicOptimisticRef.current[pat];
               if (protected_ && protected_.expiresAt > now) {
-                // Aplica todos os campos protegidos (status, mecanico, tratativa, carretinha, etc)
                 const protectedFields = { ...protected_ };
                 delete (protectedFields as any).expiresAt;
                 return { ...serverBike, ...protectedFields };
               }
               return serverBike;
             });
+
+          // 2. Adiciona bikes que estão protegidas mas NÃO vieram do servidor (novas inserções)
+          const newlyInsertedBikes = Object.keys(mechanicOptimisticRef.current)
+            .filter(pat => !serverPatrimonios.has(pat))
+            .map(pat => {
+              const protected_ = mechanicOptimisticRef.current[pat];
+              if (protected_.expiresAt > now && validMechanicsStatuses.includes(protected_.status)) {
+                const protectedFields = { ...protected_ };
+                delete (protectedFields as any).expiresAt;
+                return {
+                  patrimonio: pat,
+                  dataEntrada: new Date(),
+                  mecanico: '',
+                  tratativa: 'MANUAL',
+                  manual: true,
+                  ...protectedFields
+                };
+              }
+              return null;
+            })
+            .filter(Boolean) as any[];
+
+          return [...processedServerBikes, ...newlyInsertedBikes];
         });
       }
       if (d.driversSummary) {

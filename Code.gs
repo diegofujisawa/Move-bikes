@@ -966,7 +966,7 @@ function getBikeIndex(forceReload = false) {
     if (patNoZeros !== pat && patNoZeros !== 'NaN') index[patNoZeros] = row;
   });
 
-  try { cache.put(cacheKey, JSON.stringify(index), 15); } catch (e) {} // Cache reduzido para 15s
+  try { cache.put(cacheKey, JSON.stringify(index), 300); } catch (e) {} // Cache aumentado para 300s (5 min)
   return index;
 }
 
@@ -2925,26 +2925,22 @@ function getMechanicsList() {
     } catch (e) {}
   }
 
-  // Mapa de bateria/carregamento — lê direto da planilha sem cache
+  // Mapa de bateria/carregamento — usa cache do getBikeIndex
   const bikeInfoMap = {};
   try {
-    const bikesSheet = ss.getSheetByName(BIKES_SHEET_NAME);
-    if (bikesSheet && bikesSheet.getLastRow() > 1) {
-      const nCols = COLUMN_INDICES.BIKES.CARREGAMENTO; // lê até coluna H (8)
-      bikesSheet.getRange(2, 1, bikesSheet.getLastRow() - 1, nCols).getValues().forEach(row => {
-        const pat = String(row[COLUMN_INDICES.BIKES.PATRIMONIO - 1] || '').trim();
-        if (!pat) return;
-        let bateria = row[COLUMN_INDICES.BIKES.BATERIA - 1];
-        if (typeof bateria === 'number' && bateria <= 1 && bateria > 0) bateria = Math.round(bateria * 100);
-        else if (typeof bateria === 'string' && bateria.includes('%')) bateria = parseInt(bateria.replace('%', ''));
-        const carregamentoRaw = (row[COLUMN_INDICES.BIKES.CARREGAMENTO - 1] || '').toString().trim();
-        const carregamento = carregamentoRaw.toLowerCase() === 'carregando' ? 'Carregando' : (carregamentoRaw ? 'Não carregando' : '');
-        const info = { bateria, carregamento };
-        bikeInfoMap[pat] = info;
-        const patSemZeros = pat.replace(/^0+/, '');
-        if (patSemZeros !== pat) bikeInfoMap[patSemZeros] = info;
-      });
-    }
+    const index = getBikeIndex();
+    Object.entries(index).forEach(([pat, row]) => {
+      let bateria = row[COLUMN_INDICES.BIKES.BATERIA - 1];
+      if (typeof bateria === 'number' && bateria <= 1 && bateria > 0) bateria = Math.round(bateria * 100);
+      else if (typeof bateria === 'string' && bateria.includes('%')) bateria = parseInt(bateria.replace('%', ''));
+      
+      const carregamentoRaw = (row[COLUMN_INDICES.BIKES.CARREGAMENTO - 1] || '').toString().trim();
+      const carregamento = carregamentoRaw.toLowerCase() === 'carregando' ? 'Carregando' : (carregamentoRaw ? 'Não carregando' : '');
+      const info = { bateria, carregamento };
+      bikeInfoMap[pat] = info;
+      const patSemZeros = pat.replace(/^0+/, '');
+      if (patSemZeros !== pat) bikeInfoMap[patSemZeros] = info;
+    });
   } catch(e) { console.error('getMechanicsList - erro ao ler bikes:', e); }
 
   // =================================================================
@@ -2957,65 +2953,76 @@ function getMechanicsList() {
 
   // Passo 1: Relatório — última ocorrência de Recolhida/Vandalizada por bike
   // Se após a última Recolhida existir saída (Estação, etc.), bike não aparece
-  const reportEntries = {};
-  const lastStatusByBike = {};
-  const EXIT_STATUSES = new Set([
-    'estação', 'estacao', 'não encontrada', 'nao encontrada',
-    'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno',
-    'Remanejada', 'recuperada', 'encontrada', 'localizada'
-  ]);
+  let reportEntries = {};
+  let lastStatusByBike = {};
+  const cache = getScriptCache();
+  const cacheKey = 'mechanics_report_scan_v2';
+  const cached = cache.get(cacheKey);
+  
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached);
+      reportEntries = parsed.reportEntries;
+      lastStatusByBike = parsed.lastStatusByBike;
+    } catch (e) { cached = null; }
+  }
 
-  try {
-    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
-    if (reportSheet && reportSheet.getLastRow() > 1) {
-      const lastRow = reportSheet.getLastRow();
-      const rowsToRead = Math.min(lastRow - 1, 8000);
-      const reportData = reportSheet.getRange(lastRow - rowsToRead + 1, 1, rowsToRead, 5).getValues();
+  if (!cached) {
+    const EXIT_STATUSES = new Set([
+      'estação', 'estacao', 'não encontrada', 'nao encontrada',
+      'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno',
+      'Remanejada', 'recuperada', 'encontrada', 'localizada'
+    ]);
 
-      reportData.forEach(row => {
-        const tsMs = toMs(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
-        if (!tsMs || tsMs < CUTOFF_MS) return;
-        const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
-        if (!pat) return;
-        const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
-        if (!status) return;
-        const observacao = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
-        const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
+    try {
+      const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
+      if (reportSheet && reportSheet.getLastRow() > 1) {
+        const lastRow = reportSheet.getLastRow();
+        const rowsToRead = Math.min(lastRow - 1, 8000);
+        const reportData = reportSheet.getRange(lastRow - rowsToRead + 1, 1, rowsToRead, 5).getValues();
 
-        // Último status geral
-        if (!lastStatusByBike[pat] || tsMs > lastStatusByBike[pat].tsMs) {
-          lastStatusByBike[pat] = { tsMs, status };
-        }
+        reportData.forEach(row => {
+          const tsMs = toMs(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+          if (!tsMs || tsMs < CUTOFF_MS) return;
+          const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
+          if (!pat) return;
+          const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
+          if (!status) return;
+          const observacao = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
+          const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
 
-        // Última ocorrência de Recolhida/Vandalizada — guarda motorista e observação
-        // Se houver conflito, considera o mais recente (tsMs maior).
-        // Se o mais recente vier sem info, mas um anterior (do mesmo ciclo) tiver, mantemos a info?
-        // O usuário pediu: "considere sempre o mais recente". 
-        // Vamos garantir que pegamos o registro mais recente, mas se motorista/observacao estiverem vazios
-        // e já tivermos um registro anterior com info, podemos manter a info para evitar campos vazios.
-        if (status === 'recolhida' || status === 'vandalizada') {
-          if (!reportEntries[pat] || tsMs > reportEntries[pat].tsMs) {
-            const prev = reportEntries[pat] || {};
-            reportEntries[pat] = { 
-              tsMs, 
-              status, 
-              motorista: motorista || prev.motorista || '', 
-              observacao: observacao || prev.observacao || '' 
-            };
+          // Último status geral
+          if (!lastStatusByBike[pat] || tsMs > lastStatusByBike[pat].tsMs) {
+            lastStatusByBike[pat] = { tsMs, status };
           }
-        }
-      });
 
-      // Remove bikes cuja última ocorrência geral é uma saída posterior à última Recolhida
-      Object.keys(reportEntries).forEach(pat => {
-        const last = lastStatusByBike[pat];
-        if (last && EXIT_STATUSES.has(last.status) && last.tsMs > reportEntries[pat].tsMs) {
-          delete reportEntries[pat];
-        }
-      });
+          // Última ocorrência de Recolhida/Vandalizada
+          if (status === 'recolhida' || status === 'vandalizada') {
+            if (!reportEntries[pat] || tsMs > reportEntries[pat].tsMs) {
+              const prev = reportEntries[pat] || {};
+              reportEntries[pat] = { 
+                tsMs, 
+                status, 
+                motorista: motorista || prev.motorista || '', 
+                observacao: observacao || prev.observacao || '' 
+              };
+            }
+          }
+        });
+
+        // Remove bikes cuja última ocorrência geral é uma saída posterior à última Recolhida
+        Object.keys(reportEntries).forEach(pat => {
+          const last = lastStatusByBike[pat];
+          if (last && EXIT_STATUSES.has(last.status) && last.tsMs > reportEntries[pat].tsMs) {
+            delete reportEntries[pat];
+          }
+        });
+        
+        cache.put(cacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 30);
+      }
+    } catch (e) {
+      console.error('getMechanicsList - erro ao ler relatório:', e);
     }
-  } catch (e) {
-    console.error('getMechanicsList - erro ao ler relatório:', e);
   }
 
   // Passo 2: Aba Mecânica
