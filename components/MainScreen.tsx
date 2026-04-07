@@ -15,7 +15,7 @@ import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
 import { signInWithPopup, GoogleAuthProvider, signInAnonymously } from 'firebase/auth';
 import {
-  collection, onSnapshot, doc, updateDoc, addDoc, getDocs,
+  collection, onSnapshot, doc, updateDoc, addDoc, getDocs, deleteDoc,
   serverTimestamp, setDoc, query, where, getDocFromServer
 } from 'firebase/firestore';
 import ScheduleModal from './ScheduleModal';
@@ -369,6 +369,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [mechanicsList, setMechanicsList] = useState<any[]>([]);
   const [sheetsMechanicsList, setSheetsMechanicsList] = useState<any[]>([]);
   const [fbMechanicsFlow, setFbMechanicsFlow] = useState<any[]>([]);
+  const [fbTechnicalFlow, setFbTechnicalFlow] = useState<any[]>([]);
   const [selectedMechanicBike, setSelectedMechanicBike] = useState<any>(null);
   const [selectedBikesForTrailer, setSelectedBikesForTrailer] = useState<string[]>([]);
   const [reporData, setReporData] = useState<any[]>([]);
@@ -451,6 +452,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (!db) return;
+    setIsTechnicaLoading(true);
+    const q = query(collection(db, 'technical_flow'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const flow = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        patrimonio: doc.id
+      }));
+      setFbTechnicalFlow(flow);
+      setIsTechnicaLoading(false);
+    }, (error) => {
+      console.error('Error listening to technical_flow:', error);
+      setIsTechnicaLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
   const mergeMechanicsList = useCallback((serverBikes: any[], fbFlow: any[]) => {
     const now = Date.now();
     const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
@@ -490,6 +509,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
   useEffect(() => {
     setMechanicsList(mergeMechanicsList(sheetsMechanicsList, fbMechanicsFlow));
   }, [sheetsMechanicsList, fbMechanicsFlow, mergeMechanicsList]);
+
+  useEffect(() => {
+    setTechnicaList(fbTechnicalFlow.map(b => ({
+      ...b,
+      dataEntrada: b.dataEntrada?.toDate?.() || b.dataEntrada || new Date(),
+    })));
+  }, [fbTechnicalFlow]);
 
   // IDs de notificações já processadas nesta sessão (aceitas ou recusadas).
   // Garante que nunca reapareçam mesmo que o sync devolva dados antigos.
@@ -1369,45 +1395,35 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const processManualInsert = async (bikePat: string, mechanicName: string, targetStatus: string) => {
     setIsBikeSearchLoading(true);
     try {
-      if (isMecanica) {
-        const directStatuses = ['Alterar Status', 'Reserva', 'Aguardando Manutenção', 'Em Manutenção'];
-        if (directStatuses.includes(targetStatus)) {
-          // Move no backend imediatamente — evita que o refreshAll reverta o estado
-          protectMechanicBike(bikePat, targetStatus);
-
-          const finalMechanicName = mechanicName || driverName;
-          const jaExiste = mechanicsList.find(b => b.patrimonio === bikePat);
+      if (isMecanica || isTecnica) {
+        const directStatuses = isTecnica 
+          ? ['Aguardando Técnica', 'Em Técnica']
+          : ['Alterar Status', 'Reserva', 'Aguardando Manutenção', 'Em Manutenção'];
           
-          setMechanicsList(prev => {
-            if (jaExiste) {
-              return prev.map(b => b.patrimonio === bikePat ? { ...b, status: targetStatus, mecanico: finalMechanicName, tratativa: 'MANUAL' } : b);
-            }
-            return [...prev, {
+        if (directStatuses.includes(targetStatus)) {
+          protectMechanicBike(bikePat, targetStatus);
+          const finalName = mechanicName || driverName;
+          
+          if (isTecnica) {
+            await setDoc(doc(db, 'technical_flow', bikePat), {
               patrimonio: bikePat,
               status: targetStatus,
-              dataEntrada: new Date(),
-              mecanico: finalMechanicName,
+              dataEntrada: serverTimestamp(),
+              [targetStatus === 'Em Técnica' ? 'tecnico' : 'mecanico']: finalName,
+              ultimaAtualizacao: serverTimestamp()
+            }, { merge: true }).catch(() => {});
+          } else {
+            await setDoc(doc(db, 'mechanics_flow', bikePat), {
+              patrimonio: bikePat,
+              status: targetStatus,
+              dataEntrada: serverTimestamp(),
+              mecanico: finalName,
               tratativa: 'MANUAL',
-              manual: true,
-            }];
-          });
-          // Persiste no Firebase
-          await setDoc(doc(db, 'mechanics_flow', bikePat), {
-            patrimonio: bikePat,
-            status: targetStatus,
-            dataEntrada: serverTimestamp(),
-            mecanico: finalMechanicName,
-            tratativa: 'MANUAL',
-            ultimaAtualizacao: serverTimestamp()
-          }, { merge: true }).catch(() => {});
+              ultimaAtualizacao: serverTimestamp()
+            }, { merge: true }).catch(() => {});
+          }
           
-          setSuccessMessage(
-            targetStatus === 'Alterar Status' ? `Bike ${bikePat} adicionada em Alterar Status.` :
-            targetStatus === 'Reserva' ? `Bike ${bikePat} movida para Reserva.` :
-            targetStatus === 'Aguardando Manutenção' ? `Bike ${bikePat} em Aguardando Manutenção.` :
-            `Bike ${bikePat} em Manutenção.`
-          );
-          
+          setSuccessMessage(`Bike ${bikePat} movida para ${targetStatus}.`);
           setSearchedBike(null);
           setSearchTerm('');
           setBikeSearchTerm('');
@@ -1883,26 +1899,45 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const handleSendToTechnical = async (bikePat: string, mechanicName?: string) => {
     setIsLoading(true);
-    // Se isTecnica for true e não houver mechanicName passado, mecanico deve ser null.
-    // Se isMecanica for true, usamos o nome do mecânico logado como fallback.
     const finalMechanic = mechanicName || (isMecanica ? driverName : null);
 
     // Otimista — protege e remove da lista Mecânica imediatamente
     protectMechanicBike(bikePat, { status: 'Aguardando Técnica', responsavel: finalMechanic, mecanico: finalMechanic });
     setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikePat));
     try {
-      // Firebase não-bloqueante
+      // 1. Remove do fluxo da mecânica se estiver lá
+      try {
+        await deleteDoc(doc(db, 'mechanics_flow', bikePat));
+      } catch (e) {
+        console.warn('[Firebase] mechanics_flow delete failed:', e);
+      }
+
+      // 2. Adiciona ao fluxo da técnica
+      try {
+        await setDoc(doc(db, 'technical_flow', bikePat), {
+          patrimonio: bikePat,
+          status: 'Aguardando Técnica',
+          mecanico: finalMechanic,
+          dataEntrada: serverTimestamp(),
+          ultimaAtualizacao: serverTimestamp()
+        }, { merge: true });
+      } catch (e) {
+        console.warn('[Firebase] technical_flow write failed:', e);
+      }
+
+      // 3. Atualiza status global da bike
       try {
         await setDoc(doc(db, 'bikes', bikePat), {
           status: 'Aguardando Técnica', 
           responsavel: finalMechanic, 
-          mecanico: finalMechanic, // Garante que o nome do mecânico seja gravado para devolução (ou null se não houver)
+          mecanico: finalMechanic,
           ultimaAtualizacao: serverTimestamp()
         }, { merge: true });
       } catch (e) {
         console.warn('[Firebase] bikes write failed:', e);
       }
 
+      // 4. Relatório
       try {
         await addDoc(collection(db, 'reports'), {
           bikeNumber: bikePat, patrimonio: bikePat, status: 'Aguardando Técnica',
@@ -1913,9 +1948,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       } catch (e) {
         console.warn('[Firebase] reports write failed:', e);
       }
-
-      // Backend — fire-and-forget, não bloqueia UI
-      apiCall({ action: 'sendToTechnical', bikeNumber: bikePat, mechanicName: finalMechanic }, 1, false).catch(() => {});
     } catch (err: any) {
       console.error('Erro ao enviar para técnica:', err);
       setError('Erro ao enviar para técnica: ' + err.message);
@@ -1923,15 +1955,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsLoading(false);
       setIsTechnicalConfirmOpen(null);
     }
-  };
-
-  const fetchTechnicaList = async () => {
-    setIsTechnicaLoading(true);
-    try {
-      const r = await apiCall({ action: 'getTechnicaList' }, 1, false);
-      if (r.success) setTechnicaList(r.data || []);
-    } catch (e: any) { console.warn('[getTechnicaList]', e.message); }
-    finally { setIsTechnicaLoading(false); }
   };
 
   const handleConfirmTechnicaReceipt = (bike: any) => {
@@ -1942,21 +1965,31 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const executeConfirmTechnicaReceipt = async (bikeNumber: string, technicianName: string) => {
     setTechnicaReceiptModal(null);
     setIsLoading(true);
-    setTechnicaList(prev => prev.map(b =>
-      b.patrimonio === bikeNumber ? { ...b, status: 'Em Técnica', tecnico: technicianName } : b
-    ));
     try {
+      // 1. Atualiza no fluxo da técnica
+      try {
+        await updateDoc(doc(db, 'technical_flow', bikeNumber), {
+          status: 'Em Técnica',
+          tecnico: technicianName,
+          ultimaAtualizacao: serverTimestamp()
+        });
+      } catch (e) {
+        console.warn('[Firebase] technical_flow update failed:', e);
+      }
+
+      // 2. Atualiza status global da bike
       try {
         await setDoc(doc(db, 'bikes', bikeNumber), {
           status: 'Em Técnica', 
           responsavel: technicianName, 
-          tecnico: technicianName, // Armazena o técnico separadamente
+          tecnico: technicianName,
           ultimaAtualizacao: serverTimestamp()
         }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeNumber}`);
       }
 
+      // 3. Relatório
       try {
         await addDoc(collection(db, 'reports'), {
           bikeNumber, status: 'Em Técnica',
@@ -1967,11 +2000,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
       } catch (e) {
         console.warn('[Firebase] reports write failed:', e);
       }
-
-      await apiCall({ action: 'confirmTechnicaReceipt', bikeNumber, technicianName }, 1, false);
     } catch (err: any) {
       setError('Erro: ' + err.message);
-      fetchTechnicaList();
     } finally { setIsLoading(false); }
   };
 
@@ -1999,32 +2029,51 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const { bike } = technicaRepairModal;
     const bikeNumber = bike.patrimonio;
     
-    // O mecânico original é quem enviou a bike. 
-    // Comparamos com o driverName (técnico atual) para garantir que não devolvemos para o próprio técnico
     const originalMechanic = (bike.mecanico && bike.mecanico !== driverName) ? bike.mecanico : '';
     const treatment = Array.from(technicaRepairSelected).join(', ');
     
-    // Lógica solicitada: Se tiver mecânico, volta para 'Em Manutenção'. Se não, 'Aguardando Manutenção'.
     const finalStatus = originalMechanic ? 'Em Manutenção' : 'Aguardando Manutenção';
     const finalResponsavel = originalMechanic || null;
 
     setTechnicaRepairModal(null);
     setTechnicaRepairSelected(new Set());
     setIsLoading(true);
-    setTechnicaList(prev => prev.filter(b => b.patrimonio !== bikeNumber));
     try {
+      // 1. Remove do fluxo da técnica
+      try {
+        const { deleteDoc: _deleteDoc } = await import('firebase/firestore');
+        await _deleteDoc(doc(db, 'technical_flow', bikeNumber));
+      } catch (e) {
+        console.warn('[Firebase] technical_flow delete failed:', e);
+      }
+
+      // 2. Adiciona de volta ao fluxo da mecânica
+      try {
+        await setDoc(doc(db, 'mechanics_flow', bikeNumber), {
+          patrimonio: bikeNumber,
+          status: finalStatus,
+          mecanico: finalResponsavel,
+          dataEntrada: serverTimestamp(),
+          ultimaAtualizacao: serverTimestamp()
+        }, { merge: true });
+      } catch (e) {
+        console.warn('[Firebase] mechanics_flow write failed:', e);
+      }
+
+      // 3. Atualiza status global da bike
       try {
         await setDoc(doc(db, 'bikes', bikeNumber), {
           status: finalStatus, 
           responsavel: finalResponsavel, 
           mecanico: finalResponsavel,
-          tecnico: null, // Limpa o técnico ao finalizar
+          tecnico: null,
           ultimaAtualizacao: serverTimestamp()
         }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeNumber}`);
       }
 
+      // 4. Relatório
       try {
         await addDoc(collection(db, 'reports'), {
           bikeNumber, status: 'Devolvida da Técnica',
@@ -2037,14 +2086,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
         console.warn('[Firebase] reports write failed:', e);
       }
 
-      await apiCall({
-        action: 'finalizeTechnicaRepair', bikeNumber,
-        technicianName: driverName, treatment, originalMechanic
-      }, 1, false);
       setSuccessMessage(`Bike ${bikeNumber} devolvida para ${originalMechanic || 'Mecânica'} — ${finalStatus}.`);
     } catch (err: any) {
       setError('Erro: ' + err.message);
-      fetchTechnicaList();
     } finally { setIsLoading(false); }
   };
 
@@ -3319,7 +3363,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // Sync periódico — 4s para reduzir delay percebido
   useEffect(() => {
     refreshAll();
-    if (isTecnica) fetchTechnicaList();
     const fetchSt = async () => {
       try {
         const r = await apiGetCall('getStations');
@@ -3329,7 +3372,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     fetchSt();
     const interval = setInterval(() => {
       refreshAll();
-      if (isTecnica) fetchTechnicaList();
     }, 12000);
     const onVisibility = () => { if (document.visibilityState === 'visible') refreshAll(true); };
     document.addEventListener('visibilitychange', onVisibility);
