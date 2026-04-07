@@ -1883,6 +1883,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Optimistic: remove from list immediately
     setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikeId));
     try {
+      // 1. Remove do fluxo da mecânica no Firebase
+      try {
+        await deleteDoc(doc(db, 'mechanics_flow', bikeId));
+      } catch (e) {
+        console.warn('[Firebase] mechanics_flow delete failed:', e);
+      }
+
       await apiCall({ action: 'markAsNotFound', bikeNumber: bikeId, mechanicName: driverName }, 1, true);
     } catch (err: any) {
       refreshAll(true); // revert on error
@@ -2112,6 +2119,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikePat}`);
+      }
+
+      // 3. Remove do fluxo da mecânica no Firebase
+      try {
+        await deleteDoc(doc(db, 'mechanics_flow', bikePat));
+      } catch (e) {
+        console.warn('[Firebase] mechanics_flow delete failed:', e);
       }
 
       // Envia para o Sheets: tratativa como VANDALIZADA e sala no campo room (Coluna G)
