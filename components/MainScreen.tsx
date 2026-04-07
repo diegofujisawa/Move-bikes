@@ -367,6 +367,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   // --- Dados auxiliares ---
   const [mechanicsList, setMechanicsList] = useState<any[]>([]);
+  const [sheetsMechanicsList, setSheetsMechanicsList] = useState<any[]>([]);
+  const [fbMechanicsFlow, setFbMechanicsFlow] = useState<any[]>([]);
   const [selectedMechanicBike, setSelectedMechanicBike] = useState<any>(null);
   const [selectedBikesForTrailer, setSelectedBikesForTrailer] = useState<string[]>([]);
   const [reporData, setReporData] = useState<any[]>([]);
@@ -434,6 +436,61 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const processingBikesRef = useRef<Set<string>>(new Set());
   // Ref para refreshAll — evita dependência circular com persistDriverState
   const refreshAllRef = useRef<((force?: boolean) => Promise<void>) | null>(null);
+  useEffect(() => {
+    if (!db) return;
+    const q = query(collection(db, 'mechanics_flow'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const flow = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        patrimonio: doc.id
+      }));
+      setFbMechanicsFlow(flow);
+    }, (error) => {
+      console.error('Error listening to mechanics_flow:', error);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const mergeMechanicsList = useCallback((serverBikes: any[], fbFlow: any[]) => {
+    const now = Date.now();
+    const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
+    
+    // 1. Filtra bikes do servidor: apenas "Alterar Status" e "Não encontrada"
+    // E que não estejam no fluxo do Firebase
+    const fbPatrimonios = new Set(fbFlow.map(b => String(b.patrimonio)));
+    
+    const filteredServerBikes = serverBikes.filter(b => {
+      const pat = String(b.patrimonio);
+      const status = b.status;
+      return (status === 'Alterar Status' || status === 'Não encontrada') && !fbPatrimonios.has(pat);
+    });
+
+    // 2. Mapeia bikes do Firebase para o formato esperado
+    const processedFbBikes = fbFlow.map(b => ({
+      ...b,
+      // Garante campos básicos se faltarem
+      dataEntrada: b.dataEntrada?.toDate?.() || b.dataEntrada || new Date(),
+    }));
+
+    // 3. Aplica proteção otimista
+    const combined = [...filteredServerBikes, ...processedFbBikes];
+    
+    return combined.map(bike => {
+      const pat = String(bike.patrimonio);
+      const protected_ = mechanicOptimisticRef.current[pat];
+      if (protected_ && protected_.expiresAt > now) {
+        const protectedFields = { ...protected_ };
+        delete (protectedFields as any).expiresAt;
+        return { ...bike, ...protectedFields };
+      }
+      return bike;
+    }).filter(b => validMechanicsStatuses.includes(b.status));
+  }, []);
+
+  useEffect(() => {
+    setMechanicsList(mergeMechanicsList(sheetsMechanicsList, fbMechanicsFlow));
+  }, [sheetsMechanicsList, fbMechanicsFlow, mergeMechanicsList]);
+
   // IDs de notificações já processadas nesta sessão (aceitas ou recusadas).
   // Garante que nunca reapareçam mesmo que o sync devolva dados antigos.
   const processedRequestIds = useRef<Set<string>>(new Set());
@@ -1334,8 +1391,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
               manual: true,
             }];
           });
-          // Persiste no backend
-          await apiCall({ action: 'insertBikeMechanics', bikeNumber: bikePat, mechanicName: finalMechanicName, targetStatus }, 1, true).catch(() => {});
+          // Persiste no Firebase
+          await setDoc(doc(db, 'mechanics_flow', bikePat), {
+            patrimonio: bikePat,
+            status: targetStatus,
+            dataEntrada: serverTimestamp(),
+            mecanico: finalMechanicName,
+            tratativa: 'MANUAL',
+            ultimaAtualizacao: serverTimestamp()
+          }, { merge: true }).catch(() => {});
           
           setSuccessMessage(
             targetStatus === 'Alterar Status' ? `Bike ${bikePat} adicionada em Alterar Status.` :
@@ -1702,16 +1766,22 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const handleAlterarStatus = async (bikeId: string) => {
     // 1. Atualiza estado local imediatamente — bike some de "Alterar Status"
     protectMechanicBike(bikeId, { status: 'Aguardando Manutenção' });
-    setMechanicsList(prev => prev.map(b =>
-      b.patrimonio === bikeId ? { ...b, status: 'Aguardando Manutenção' } : b
-    ));
+    
+    const bike = mechanicsList.find(b => b.patrimonio === bikeId);
+    const flowData = {
+      status: 'Aguardando Manutenção',
+      motorista: bike?.motorista || '',
+      observacao: bike?.observacao || '',
+      bateria: bike?.bateria || 0,
+      carregamento: bike?.carregamento || '',
+      dataEntrada: serverTimestamp(),
+      patrimonio: bikeId
+    };
 
     if (isMecanica) {
       try {
-        // 1. Move no backend imediatamente — evita que o refreshAll reverta o estado
-        await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {});
-        clearCache('getMechanicsList');
-        clearCache('sync');
+        // 1. Move no Firebase — fonte de verdade agora
+        await setDoc(doc(db, 'mechanics_flow', bikeId), flowData);
         
         try {
           await addDoc(collection(db, 'reports'), {
@@ -1777,22 +1847,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setSuccessMessage(`Bike ${bikeId} → Aguardando Manutenção.`);
       } catch (e: any) {
         alert('Erro ao enviar solicitação: ' + e.message);
-        // Reverte atualização otimista em caso de erro
-        setMechanicsList(prev => prev.map(b =>
-          b.patrimonio === bikeId ? { ...b, status: 'Alterar Status' } : b
-        ));
       }
       return;
     }
 
-    // ADM / perfil com acesso direto: move direto no backend
+    // ADM / perfil com acesso direto: move direto no Firebase
     try {
-      await apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true);
+      await updateDoc(doc(db, 'mechanics_flow', bikeId), {
+        status: 'Aguardando Manutenção',
+        ultimaAtualizacao: serverTimestamp()
+      });
     } catch (err: any) {
-      console.error('Erro ao mover para Aguardando Manutenção:', err);
-      setMechanicsList(prev => prev.map(b =>
-        b.patrimonio === bikeId ? { ...b, status: 'Alterar Status' } : b
-      ));
+      console.error('Erro ao mover para Aguardando Manutenção no Firebase:', err);
     }
   };
 
@@ -2037,10 +2103,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setBikeFoundModal(null);
     setIsLoading(true);
     try {
-      await apiCall({ action: 'deleteMechanicsBike', bikeNumber: bikePat }, 1, true);
+      const { deleteDoc: _deleteDoc } = await import('firebase/firestore');
+      await _deleteDoc(doc(db, 'mechanics_flow', bikePat));
       refreshAll(true);
     } catch (err: any) {
-      console.error('Erro ao excluir bike:', err);
+      console.error('Erro ao excluir bike no Firebase:', err);
     } finally {
       setIsLoading(false);
     }
@@ -2049,16 +2116,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const handleMechanicSelectionConfirm = async (mechanicName: string) => {
     setIsLoading(true);
     const bikeNumber = selectedMechanicBike.patrimonio;
-    // Atualização otimista — remove da lista imediatamente
+    // Atualização otimista
     protectMechanicBike(bikeNumber, {
       status: 'Em Manutenção',
       mecanico: mechanicName,
     });
-    setMechanicsList(prev => prev.map(b =>
-      b.patrimonio === bikeNumber ? { ...b, status: 'Em Manutenção', mecanico: mechanicName } : b
-    ));
     setIsMechanicSelectionModalOpen(false);
     try {
+      // Atualiza no Firebase mechanics_flow
+      await updateDoc(doc(db, 'mechanics_flow', bikeNumber), {
+        status: 'Em Manutenção',
+        mecanico: mechanicName,
+        dataEntrada: serverTimestamp()
+      });
+
       try {
         await setDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true });
       } catch (e) {
@@ -2070,14 +2141,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       } catch (e) {
         console.warn('[Firebase] reports write failed:', e);
       }
-
-      try {
-        await apiCall({ action: 'confirmMechanicsReceipt', bikeNumber, mechanicName }, 1, true);
-      } catch (e) {
-        console.warn('[Backend] confirmMechanicsReceipt failed:', e);
-      }
-      clearCache('getMechanicsList');
-      clearCache('sync');
     } catch (err: any) {
       alert('Erro: ' + err.message);
     } finally { setIsLoading(false); }
@@ -2089,7 +2152,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const bikeNumber = selectedMechanicBike.patrimonio;
 
     // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
-    // A notificação ao ADM só ocorre ao FINALIZAR A CARRETINHA (após QR + bateria + comunicação).
     // Atualização otimista
     const mechanicName = selectedMechanicBike?.mecanico || driverName;
     protectMechanicBike(bikeNumber, {
@@ -2098,11 +2160,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
       tratativa: treatment,
       dataFinalizacao: new Date().toISOString(),
     });
-    setMechanicsList(prev => prev.map(b =>
-      b.patrimonio === bikeNumber ? { ...b, status: 'Reserva', mecanico: mechanicName, tratativa: treatment } : b
-    ));
     setIsMechanicRepairModalOpen(false);
     try {
+      // Atualiza no Firebase mechanics_flow
+      await updateDoc(doc(db, 'mechanics_flow', bikeNumber), {
+        status: 'Reserva',
+        tratativa: treatment,
+        dataSaida: serverTimestamp()
+      });
+
       try {
         await setDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, observacao: treatment, ultimaAtualizacao: serverTimestamp() }, { merge: true });
       } catch (e) {
@@ -2123,13 +2189,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
         console.warn('[Firebase] reports write failed:', e);
       }
 
-      try {
-        await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber, mechanicName, treatment }, 1, true);
-      } catch (e) {
-        console.warn('[Backend] finalizeMechanicsRepair failed:', e);
-      }
-      clearCache('getMechanicsList');
-      clearCache('sync');
       setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
     } catch (err: any) {
       alert('Erro: ' + err.message);
@@ -2145,16 +2204,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
       bikeNumbers.forEach(id => {
         protectMechanicBike(id, { status: 'Reserva', carretinha: trailerName });
       });
-      setMechanicsList(prev => prev.map(b =>
-        bikeNumbers.includes(b.patrimonio) ? { ...b, carretinha: trailerName, status: 'Reserva' } : b
-      ));
       setIsTrailerSelectionModalOpen(false);
 
-      try {
-        await apiCall({ action: 'organizeTrailer', bikeNumbers, trailerName }, 1, true);
-      } catch (e) {
-        console.warn('[Backend] organizeTrailer failed:', e);
-      }
+      // Atualiza no Firebase mechanics_flow
+      await Promise.all(bikeNumbers.map(id => 
+        updateDoc(doc(db, 'mechanics_flow', id), {
+          carretinha: trailerName,
+          status: 'Reserva'
+        })
+      ));
+
       await Promise.all(bikeNumbers.map(id => {
         const bike = mechanicsList.find(b => b.patrimonio === id);
         return setDoc(doc(db, 'bikes', id), { 
@@ -2177,8 +2236,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }).catch(() => {});
       }));
 
-      clearCache('getMechanicsList');
-      clearCache('sync');
       setSuccessMessage(`Bikes organizadas na ${trailerName}!`);
     } catch (err: any) {
       setError('Erro ao organizar carretinha: ' + err.message);
@@ -2193,9 +2250,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (action.type === 'alterar_status_lote') {
         // Lote de bikes — confirma entrada na mecânica de todas de uma vez
         const bikes: string[] = action.bikes || [];
-        await Promise.all(bikes.map(bikeId =>
-          apiCall({ action: 'moveToAguardandoManutencao', bikeNumber: bikeId }, 1, true).catch(() => {})
-        ));
+        await Promise.all(bikes.map(async (bikeId) => {
+          try {
+            await updateDoc(doc(db, 'mechanics_flow', bikeId), {
+              status: 'Aguardando Manutenção',
+              ultimaAtualizacao: serverTimestamp()
+            });
+          } catch (e) {
+            console.warn(`[Firebase] moveToAguardandoManutencao failed for ${bikeId}:`, e);
+          }
+        }));
       } else if (action.type === 'status_change') {
         if (action.targetStatus === 'Reserva') {
           try {
@@ -2210,16 +2274,26 @@ const MainScreen: React.FC<MainScreenProps> = ({
             console.warn('[Firebase] reports write failed:', e);
           }
 
-          const res = await apiCall({ action: 'finalizeMechanicsRepair', bikeNumber: action.bikeNumber, mechanicName: action.mechanicName, treatment: action.treatment }, 1, true);
-          if (!res.success) throw new Error(res.error || 'Erro ao aprovar reparo.');
+          try {
+            await updateDoc(doc(db, 'mechanics_flow', action.bikeNumber), {
+              status: 'Reserva',
+              mecanico: action.mechanicName,
+              tratativa: action.treatment,
+              ultimaAtualizacao: serverTimestamp()
+            });
+          } catch (e) {
+            console.warn('[Firebase] finalizeMechanicsRepair flow update failed:', e);
+          }
         } else {
-          const res = await apiCall({
-            action: 'insertBikeMechanics',
-            bikeNumber: action.bikeNumber,
-            mechanicName: action.mechanicName || '',
-            targetStatus: action.targetStatus
-          });
-          if (!res.success) throw new Error(res.error || 'Erro ao aprovar status.');
+          try {
+            await updateDoc(doc(db, 'mechanics_flow', action.bikeNumber), {
+              status: action.targetStatus,
+              mecanico: action.mechanicName || '',
+              ultimaAtualizacao: serverTimestamp()
+            });
+          } catch (e) {
+            console.warn('[Firebase] insertBikeMechanics flow update failed:', e);
+          }
         }
       } else if (action.type === 'trailer_validation') {
         try {
@@ -2584,6 +2658,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
           trailerStatus: 'finalized', 
           ultimaAtualizacao: serverTimestamp() 
         }, { merge: true })));
+
+        // Remove do fluxo da mecânica
+        const { deleteDoc: _deleteDoc } = await import('firebase/firestore');
+        await Promise.all(bikeIds.map(id => _deleteDoc(doc(db, 'mechanics_flow', id))));
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeIds.join(',')}`);
       }
@@ -2995,64 +3073,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         });
       }
       if (d.mechanicsList) {
-        setMechanicsList(() => {
-          const now = Date.now();
-          const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
-          
-          // Remove entradas expiradas do mapa de proteção
-          Object.keys(mechanicOptimisticRef.current).forEach(k => { 
-            const v = mechanicOptimisticRef.current[k];
-            if (v.expiresAt < now) delete mechanicOptimisticRef.current[k];
-          });
-          
-          // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
-          const serverBikes = d.mechanicsList || [];
-          const serverPatrimonios = new Set(serverBikes.map((b: any) => String(b.patrimonio)));
-          
-          // 1. Processa bikes que vieram do servidor
-          const processedServerBikes = serverBikes
-            .filter((serverBike: any) => {
-              const pat = String(serverBike.patrimonio);
-              const protected_ = mechanicOptimisticRef.current[pat];
-              if (protected_ && protected_.expiresAt > now) {
-                return validMechanicsStatuses.includes(protected_.status);
-              }
-              return validMechanicsStatuses.includes(serverBike.status);
-            })
-            .map((serverBike: any) => {
-              const pat = String(serverBike.patrimonio);
-              const protected_ = mechanicOptimisticRef.current[pat];
-              if (protected_ && protected_.expiresAt > now) {
-                const protectedFields = { ...protected_ };
-                delete (protectedFields as any).expiresAt;
-                return { ...serverBike, ...protectedFields };
-              }
-              return serverBike;
-            });
-
-          // 2. Adiciona bikes que estão protegidas mas NÃO vieram do servidor (novas inserções)
-          const newlyInsertedBikes = Object.keys(mechanicOptimisticRef.current)
-            .filter(pat => !serverPatrimonios.has(pat))
-            .map(pat => {
-              const protected_ = mechanicOptimisticRef.current[pat];
-              if (protected_.expiresAt > now && validMechanicsStatuses.includes(protected_.status)) {
-                const protectedFields = { ...protected_ };
-                delete (protectedFields as any).expiresAt;
-                return {
-                  patrimonio: pat,
-                  dataEntrada: new Date(),
-                  mecanico: '',
-                  tratativa: 'MANUAL',
-                  manual: true,
-                  ...protectedFields
-                };
-              }
-              return null;
-            })
-            .filter(Boolean) as any[];
-
-          return [...processedServerBikes, ...newlyInsertedBikes];
-        });
+        setSheetsMechanicsList(d.mechanicsList || []);
       }
       if (d.driversSummary) {
         const filteredSummary = d.driversSummary.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
@@ -3273,64 +3294,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         });
       }
       if (d.mechanicsList) {
-        setMechanicsList(() => {
-          const now = Date.now();
-          const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
-          
-          // Remove entradas expiradas do mapa de proteção
-          Object.keys(mechanicOptimisticRef.current).forEach(k => { 
-            const v = mechanicOptimisticRef.current[k];
-            if (v.expiresAt < now) delete mechanicOptimisticRef.current[k];
-          });
-          
-          // Mescla: bikes protegidas mantêm o status local; demais usam o servidor
-          const serverBikes = d.mechanicsList || [];
-          const serverPatrimonios = new Set(serverBikes.map((b: any) => String(b.patrimonio)));
-          
-          // 1. Processa bikes que vieram do servidor
-          const processedServerBikes = serverBikes
-            .filter((serverBike: any) => {
-              const pat = String(serverBike.patrimonio);
-              const protected_ = mechanicOptimisticRef.current[pat];
-              if (protected_ && protected_.expiresAt > now) {
-                return validMechanicsStatuses.includes(protected_.status);
-              }
-              return validMechanicsStatuses.includes(serverBike.status);
-            })
-            .map((serverBike: any) => {
-              const pat = String(serverBike.patrimonio);
-              const protected_ = mechanicOptimisticRef.current[pat];
-              if (protected_ && protected_.expiresAt > now) {
-                const protectedFields = { ...protected_ };
-                delete (protectedFields as any).expiresAt;
-                return { ...serverBike, ...protectedFields };
-              }
-              return serverBike;
-            });
-
-          // 2. Adiciona bikes que estão protegidas mas NÃO vieram do servidor (novas inserções)
-          const newlyInsertedBikes = Object.keys(mechanicOptimisticRef.current)
-            .filter(pat => !serverPatrimonios.has(pat))
-            .map(pat => {
-              const protected_ = mechanicOptimisticRef.current[pat];
-              if (protected_.expiresAt > now && validMechanicsStatuses.includes(protected_.status)) {
-                const protectedFields = { ...protected_ };
-                delete (protectedFields as any).expiresAt;
-                return {
-                  patrimonio: pat,
-                  dataEntrada: new Date(),
-                  mecanico: '',
-                  tratativa: 'MANUAL',
-                  manual: true,
-                  ...protectedFields
-                };
-              }
-              return null;
-            })
-            .filter(Boolean) as any[];
-
-          return [...processedServerBikes, ...newlyInsertedBikes];
-        });
+        setSheetsMechanicsList(d.mechanicsList || []);
       }
       if (d.driversSummary) {
         const filteredSummary = d.driversSummary.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
@@ -4076,16 +4040,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       lastError: null,
                     } : null);
                     // Atualiza lista local — mantém na Reserva mas sem carretinha
-                    setMechanicsList(prev => prev.map(b =>
-                      b.patrimonio === patrimonio
-                        ? { ...b, status: 'Reserva', carretinha: null }
-                        : b
-                    ));
-                    // Backend
+                    protectMechanicBike(patrimonio, { status: 'Reserva', carretinha: null });
+                    
                     try {
-                      await apiCall({ action: 'removeFromTrailer', bikeNumber: patrimonio }, 1, false);
-                    } catch (e: any) {
-                      console.warn('[removeFromTrailer]', e.message);
+                      await updateDoc(doc(db, 'mechanics_flow', patrimonio), {
+                        carretinha: null,
+                        status: 'Reserva'
+                      });
+                    } catch (e) {
+                      console.warn('[Firebase] removeFromTrailer failed:', e);
                     }
                   }}
                   className="py-3 bg-red-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-red-200 hover:bg-red-700 active:scale-95 transition-all"
@@ -4852,14 +4815,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                   <button onClick={async () => {
                                     const mechanicName = bike.mecanico || driverName;
                                     protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
-                                    setMechanicsList(prev => prev.map(b =>
-                                      b.patrimonio === bike.patrimonio ? { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null } : b
-                                    ));
                                     setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
                                     try {
-                                      await apiCall({ action: 'removeFromTrailer', bikeNumber: bike.patrimonio, targetStatus: 'Em Manutenção' }, 1, false);
+                                      await updateDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
+                                        status: 'Em Manutenção',
+                                        carretinha: null,
+                                        dataEntrada: serverTimestamp()
+                                      });
                                     } catch (e) {
-                                      console.warn('[Backend] removeFromTrailer failed:', e);
+                                      console.warn('[Firebase] removeFromTrailer failed:', e);
                                     }
                                   }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95">
                                     <XIcon className="w-3 h-3"/>
@@ -4867,14 +4831,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 ) : (
                                   <button onClick={async () => {
                                     const mechanicName = bike.mecanico || driverName;
-                                    // Para bikes Sem Carretinha, usamos deleteMechanicsBike que agora move para Manutenção se estiver na Reserva
                                     protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
-                                    setMechanicsList(prev => prev.map(b =>
-                                      b.patrimonio === bike.patrimonio ? { ...b, status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null } : b
-                                    ));
+                                    
+                                    try {
+                                      await updateDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
+                                        status: 'Em Manutenção',
+                                        carretinha: null,
+                                        dataEntrada: serverTimestamp()
+                                      });
+                                    } catch (e) {
+                                      console.warn('[Firebase] deleteMechanicsBike (move to maintenance) failed:', e);
+                                    }
+
                                     setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
-                                    await apiCall({ action: 'deleteMechanicsBike', bikeNumber: bike.patrimonio }, 1, false);
-                                    refreshAll();
                                   }} className="p-0.5 bg-orange-100 text-orange-600 rounded hover:bg-orange-200 active:scale-95" title="Voltar para Manutenção">
                                     <XIcon className="w-3 h-3"/>
                                   </button>
