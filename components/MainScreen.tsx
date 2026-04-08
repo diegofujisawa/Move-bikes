@@ -3023,6 +3023,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     try {
       const r = await apiGetCall('getAlerts');
       if (r.success) {
+        console.log(`Alertas carregados: ${r.data?.length || 0} itens (v${r.version || '?'})`, r.info || '');
         const mapped = (r.data || []).map((a: any) => ({
           ...a,
           patrimonio: a.patrimonio || a.id || a.bikeNumber
