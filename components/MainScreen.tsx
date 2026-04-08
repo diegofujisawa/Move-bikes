@@ -325,6 +325,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [bikeSearchResult, setBikeSearchResult] = useState<any[]>([]);
   const [isBikeSearchLoading, setIsBikeSearchLoading] = useState(false);
   const [alerts, setAlerts] = useState<any[]>([]);
+  const [alertsVersion, setAlertsVersion] = useState<string>('');
   const [isAlertsLoading, setIsAlertsLoading] = useState(false);
   const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
   const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
@@ -3024,6 +3025,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const r = await apiGetCall('getAlerts');
       if (r.success) {
         console.log(`Alertas carregados: ${r.data?.length || 0} itens (v${r.version || '?'})`, r.info || '');
+        setAlertsVersion(r.version || '');
         const mapped = (r.data || []).map((a: any) => ({
           ...a,
           patrimonio: a.patrimonio || a.id || a.bikeNumber
@@ -3212,6 +3214,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       if (isAdm) {
         if (d.alerts) {
+          setAlertsVersion(d.alertsVersion || '');
           setAlerts((d.alerts || []).map((a: any) => ({
             ...a,
             patrimonio: a.patrimonio || a.id || a.bikeNumber
@@ -5492,7 +5495,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
                 {/* Quadrante 2: Alertas */}
                 <div className="w-full flex-shrink-0 p-3">
-                  <h2 className="text-base font-bold text-gray-700 flex items-center gap-2 mb-4"><AlertIcon className="w-4 h-4 text-red-600"/>Bikes em Alerta</h2>
+                  <h2 className="text-base font-bold text-gray-700 flex items-center gap-2 mb-4">
+                    <AlertIcon className="w-4 h-4 text-red-600"/>
+                    Bikes em Alerta
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); fetchAlerts(); }}
+                      disabled={isAlertsLoading}
+                      className="p-1 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50"
+                      title="Atualizar Alertas"
+                    >
+                      <svg viewBox="0 0 24 24" className={`w-3 h-3 ${isAlertsLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.85.83 6.72 2.24L21 8"/>
+                        <path d="M21 3v5h-5"/>
+                      </svg>
+                    </button>
+                  </h2>
                   <div className="bg-white rounded-lg border shadow-sm overflow-hidden">
                     <table className="w-full text-left border-collapse">
                       <thead><tr className="bg-gray-100 border-b">
@@ -5537,6 +5554,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           <tr><td colSpan={5} className="p-4 text-center text-gray-400 text-xs italic">{isAlertsLoading ? 'Buscando alertas...' : 'Nenhuma bike em alerta no momento.'}</td></tr>
                         )}
                       </tbody>
+                      {alertsVersion && (
+                        <tfoot>
+                          <tr className="bg-gray-50 border-t">
+                            <td colSpan={5} className="p-1 text-[8px] text-gray-400 text-right italic pr-2">
+                              Backend: {alertsVersion}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      )}
                     </table>
                   </div>
                 </div>

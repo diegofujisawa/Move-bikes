@@ -610,6 +610,7 @@ function handleSync(request) {
         console.error('Erro em getAlerts durante sync:', alertsResult.error);
       }
       response.data.alerts = alertsResult.data || [];
+      response.data.alertsVersion = alertsResult.version || '';
       
       const vandalizedResult = getVandalized();
       if (!vandalizedResult.success) {
@@ -1727,22 +1728,19 @@ function resolveAlert(patrimonio, motorista) {
 
 function getAlerts() {
   const cache = CacheService.getScriptCache();
-  const cacheKey = 'alerts_data_v8';
+  const cacheKey = 'alerts_data_v9';
   const cached = cache.get(cacheKey);
   if (cached) { try { return { success: true, data: JSON.parse(cached), cached: true }; } catch (e) {} }
 
+  const startTime = Date.now();
   try {
     const ss = getSpreadsheet();
-    const sheets = ss.getSheets();
+    // Busca direta por nome é muito mais rápida que getSheets()
+    let alertsSheet = ss.getSheetByName('Alertas') || ss.getSheetByName('Alerta') || ss.getSheetByName(ALERTS_SHEET_NAME);
     
-    // Busca flexível pela aba de alertas
-    let alertsSheet = sheets.find(s => {
-      const n = s.getName().toLowerCase().trim();
-      return n === 'alertas' || n === 'alerta' || n === ALERTS_SHEET_NAME.toLowerCase().trim();
-    });
-
     if (!alertsSheet) {
-      return { success: true, data: [], info: 'Aba de Alertas não encontrada na planilha.' };
+      // Se não existe, cria para evitar erros futuros
+      alertsSheet = getOrCreateSheet(ALERTS_SHEET_NAME, ['Patrimônio', 'Check 1', 'Check 2', 'Check 3', 'Situação', 'Encontrada Por', 'Data Encontrada']);
     }
     
     let lastRowAlerts = alertsSheet.getLastRow();
@@ -1751,7 +1749,7 @@ function getAlerts() {
       alertsData = alertsSheet.getRange(2, 1, lastRowAlerts - 1, 7).getValues();
     }
 
-    // 2. Tentar varredura no Relatório (de forma isolada para não quebrar o retorno principal)
+    // Varredura no Relatório (com limite de tempo para não travar a resposta)
     try {
       const confirmedAlerts = {};
       alertsData.forEach(row => {
@@ -1766,19 +1764,21 @@ function getAlerts() {
         }
       });
 
-      let reportSheet = sheets.find(s => {
-        const n = s.getName().toLowerCase().trim();
-        return n === 'relatorio' || n === 'relatório' || n === REPORT_SHEET_NAME.toLowerCase().trim();
-      });
-
+      let reportSheet = ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório') || ss.getSheetByName(REPORT_SHEET_NAME);
       if (reportSheet) {
         const lastRowReport = reportSheet.getLastRow();
         if (lastRowReport > 1) {
-          const numRows = Math.min(lastRowReport - 1, 10000); // Limite de 10k linhas para segurança
-          const reportData = reportSheet.getRange(Math.max(2, lastRowReport - 10000 + 1), 1, numRows, 3).getValues();
+          const numRows = Math.min(lastRowReport - 1, 5000); // Reduzido para 5k para maior velocidade
+          const reportData = reportSheet.getRange(Math.max(2, lastRowReport - 5000 + 1), 1, numRows, 3).getValues();
           const bikeHistory = {};
 
           for (let i = 0; i < reportData.length; i++) {
+            // Limite de 15 segundos para a varredura total
+            if (Date.now() - startTime > 15000) {
+              console.warn('Varredura de alertas interrompida por timeout parcial');
+              break;
+            }
+            
             const row = reportData[i];
             const tsRaw = row[0];
             const pat = String(row[1] || '').trim();
@@ -1861,7 +1861,6 @@ function getAlerts() {
       console.error('Erro na varredura do relatório:', scanError);
     }
 
-    // 3. Mapear e retornar o que temos na alertsData
     const alerts = alertsData.map((row, idx) => {
       const sit = String(row[4] || '').trim().toLowerCase();
       if (sit === 'pendente' || sit === 'localizada' || sit === STATUS.PENDENTE.toLowerCase() || sit === STATUS.LOCALIZADA.toLowerCase()) {
@@ -1878,7 +1877,7 @@ function getAlerts() {
     }).filter(Boolean);
 
     try { cache.put(cacheKey, JSON.stringify(alerts), 60); } catch (e) {}
-    return { success: true, data: alerts, version: 'v8', count: alerts.length };
+    return { success: true, data: alerts, version: 'v9', count: alerts.length };
   } catch (e) {
     console.error('Erro em getAlerts:', e);
     return { success: false, error: 'Erro ao processar alertas: ' + e.message };
