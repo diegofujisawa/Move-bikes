@@ -20,7 +20,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.2-alerts-fix';
+const BACKEND_VERSION = '85.3-resilience-fix';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -606,11 +606,13 @@ function handleSync(request) {
 
     if (isAdm) {
       const alertsResult = getAlerts();
-      if (!alertsResult.success) {
+      if (alertsResult.success) {
+        response.data.alerts = alertsResult.data || [];
+        response.data.alertsVersion = alertsResult.version || '';
+        console.log('Sync alerts: ' + (response.data.alerts.length) + ' itens');
+      } else {
         console.error('Erro em getAlerts durante sync:', alertsResult.error);
       }
-      response.data.alerts = alertsResult.data || [];
-      response.data.alertsVersion = alertsResult.version || '';
       
       const vandalizedResult = getVandalized();
       if (!vandalizedResult.success) {
@@ -1735,24 +1737,31 @@ function resolveAlert(patrimonio, motorista) {
 
 function getAlerts(forceScan = false) {
   const cache = CacheService.getScriptCache();
-  const cacheKey = 'alerts_data_v11';
+  const cacheKey = 'alerts_data_v13';
   const cached = cache.get(cacheKey);
   
-  // Se não for forceScan, tenta cache
   if (!forceScan && cached) { 
-    try { return { success: true, data: JSON.parse(cached), cached: true }; } catch (e) {} 
+    try { 
+      const data = JSON.parse(cached);
+      if (Array.isArray(data)) {
+        console.log(`getAlerts: Retornando ${data.length} itens do cache (v13)`);
+        return { success: true, data: data, cached: true, version: 'v13' }; 
+      }
+    } catch (e) {} 
   }
 
   const startTime = Date.now();
   try {
     const ss = getSpreadsheet();
-    const sheets = ss.getSheets();
-    
-    // Busca robusta pela aba de alertas
-    let alertsSheet = sheets.find(s => {
-      const n = s.getName().toLowerCase().trim();
-      return n === 'alertas' || n === 'alerta' || n === ALERTS_SHEET_NAME.toLowerCase().trim();
-    });
+    // Busca ultra-robusta
+    let alertsSheet = ss.getSheetByName(ALERTS_SHEET_NAME) || ss.getSheetByName('Alertas') || ss.getSheetByName('Alerta');
+    if (!alertsSheet) {
+      const sheets = ss.getSheets();
+      alertsSheet = sheets.find(s => {
+        const n = s.getName().toLowerCase().trim();
+        return n === 'alertas' || n === 'alerta' || n === ALERTS_SHEET_NAME.toLowerCase().trim();
+      });
+    }
     
     if (!alertsSheet) {
       alertsSheet = getOrCreateSheet(ALERTS_SHEET_NAME, ['Patrimônio', 'Check 1', 'Check 2', 'Check 3', 'Situação', 'Encontrada Por', 'Data Encontrada']);
@@ -1765,8 +1774,15 @@ function getAlerts(forceScan = false) {
     }
 
     // Se a planilha estiver vazia OU for solicitado forceScan, fazemos a varredura no Relatório
-    if (alertsData.length === 0 || forceScan) {
-      console.log('Iniciando varredura no Relatório (forceScan=' + forceScan + ')');
+    // Consideramos vazia se não houver nenhuma linha com status Pendente ou Localizada
+    const hasActiveAlerts = alertsData.some(row => {
+      const sit = String(row[4] || '').trim().toLowerCase();
+      return sit === 'pendente' || sit === 'localizada' || sit === STATUS.PENDENTE.toLowerCase() || sit === STATUS.LOCALIZADA.toLowerCase();
+    });
+    console.log(`getAlerts: hasActiveAlerts=${hasActiveAlerts}, forceScan=${forceScan}`);
+
+    if (!hasActiveAlerts || forceScan) {
+      console.log('Iniciando varredura no Relatório (forceScan=' + forceScan + ', hasActive=' + hasActiveAlerts + ')');
       try {
         const confirmedAlerts = {};
         alertsData.forEach(row => {
@@ -1781,20 +1797,19 @@ function getAlerts(forceScan = false) {
           }
         });
 
-        let reportSheet = sheets.find(s => {
-          const n = s.getName().toLowerCase().trim();
-          return n === 'relatorio' || n === 'relatório' || n === REPORT_SHEET_NAME.toLowerCase().trim();
-        });
-
+        const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório');
         if (reportSheet) {
           const lastRowReport = reportSheet.getLastRow();
           if (lastRowReport > 1) {
-            const numRows = Math.min(lastRowReport - 1, 10000); // 10k para varredura de recuperação
-            const reportData = reportSheet.getRange(Math.max(2, lastRowReport - 10000 + 1), 1, numRows, 3).getValues();
+            const lastRowReport = reportSheet.getLastRow();
+            const numRows = Math.min(lastRowReport - 1, 20000);
+            const startRow = Math.max(2, lastRowReport - 20000 + 1);
+            console.log(`Scan Relatório: lastRow=${lastRowReport}, numRows=${numRows}, startRow=${startRow}`);
+            const reportData = reportSheet.getRange(startRow, 1, numRows, 3).getValues();
             const bikeHistory = {};
 
             for (let i = 0; i < reportData.length; i++) {
-              if (Date.now() - startTime > 25000) break; // Timeout maior para forceScan
+              if (Date.now() - startTime > 25000) break;
               
               const row = reportData[i];
               const tsRaw = row[0];
@@ -1891,8 +1906,9 @@ function getAlerts(forceScan = false) {
       return null;
     }).filter(Boolean);
 
-    try { cache.put(cacheKey, JSON.stringify(alerts), 60); } catch (e) {}
-    return { success: true, data: alerts, version: 'v11', count: alerts.length };
+    try { cache.put(cacheKey, JSON.stringify(alerts), 300); } catch (e) {} // 5 min cache
+    console.log(`getAlerts finalizado (v13): ${alerts.length} alertas encontrados.`);
+    return { success: true, data: alerts, version: 'v13', count: alerts.length };
   } catch (e) {
     console.error('Erro em getAlerts:', e);
     return { success: false, error: 'Erro ao processar alertas: ' + e.message };
@@ -1969,7 +1985,7 @@ function updateAlertFromReport(patrimonio, status, timestamp) {
     }
     
     // Invalida cache de alertas
-    CacheService.getScriptCache().remove('alerts_data_v10');
+    CacheService.getScriptCache().remove('alerts_data_v13');
   } catch (e) {
     console.error('Erro em updateAlertFromReport:', e);
   }
@@ -1994,7 +2010,7 @@ function confirmBikeFound(alertId, driverName) {
       newRow[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = 'Bike recuperada via sistema de alertas';
       reportSheet.appendRow(newRow);
     }
-    CacheService.getScriptCache().remove('alerts_data_v10');
+    CacheService.getScriptCache().remove('alerts_data_v13');
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };

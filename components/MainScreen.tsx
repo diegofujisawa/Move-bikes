@@ -3214,6 +3214,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       if (isAdm) {
         if (d.alerts) {
+          console.log(`Sync Alertas: ${d.alerts.length} itens (v${d.alertsVersion})`);
           setAlertsVersion(d.alertsVersion || '');
           setAlerts((d.alerts || []).map((a: any) => ({
             ...a,
@@ -3595,7 +3596,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (Object.keys(dists).length > 0) setRouteDistances(prev => ({ ...prev, ...dists }));
   }, [currentDriverLocation, routeBikes, routeBikesDetails]);
 
-  // GPS — máxima persistência, mesmo em background
+  useEffect(() => {
+    if (isAdm) {
+      console.log('[Init] Admin logado, buscando alertas...');
+      fetchAlerts();
+    }
+  }, [isAdm]);
+
   useEffect(() => {
     if (category.toUpperCase() !== 'MOTORISTA') return;
     if (!navigator.geolocation) { setGpsError('Seu navegador não suporta geolocalização.'); return; }
