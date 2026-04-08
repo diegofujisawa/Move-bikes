@@ -5501,7 +5501,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 </div>
 
                 {/* Quadrante 2: Alertas */}
-                <div className="w-full flex-shrink-0 p-3">
+                <div className="w-full flex-shrink-0 p-1.5 sm:p-3">
                   <h2 className="text-base font-bold text-gray-700 flex items-center gap-2 mb-4">
                     <AlertIcon className="w-4 h-4 text-red-600"/>
                     Bikes em Alerta
@@ -5517,17 +5517,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       </svg>
                     </button>
                   </h2>
-                  <div className="bg-white rounded-lg border shadow-sm overflow-hidden">
+                  <div className="bg-white rounded-lg border shadow-sm overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                       <thead><tr className="bg-gray-100 border-b">
-                        {['Patrimônio','Check 1','Check 2','Check 3','Ação'].map(h => (
-                          <th key={h} className="p-2 text-[10px] font-black text-gray-600 uppercase text-center first:text-left">{h}</th>
+                        {['Patrim.','Check 1','Check 2','Check 3','Ação'].map((h, idx) => (
+                          <th key={h} className={`p-1 text-[9px] font-black text-gray-600 uppercase text-center ${idx === 0 ? 'text-left w-[1%]' : ''}`}>{h}</th>
                         ))}
                       </tr></thead>
                       <tbody>
                         {alerts.length > 0 ? alerts.map((alert, i) => (
                           <tr key={`alert-${alert.id}-${i}`} className="border-b hover:bg-gray-50">
-                            <td className="p-2 font-mono text-xs font-bold text-gray-700">{alert.patrimonio || alert.id}</td>
+                            <td className="p-1 font-mono text-[10px] font-bold text-gray-700 whitespace-nowrap w-[1%]">{alert.patrimonio || alert.id}</td>
                             {['check1','check2','check3'].map(c => {
                               const val = alert[c];
                               let displayVal = '-';
@@ -5535,7 +5535,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 try {
                                   const d = new Date(val);
                                   if (!isNaN(d.getTime())) {
-                                    displayVal = d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+                                    const day = String(d.getDate()).padStart(2, '0');
+                                    const month = String(d.getMonth() + 1).padStart(2, '0');
+                                    const hours = String(d.getHours()).padStart(2, '0');
+                                    const minutes = String(d.getMinutes()).padStart(2, '0');
+                                    displayVal = `${day}/${month} ${hours}:${minutes}`;
                                   } else {
                                     displayVal = val.toString();
                                   }
@@ -5544,17 +5548,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 }
                               }
                               return (
-                                <td key={c} className="p-2 text-center text-[10px] text-gray-600 whitespace-nowrap">
+                                <td key={c} className="p-1 text-center text-[9px] text-gray-600 whitespace-nowrap">
                                   {displayVal}
                                 </td>
                               );
                             })}
-                            <td className="p-2 text-center">
+                            <td className="p-1 text-center">
                               {alert.situacao === 'Localizada'
-                                ? <button onClick={() => handleConfirmFound(alert.id)} disabled={isLoading} className="px-2 py-1 bg-green-600 text-white text-[10px] font-bold rounded hover:bg-green-700 disabled:bg-gray-400">{isLoading ? '...' : 'Confirmar'}</button>
+                                ? <button onClick={() => handleConfirmFound(alert.id)} disabled={isLoading} className="px-1 py-0.5 bg-green-600 text-white text-[8px] font-bold rounded hover:bg-green-700 disabled:bg-gray-400 leading-none">{isLoading ? '...' : 'Confirmar'}</button>
                                 : (alert.check1 && alert.check2 && alert.check3)
-                                  ? <span className="text-[10px] text-red-600 font-black uppercase">Boletim</span>
-                                  : <span className="text-[10px] text-gray-400 italic">Pendente</span>}
+                                  ? <span className="text-[9px] text-red-600 font-black uppercase">Boletim</span>
+                                  : <span className="text-[9px] text-gray-400 italic">Pendente</span>}
                             </td>
                           </tr>
                         )) : (
@@ -5575,24 +5579,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 </div>
 
                 {/* Quadrante 3: Vandalizadas */}
-                <div className="w-full flex-shrink-0 p-3">
+                <div className="w-full flex-shrink-0 p-1.5 sm:p-3">
                   <h2 className="text-base font-bold text-gray-700 flex items-center gap-2 mb-4"><AlertTriangleIcon className="w-4 h-4 text-orange-600"/>Bikes Vandalizadas</h2>
                   <div className="bg-white rounded-lg border shadow-sm overflow-x-auto">
-                    <table className="w-full text-left border-collapse min-w-[500px]">
+                    <table className="w-full text-left border-collapse">
                       <thead><tr className="bg-gray-100 border-b">
-                        {['Patrimônio','Data','Defeito','Local','Ação'].map(h => (
-                          <th key={h} className="p-2 text-[10px] font-black text-gray-600 uppercase">{h}</th>
+                        {['Patrim.','Data','Defeito','Local','Ação'].map(h => (
+                          <th key={h} className="p-1 text-[9px] font-black text-gray-600 uppercase">{h}</th>
                         ))}
                       </tr></thead>
                       <tbody>
                         {vandalizedBikes.length > 0 ? vandalizedBikes.map((v, i) => (
                           <tr key={`vand-${v.id}-${i}`} className="border-b hover:bg-gray-50">
-                            <td className="p-2 font-mono text-xs font-bold text-gray-700">{v.patrimonio}</td>
-                            <td className="p-2 text-[10px] text-gray-600">{new Date(v.data).toLocaleDateString()}</td>
-                            <td className="p-2 text-[10px] text-gray-600">{v.defeito}</td>
-                            <td className="p-2 text-[10px] text-gray-600">{v.local}</td>
-                            <td className="p-2 text-center">
-                              <button onClick={() => handleConfirmVandalizedFound(v.id)} disabled={isLoading} className="px-2 py-1 bg-orange-600 text-white text-[10px] font-bold rounded hover:bg-orange-700 disabled:bg-gray-400">{isLoading ? '...' : 'Encontrada'}</button>
+                            <td className="p-1 font-mono text-[10px] font-bold text-gray-700">{v.patrimonio}</td>
+                            <td className="p-1 text-[9px] text-gray-600">{new Date(v.data).toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit'})}</td>
+                            <td className="p-1 text-[9px] text-gray-600 truncate max-w-[60px]">{v.defeito}</td>
+                            <td className="p-1 text-[9px] text-gray-600 truncate max-w-[60px]">{v.local}</td>
+                            <td className="p-1 text-center">
+                              <button onClick={() => handleConfirmVandalizedFound(v.id)} disabled={isLoading} className="px-1 py-0.5 bg-orange-600 text-white text-[8px] font-bold rounded hover:bg-orange-700 disabled:bg-gray-400 leading-none">{isLoading ? '...' : 'Encontrada'}</button>
                             </td>
                           </tr>
                         )) : (
