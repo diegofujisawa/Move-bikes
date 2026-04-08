@@ -20,7 +20,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.1-search-fix';
+const BACKEND_VERSION = '85.2-alerts-fix';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -243,7 +243,7 @@ function doGet(e) {
     else if (action === 'getDriverLocations') response = { ...getDriverLocations(), version: BACKEND_VERSION };
     else if (action === 'getStations')   response = { ...getStations(), version: BACKEND_VERSION };
     else if (action === 'getMotoristas') response = { ...getMotoristas(), version: BACKEND_VERSION };
-    else if (action === 'getAlerts')     response = { ...getAlerts(), version: BACKEND_VERSION };
+    else if (action === 'getAlerts')     response = { ...getAlerts(e.parameter.forceScan === 'true'), version: BACKEND_VERSION };
     else if (action === 'getVandalized') response = { ...getVandalized(), version: BACKEND_VERSION };
     else if (action === 'getReporData')  response = { ...getReporData(), version: BACKEND_VERSION };
     else if (action === 'getVehiclePlates') response = { ...getVehiclePlates(), version: BACKEND_VERSION };
@@ -336,7 +336,7 @@ function doPost(e) {
       case 'getBikeStatuses':       response = { ...getBikeStatuses(), version: BACKEND_VERSION }; break;
       case 'getReporData':          response = { ...getReporData(), version: BACKEND_VERSION }; break;
       case 'getChangeStatusData':   response = { ...getChangeStatusData(request.timeRange), version: BACKEND_VERSION }; break;
-      case 'getAlerts':             response = { ...getAlerts(), version: BACKEND_VERSION }; break;
+      case 'getAlerts':             response = { ...getAlerts(request.forceScan === 'true'), version: BACKEND_VERSION }; break;
       case 'confirmBikeFound':      response = { ...confirmBikeFound(request.alertId, request.driverName), version: BACKEND_VERSION }; break;
       case 'getVandalized':         response = { ...getVandalized(), version: BACKEND_VERSION }; break;
       case 'confirmVandalizedFound':response = { ...confirmVandalizedFound(request.alertId, request.driverName), version: BACKEND_VERSION }; break;
@@ -1134,6 +1134,13 @@ function logReport(rowData, kmFinal, plate) {
 
     sheet.appendRow(rowData);
 
+    // Atualização incremental de alertas (Evita varredura pesada no getAlerts)
+    try {
+      updateAlertFromReport(patrimonio, status, rowData[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+    } catch (alertErr) {
+      console.error('Erro ao atualizar alerta incremental:', alertErr);
+    }
+
     // Invalida cache do índice de bikes para esta bike
     if (patrimonio) {
       const cache = CacheService.getScriptCache();
@@ -1726,20 +1733,28 @@ function resolveAlert(patrimonio, motorista) {
   return;
 }
 
-function getAlerts() {
+function getAlerts(forceScan = false) {
   const cache = CacheService.getScriptCache();
-  const cacheKey = 'alerts_data_v9';
+  const cacheKey = 'alerts_data_v11';
   const cached = cache.get(cacheKey);
-  if (cached) { try { return { success: true, data: JSON.parse(cached), cached: true }; } catch (e) {} }
+  
+  // Se não for forceScan, tenta cache
+  if (!forceScan && cached) { 
+    try { return { success: true, data: JSON.parse(cached), cached: true }; } catch (e) {} 
+  }
 
   const startTime = Date.now();
   try {
     const ss = getSpreadsheet();
-    // Busca direta por nome é muito mais rápida que getSheets()
-    let alertsSheet = ss.getSheetByName('Alertas') || ss.getSheetByName('Alerta') || ss.getSheetByName(ALERTS_SHEET_NAME);
+    const sheets = ss.getSheets();
+    
+    // Busca robusta pela aba de alertas
+    let alertsSheet = sheets.find(s => {
+      const n = s.getName().toLowerCase().trim();
+      return n === 'alertas' || n === 'alerta' || n === ALERTS_SHEET_NAME.toLowerCase().trim();
+    });
     
     if (!alertsSheet) {
-      // Se não existe, cria para evitar erros futuros
       alertsSheet = getOrCreateSheet(ALERTS_SHEET_NAME, ['Patrimônio', 'Check 1', 'Check 2', 'Check 3', 'Situação', 'Encontrada Por', 'Data Encontrada']);
     }
     
@@ -1749,116 +1764,116 @@ function getAlerts() {
       alertsData = alertsSheet.getRange(2, 1, lastRowAlerts - 1, 7).getValues();
     }
 
-    // Varredura no Relatório (com limite de tempo para não travar a resposta)
-    try {
-      const confirmedAlerts = {};
-      alertsData.forEach(row => {
-        const pat = String(row[0] || '').trim();
-        const sit = String(row[4] || '').trim().toLowerCase();
-        const dt  = row[6];
-        if ((sit === 'encontrada' || sit === 'recuperada' || sit === STATUS.ENCONTRADA.toLowerCase() || sit === STATUS.RECUPERADA.toLowerCase()) && dt) {
-          const t = dt instanceof Date ? dt.getTime() : new Date(dt).getTime();
-          if (!isNaN(t)) {
-            if (!confirmedAlerts[pat] || t > confirmedAlerts[pat]) confirmedAlerts[pat] = t;
+    // Se a planilha estiver vazia OU for solicitado forceScan, fazemos a varredura no Relatório
+    if (alertsData.length === 0 || forceScan) {
+      console.log('Iniciando varredura no Relatório (forceScan=' + forceScan + ')');
+      try {
+        const confirmedAlerts = {};
+        alertsData.forEach(row => {
+          const pat = String(row[0] || '').trim();
+          const sit = String(row[4] || '').trim().toLowerCase();
+          const dt  = row[6];
+          if ((sit === 'encontrada' || sit === 'recuperada' || sit === STATUS.ENCONTRADA.toLowerCase() || sit === STATUS.RECUPERADA.toLowerCase()) && dt) {
+            const t = dt instanceof Date ? dt.getTime() : new Date(dt).getTime();
+            if (!isNaN(t)) {
+              if (!confirmedAlerts[pat] || t > confirmedAlerts[pat]) confirmedAlerts[pat] = t;
+            }
           }
-        }
-      });
+        });
 
-      let reportSheet = ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório') || ss.getSheetByName(REPORT_SHEET_NAME);
-      if (reportSheet) {
-        const lastRowReport = reportSheet.getLastRow();
-        if (lastRowReport > 1) {
-          const numRows = Math.min(lastRowReport - 1, 5000); // Reduzido para 5k para maior velocidade
-          const reportData = reportSheet.getRange(Math.max(2, lastRowReport - 5000 + 1), 1, numRows, 3).getValues();
-          const bikeHistory = {};
+        let reportSheet = sheets.find(s => {
+          const n = s.getName().toLowerCase().trim();
+          return n === 'relatorio' || n === 'relatório' || n === REPORT_SHEET_NAME.toLowerCase().trim();
+        });
 
-          for (let i = 0; i < reportData.length; i++) {
-            // Limite de 15 segundos para a varredura total
-            if (Date.now() - startTime > 15000) {
-              console.warn('Varredura de alertas interrompida por timeout parcial');
-              break;
-            }
-            
-            const row = reportData[i];
-            const tsRaw = row[0];
-            const pat = String(row[1] || '').trim();
-            const st = String(row[2] || '').trim().toLowerCase();
-            
-            if (!tsRaw || !pat) continue;
-            const ts = parseTimestamp(tsRaw);
-            if (!ts) continue;
-            
-            const tsTime = ts.getTime();
-            if (confirmedAlerts[pat] && confirmedAlerts[pat] >= tsTime) {
-              delete bikeHistory[pat];
-              continue;
-            }
-            
-            const isMissing = st === 'não encontrada' || st === 'nao encontrada';
-            const isFound = st.includes('remanejada') || st.includes('estação') || st.includes('estacao') || st.includes('filial') || st.includes('vandalizada');
-            
-            if (isMissing) {
-              if (!bikeHistory[pat] || bikeHistory[pat].situacao === STATUS.LOCALIZADA) {
-                bikeHistory[pat] = { patrimonio: pat, checks: [ts], situacao: STATUS.PENDENTE };
-              } else if (bikeHistory[pat].situacao === STATUS.PENDENTE) {
-                if (bikeHistory[pat].checks.length < 3) {
-                  bikeHistory[pat].checks.push(ts);
+        if (reportSheet) {
+          const lastRowReport = reportSheet.getLastRow();
+          if (lastRowReport > 1) {
+            const numRows = Math.min(lastRowReport - 1, 10000); // 10k para varredura de recuperação
+            const reportData = reportSheet.getRange(Math.max(2, lastRowReport - 10000 + 1), 1, numRows, 3).getValues();
+            const bikeHistory = {};
+
+            for (let i = 0; i < reportData.length; i++) {
+              if (Date.now() - startTime > 25000) break; // Timeout maior para forceScan
+              
+              const row = reportData[i];
+              const tsRaw = row[0];
+              const pat = String(row[1] || '').trim();
+              const st = String(row[2] || '').trim().toLowerCase();
+              
+              if (!tsRaw || !pat) continue;
+              const ts = parseTimestamp(tsRaw);
+              if (!ts) continue;
+              
+              const tsTime = ts.getTime();
+              if (confirmedAlerts[pat] && confirmedAlerts[pat] >= tsTime) {
+                delete bikeHistory[pat];
+                continue;
+              }
+              
+              const isMissing = st === 'não encontrada' || st === 'nao encontrada';
+              const isFound = st.includes('remanejada') || st.includes('estação') || st.includes('estacao') || st.includes('filial') || st.includes('vandalizada');
+              
+              if (isMissing) {
+                if (!bikeHistory[pat] || bikeHistory[pat].situacao === STATUS.LOCALIZADA) {
+                  bikeHistory[pat] = { patrimonio: pat, checks: [ts], situacao: STATUS.PENDENTE };
+                } else if (bikeHistory[pat].situacao === STATUS.PENDENTE) {
+                  if (bikeHistory[pat].checks.length < 3) {
+                    bikeHistory[pat].checks.push(ts);
+                  }
+                }
+              } else if (isFound) {
+                if (bikeHistory[pat] && bikeHistory[pat].situacao === STATUS.PENDENTE) {
+                  bikeHistory[pat].situacao = STATUS.LOCALIZADA;
                 }
               }
-            } else if (isFound) {
-              if (bikeHistory[pat] && bikeHistory[pat].situacao === STATUS.PENDENTE) {
-                bikeHistory[pat].situacao = STATUS.LOCALIZADA;
-              }
             }
-          }
 
-          const patsInSheet = alertsData.map(r => String(r[0]).trim());
-          let sheetChanged = false;
-          
-          for (let i = 0; i < alertsData.length; i++) {
-            const pat = patsInSheet[i];
-            const sit = String(alertsData[i][4]).trim().toLowerCase();
-            if (sit !== 'encontrada' && sit !== 'recuperada' && sit !== STATUS.ENCONTRADA.toLowerCase() && sit !== STATUS.RECUPERADA.toLowerCase() && bikeHistory[pat]) {
-              const h = bikeHistory[pat];
-              if (String(alertsData[i][4]) !== h.situacao || String(alertsData[i][1]) !== String(h.checks[0] || '')) {
+            const patsInSheet = alertsData.map(r => String(r[0]).trim());
+            let sheetChanged = false;
+            
+            for (let i = 0; i < alertsData.length; i++) {
+              const pat = patsInSheet[i];
+              if (bikeHistory[pat]) {
+                const h = bikeHistory[pat];
                 alertsData[i][1] = h.checks[0] || '';
                 alertsData[i][2] = h.checks[1] || '';
                 alertsData[i][3] = h.checks[2] || '';
                 alertsData[i][4] = h.situacao;
                 sheetChanged = true;
+                delete bikeHistory[pat];
               }
-              delete bikeHistory[pat];
+            }
+            
+            if (sheetChanged && alertsData.length > 0) {
+              alertsSheet.getRange(2, 1, alertsData.length, 7).setValues(alertsData);
+            }
+            
+            const newRows = Object.values(bikeHistory).filter(h => h.checks.length > 0).map(h => {
+              const row = new Array(7).fill('');
+              row[0] = h.patrimonio;
+              row[1] = h.checks[0] || '';
+              row[2] = h.checks[1] || '';
+              row[3] = h.checks[2] || '';
+              row[4] = h.situacao;
+              return row;
+            });
+            
+            if (newRows.length > 0) {
+              alertsSheet.getRange(alertsSheet.getLastRow() + 1, 1, newRows.length, 7).setValues(newRows);
+              sheetChanged = true;
+            }
+            
+            if (sheetChanged) {
+              const finalData = alertsSheet.getDataRange().getValues();
+              finalData.shift();
+              alertsData = finalData;
             }
           }
-          
-          if (sheetChanged && alertsData.length > 0) {
-            alertsSheet.getRange(2, 1, alertsData.length, 7).setValues(alertsData);
-          }
-          
-          const newRows = Object.values(bikeHistory).filter(h => h.checks.length > 0).map(h => {
-            const row = new Array(7).fill('');
-            row[0] = h.patrimonio;
-            row[1] = h.checks[0] || '';
-            row[2] = h.checks[1] || '';
-            row[3] = h.checks[2] || '';
-            row[4] = h.situacao;
-            return row;
-          });
-          
-          if (newRows.length > 0) {
-            alertsSheet.getRange(alertsSheet.getLastRow() + 1, 1, newRows.length, 7).setValues(newRows);
-            sheetChanged = true;
-          }
-          
-          if (sheetChanged) {
-            const finalData = alertsSheet.getDataRange().getValues();
-            finalData.shift();
-            alertsData = finalData;
-          }
         }
+      } catch (scanError) {
+        console.error('Erro na varredura de recuperação:', scanError);
       }
-    } catch (scanError) {
-      console.error('Erro na varredura do relatório:', scanError);
     }
 
     const alerts = alertsData.map((row, idx) => {
@@ -1877,10 +1892,86 @@ function getAlerts() {
     }).filter(Boolean);
 
     try { cache.put(cacheKey, JSON.stringify(alerts), 60); } catch (e) {}
-    return { success: true, data: alerts, version: 'v9', count: alerts.length };
+    return { success: true, data: alerts, version: 'v11', count: alerts.length };
   } catch (e) {
     console.error('Erro em getAlerts:', e);
     return { success: false, error: 'Erro ao processar alertas: ' + e.message };
+  }
+}
+
+/**
+ * Atualiza a aba de Alertas de forma incremental a partir de um novo registro no Relatório.
+ * Chamado pelo logReport para manter a lista de alertas sempre atualizada sem varreduras.
+ */
+function updateAlertFromReport(patrimonio, status, timestamp) {
+  if (!patrimonio || !status) return;
+  
+  const st = status.toString().toLowerCase().trim();
+  const pat = patrimonio.toString().trim();
+  
+  const isMissing = st === 'não encontrada' || st === 'nao encontrada';
+  const isFound = st.includes('remanejada') || st.includes('estação') || st.includes('estacao') || st.includes('filial') || st.includes('vandalizada');
+  
+  if (!isMissing && !isFound) return;
+
+  try {
+    const ss = getSpreadsheet();
+    let alertsSheet = ss.getSheetByName(ALERTS_SHEET_NAME) || ss.getSheetByName('Alertas') || ss.getSheetByName('Alerta');
+    if (!alertsSheet) return;
+
+    const lastRow = alertsSheet.getLastRow();
+    let data = [];
+    if (lastRow > 1) {
+      data = alertsSheet.getRange(2, 1, lastRow - 1, 7).getValues();
+    }
+
+    let foundIdx = -1;
+    for (let i = 0; i < data.length; i++) {
+      if (String(data[i][0]).trim() === pat) {
+        foundIdx = i;
+        break;
+      }
+    }
+
+    const ts = timestamp instanceof Date ? timestamp : new Date(timestamp);
+
+    if (isMissing) {
+      if (foundIdx === -1) {
+        // Nova bike em alerta
+        alertsSheet.appendRow([pat, ts, '', '', STATUS.PENDENTE, '', '']);
+      } else {
+        const rowData = data[foundIdx];
+        const sit = String(rowData[4]).trim().toLowerCase();
+        
+        if (sit === STATUS.LOCALIZADA.toLowerCase()) {
+          // Se estava localizada e sumiu de novo, volta para pendente e reseta checks
+          alertsSheet.getRange(foundIdx + 2, 2).setValue(ts);
+          alertsSheet.getRange(foundIdx + 2, 3, 1, 2).setValues([['', '']]);
+          alertsSheet.getRange(foundIdx + 2, 5).setValue(STATUS.PENDENTE);
+        } else if (sit === STATUS.PENDENTE.toLowerCase() || sit === 'pendente') {
+          // Adiciona Check 2 ou 3
+          if (!rowData[1]) {
+             alertsSheet.getRange(foundIdx + 2, 2).setValue(ts);
+          } else if (!rowData[2]) {
+             alertsSheet.getRange(foundIdx + 2, 3).setValue(ts);
+          } else if (!rowData[3]) {
+             alertsSheet.getRange(foundIdx + 2, 4).setValue(ts);
+          }
+        }
+      }
+    } else if (isFound) {
+      if (foundIdx !== -1) {
+        const sit = String(data[foundIdx][4]).trim().toLowerCase();
+        if (sit === STATUS.PENDENTE.toLowerCase() || sit === 'pendente') {
+          alertsSheet.getRange(foundIdx + 2, 5).setValue(STATUS.LOCALIZADA);
+        }
+      }
+    }
+    
+    // Invalida cache de alertas
+    CacheService.getScriptCache().remove('alerts_data_v10');
+  } catch (e) {
+    console.error('Erro em updateAlertFromReport:', e);
   }
 }
 
@@ -1903,7 +1994,7 @@ function confirmBikeFound(alertId, driverName) {
       newRow[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = 'Bike recuperada via sistema de alertas';
       reportSheet.appendRow(newRow);
     }
-    CacheService.getScriptCache().remove('alerts_data');
+    CacheService.getScriptCache().remove('alerts_data_v10');
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };

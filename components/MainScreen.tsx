@@ -3018,11 +3018,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } catch {} finally { setIsHistoryLoading(false); }
   };
 
-  const fetchAlerts = async () => {
+  const fetchAlerts = async (forceScan = false) => {
     if (!category.includes('ADM')) return;
     setIsAlertsLoading(true);
     try {
-      const r = await apiGetCall('getAlerts');
+      const r = await apiGetCall('getAlerts', forceScan ? { forceScan: 'true' } : {});
       if (r.success) {
         console.log(`Alertas carregados: ${r.data?.length || 0} itens (v${r.version || '?'})`, r.info || '');
         setAlertsVersion(r.version || '');
@@ -5499,7 +5499,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <AlertIcon className="w-4 h-4 text-red-600"/>
                     Bikes em Alerta
                     <button 
-                      onClick={(e) => { e.stopPropagation(); fetchAlerts(); }}
+                      onClick={(e) => { e.stopPropagation(); fetchAlerts(true); }}
                       disabled={isAlertsLoading}
                       className="p-1 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50"
                       title="Atualizar Alertas"
