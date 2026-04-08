@@ -632,6 +632,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
     });
   }, [driverName]);
 
+  // Remove bikes do roteiro se elas entrarem em alerta
+  useEffect(() => {
+    if (alerts.length > 0 && routeBikes.length > 0) {
+      const alertPats = new Set(alerts.map(a => a.patrimonio?.toString().trim()));
+      const filtered = routeBikes.filter(id => !alertPats.has(id.toString().trim()));
+      if (filtered.length !== routeBikes.length) {
+        console.log('[Alerts] Removendo bikes em alerta do roteiro:', routeBikes.length - filtered.length);
+        setRouteBikes(filtered);
+      }
+    }
+  }, [alerts, routeBikes]);
+
   // =================================================================
   // NOTIFICAÇÕES
   // =================================================================
@@ -723,25 +735,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }, err => console.error('Listener force_reload:', err));
 
     // Alertas (ADM)
-    let unsubAlerts = () => {};
     const unsubNotifications = () => {};
-    if (isAdm) {
-      unsubAlerts = onSnapshot(collection(db, 'alerts'), snapshot => {
-        const updated: any[] = [];
-        snapshot.forEach(doc => {
-          const d = doc.data();
-          // Só conta alertas pendentes/não resolvidos
-          const status = (d.status || d.situacao || '').toString().toLowerCase();
-          if (!status || status === 'pending' || status === 'pendente') {
-            updated.push({ id: doc.id, ...d });
-          }
-        });
-        setAlerts(updated);
-        // Não atualiza alertCount aqui — será feito pelo sync do Sheets
-        // para evitar contagem duplicada
-      }, err => console.error('Listener alertas:', err));
-
-    }
+    // Removido listener do Firebase para alertas pois o Sheets é o source of truth para os checks
+    // e o listener estava sobrescrevendo os dados com informações incompletas.
 
     // Listener de timeline_events (para ADM — enriquece a timeline dos motoristas)
     let unsubTimeline = () => {};
@@ -836,7 +832,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       });
     }
 
-    return () => { unsubRequests(); unsubAlerts(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); };
+    return () => { unsubRequests(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); };
   }, [driverName, isAdm, timelineDate]);
 
   // =================================================================
@@ -1335,6 +1331,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
   };
 
   const handleCreateRequest = async (details: { bikeNumber: string; location: string; reason: string; recipient: string }) => {
+    // Impede solicitações para bikes em alerta
+    const alertPats = new Set(alerts.map(a => a.patrimonio?.toString().trim()));
+    if (alertPats.has(details.bikeNumber.trim())) {
+      alert(`Atenção! A bicicleta ${details.bikeNumber} está em ALERTA e não pode receber novas solicitações.`);
+      return;
+    }
+
     setIsLoading(true);
     try {
       const result = await apiCall({ action: 'createRequest', patrimonio: details.bikeNumber, ocorrencia: details.reason, local: details.location, recipient: details.recipient }, 1, true);
@@ -1347,6 +1350,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const handleCreateRoute = async (details: { routeName: string; bikeNumbers: string[]; recipient: string }) => {
     if (!details.bikeNumbers?.length) { alert('Insira ao menos uma bicicleta.'); return; }
+    
+    // Impede envio de bikes em alerta para o roteiro
+    const alertPats = new Set(alerts.map(a => a.patrimonio?.toString().trim()));
+    const blockedBikes = details.bikeNumbers.filter(num => alertPats.has(num.trim()));
+    if (blockedBikes.length > 0) {
+      alert(`Atenção! As seguintes bicicletas estão em ALERTA e não podem ser enviadas para o roteiro:\n\n${blockedBikes.join(', ')}`);
+      return;
+    }
+
     setIsLoading(true);
     try {
       const result = await apiCall({
@@ -1363,6 +1375,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const handleCreateTrailer = async (details: { routeName: string; bikeNumbers: string[]; recipient: string }) => {
     if (!details.bikeNumbers?.length) { alert('Insira ao menos uma bicicleta.'); return; }
+
+    // Impede envio de bikes em alerta para a carretinha
+    const alertPats = new Set(alerts.map(a => a.patrimonio?.toString().trim()));
+    const blockedBikes = details.bikeNumbers.filter(num => alertPats.has(num.trim()));
+    if (blockedBikes.length > 0) {
+      alert(`Atenção! As seguintes bicicletas estão em ALERTA e não podem ser enviadas para a carretinha:\n\n${blockedBikes.join(', ')}`);
+      return;
+    }
+
     setIsLoading(true);
     try {
       const result = await apiCall({
@@ -2117,6 +2138,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
           localFinal: room || null,
           ultimaAtualizacao: serverTimestamp() 
         }, { merge: true });
+
+        // Adiciona à coleção 'vandalized' para visualização do ADM
+        await setDoc(doc(db, 'vandalized', bikePat), {
+          patrimonio: bikePat,
+          data: new Date().toISOString(),
+          defeito: reasons,
+          local: room || 'Mecânica',
+          status: 'pendente',
+          responsavel: driverName,
+          timestamp: serverTimestamp()
+        });
       } catch (e) {
         handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikePat}`);
       }
@@ -2990,8 +3022,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsAlertsLoading(true);
     try {
       const r = await apiGetCall('getAlerts');
-      if (r.success) { setAlerts(r.data); if (r.version) setBackendVersion(r.version); }
-    } catch {} finally { setIsAlertsLoading(false); }
+      if (r.success) {
+        const mapped = (r.data || []).map((a: any) => ({
+          ...a,
+          patrimonio: a.patrimonio || a.id || a.bikeNumber
+        }));
+        setAlerts(mapped);
+        if (r.version) setBackendVersion(r.version);
+      } else {
+        setError('Erro ao buscar alertas: ' + r.error);
+      }
+    } catch (err: any) {
+      setError('Erro de conexão ao buscar alertas: ' + err.message);
+    } finally {
+      setIsAlertsLoading(false);
+    }
   };
 
   const handleConfirmFound = async (alertId: number) => {
@@ -3165,8 +3210,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
 
       if (isAdm) {
-        if (d.alerts) setAlerts(d.alerts);
-        if (d.vandalized) setVandalizedBikes(d.vandalized);
+        if (d.alerts) {
+          setAlerts((d.alerts || []).map((a: any) => ({
+            ...a,
+            patrimonio: a.patrimonio || a.id || a.bikeNumber
+          })));
+        }
+        if (d.vandalized) {
+          setVandalizedBikes((d.vandalized || []).map((v: any) => ({
+            ...v,
+            patrimonio: v.patrimonio || v.id || v.bikeNumber
+          })));
+        }
         if (d.changeStatusData) {
           // changeStatusData is set but not used in UI, keeping it in state if needed for future
           // but removing the unused state for now to satisfy lint
@@ -3366,11 +3421,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
           };
         }));
       }
-      if (d.alerts) setAlerts(d.alerts);
-      if (d.vandalized) setVandalizedBikes(d.vandalized);
-        if (d.changeStatusData) {
-          // changeStatusData is set but not used in UI
-        }
+      if (d.alerts) {
+        setAlerts((d.alerts || []).map((a: any) => ({
+          ...a,
+          patrimonio: a.patrimonio || a.id || a.bikeNumber
+        })));
+      }
+      if (d.vandalized) {
+        setVandalizedBikes((d.vandalized || []).map((v: any) => ({
+          ...v,
+          patrimonio: v.patrimonio || v.id || v.bikeNumber
+        })));
+      }
+      if (d.changeStatusData) {
+        // changeStatusData is set but not used in UI
+      }
     } catch {}
   }, []);
 
@@ -5437,18 +5502,38 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       <tbody>
                         {alerts.length > 0 ? alerts.map((alert, i) => (
                           <tr key={`alert-${alert.id}-${i}`} className="border-b hover:bg-gray-50">
-                            <td className="p-2 font-mono text-xs font-bold text-gray-700">{alert.patrimonio}</td>
-                            {['check1','check2','check3'].map(c => (
-                              <td key={c} className="p-2 text-center"><input type="checkbox" checked={!!alert[c]} readOnly className="w-4 h-4 rounded border-gray-300"/></td>
-                            ))}
+                            <td className="p-2 font-mono text-xs font-bold text-gray-700">{alert.patrimonio || alert.id}</td>
+                            {['check1','check2','check3'].map(c => {
+                              const val = alert[c];
+                              let displayVal = '-';
+                              if (val) {
+                                try {
+                                  const d = new Date(val);
+                                  if (!isNaN(d.getTime())) {
+                                    displayVal = d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+                                  } else {
+                                    displayVal = val.toString();
+                                  }
+                                } catch {
+                                  displayVal = val.toString();
+                                }
+                              }
+                              return (
+                                <td key={c} className="p-2 text-center text-[10px] text-gray-600 whitespace-nowrap">
+                                  {displayVal}
+                                </td>
+                              );
+                            })}
                             <td className="p-2 text-center">
                               {alert.situacao === 'Localizada'
                                 ? <button onClick={() => handleConfirmFound(alert.id)} disabled={isLoading} className="px-2 py-1 bg-green-600 text-white text-[10px] font-bold rounded hover:bg-green-700 disabled:bg-gray-400">{isLoading ? '...' : 'Confirmar'}</button>
-                                : <span className="text-[10px] text-gray-400 italic">Pendente</span>}
+                                : (alert.check1 && alert.check2 && alert.check3)
+                                  ? <span className="text-[10px] text-red-600 font-black uppercase">Boletim</span>
+                                  : <span className="text-[10px] text-gray-400 italic">Pendente</span>}
                             </td>
                           </tr>
                         )) : (
-                          <tr><td colSpan={5} className="p-4 text-center text-gray-400 text-xs italic">{isAlertsLoading ? 'Buscando...' : 'Nenhuma bike em alerta.'}</td></tr>
+                          <tr><td colSpan={5} className="p-4 text-center text-gray-400 text-xs italic">{isAlertsLoading ? 'Buscando alertas...' : 'Nenhuma bike em alerta no momento.'}</td></tr>
                         )}
                       </tbody>
                     </table>

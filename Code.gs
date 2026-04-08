@@ -26,7 +26,7 @@ const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 // --- CONFIGURAÇÃO GLOBAL ---
 // IMPORTANTE: Defina SPREADSHEET_ID via:
 // Configurações do Projeto > Propriedades do Script > Adicionar propriedade
-// Chave: SPREADSHEET_ID  Valor: 14U5Y6ZU5oeNr5B7hYLMhqvGgU68K4seeILUgTK335kQ
+// Chave: SPREADSHEET_ID  Valor: 14U5Y6ZU5OeNr5B7hYLMHqvGgU68K4seelLUgTK335kQ
 const ACCESS_SHEET_NAME        = 'Acesso';
 const BIKES_SHEET_NAME         = 'Bicicletas';
 const STATIONS_SHEET_NAME      = 'Estacao';
@@ -106,7 +106,7 @@ let _ss = null;
 function getSpreadsheet() {
   if (!_ss) {
     const id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')
-      || '14U5Y6ZU5oeNr5B7hYLMhqvGgU68K4seeILUgTK335kQ'; // fallback temporário
+      || '14U5Y6ZU5OeNr5B7hYLMHqvGgU68K4seelLUgTK335kQ'; // ID atualizado conforme screenshot
     _ss = SpreadsheetApp.openById(id);
   }
   return _ss;
@@ -1722,85 +1722,153 @@ function resolveAlert(patrimonio, motorista) {
 
 function getAlerts() {
   const cache = CacheService.getScriptCache();
-  const cacheKey = 'alerts_data';
+  const cacheKey = 'alerts_data_v5';
   const cached = cache.get(cacheKey);
   if (cached) { try { return { success: true, data: JSON.parse(cached), cached: true }; } catch (e) {} }
 
   try {
-    const alertsSheet = getOrCreateSheet(ALERTS_SHEET_NAME,
-      ['Patrimônio', 'Check 1', 'Check 2', 'Check 3', 'Situação', 'Encontrada Por', 'Data Encontrada']);
-    const reportSheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
-    if (!reportSheet) return { success: true, data: [] };
-
-    const lastRowReport = reportSheet.getLastRow();
-    const rowsToRead = Math.min(lastRowReport - 1, 5000);
-    const reportData = rowsToRead > 0
-      ? reportSheet.getRange(lastRowReport - rowsToRead + 1, 1, rowsToRead, 3).getValues() : [];
-
-    const confirmedAlerts = {};
+    const ss = getSpreadsheet();
+    let alertsSheet = ss.getSheetByName(ALERTS_SHEET_NAME) || ss.getSheetByName('Alerta') || ss.getSheetByName('Alertas');
+    if (!alertsSheet) {
+      alertsSheet = getOrCreateSheet(ALERTS_SHEET_NAME, ['Patrimônio', 'Check 1', 'Check 2', 'Check 3', 'Situação', 'Encontrada Por', 'Data Encontrada']);
+    }
+    
     const lastRowAlerts = alertsSheet.getLastRow();
+    let alertsData = [];
+    const confirmedAlerts = {};
+    
     if (lastRowAlerts > 1) {
-      alertsSheet.getRange(2, 1, lastRowAlerts - 1, COLUMN_INDICES.ALERTS.DATA_ENCONTRADA).getValues()
-        .forEach(row => {
-          const pat = (row[COLUMN_INDICES.ALERTS.PATRIMONIO - 1] || '').toString();
-          const sit = row[COLUMN_INDICES.ALERTS.SITUACAO - 1];
-          const dt  = row[COLUMN_INDICES.ALERTS.DATA_ENCONTRADA - 1];
-          if ((sit === STATUS.ENCONTRADA || sit === STATUS.RECUPERADA) && dt) {
-            const t = new Date(dt).getTime();
+      alertsData = alertsSheet.getRange(2, 1, lastRowAlerts - 1, 7).getValues();
+      alertsData.forEach(row => {
+        const pat = String(row[0] || '').trim();
+        const sit = String(row[4] || '').trim().toLowerCase();
+        const dt  = row[6];
+        if ((sit === STATUS.ENCONTRADA.toLowerCase() || sit === STATUS.RECUPERADA.toLowerCase()) && dt) {
+          const t = dt instanceof Date ? dt.getTime() : new Date(dt).getTime();
+          if (!isNaN(t)) {
             if (!confirmedAlerts[pat] || t > confirmedAlerts[pat]) confirmedAlerts[pat] = t;
           }
-        });
+        }
+      });
     }
 
-    const bikeHistory = {};
-    [...reportData].sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime()).forEach(row => {
-      const ts  = parseTimestamp(row[0]); if (!ts) return;
-      const pat = (row[1] || '').toString();
-      const st  = (row[2] || '').toString().trim().toLowerCase();
-      const isMissing = st === 'não encontrada' || st === 'nao encontrada';
-      if (st === 'não atendida' || st === 'nao atendida') return;
-      if (confirmedAlerts[pat] && confirmedAlerts[pat] >= ts.getTime()) return;
-      if (!bikeHistory[pat]) bikeHistory[pat] = { patrimonio: pat, checks: [], situacao: isMissing ? STATUS.PENDENTE : STATUS.LOCALIZADA };
-      if (isMissing && bikeHistory[pat].checks.length < 3) bikeHistory[pat].checks.push(ts);
-    });
+    let reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatório');
+    if (reportSheet) {
+      const lastRowReport = reportSheet.getLastRow();
+      if (lastRowReport > 1) {
+        // Otimização: ler apenas as 3 primeiras colunas do relatório (Data, Patrimônio, Status)
+        // Processamos apenas as últimas 10.000 linhas para evitar timeout, 
+        // mas o usuário quer "aba inteira". Vamos tentar ler tudo, mas de forma eficiente.
+        const numRows = lastRowReport - 1;
+        const reportData = reportSheet.getRange(2, 1, numRows, 3).getValues();
 
-    const currentAlertsData = alertsSheet.getDataRange().getValues();
-    Object.values(bikeHistory).filter(h => h.checks.length > 0).forEach(alert => {
-      let rowIndex = -1;
-      for (let i = 1; i < currentAlertsData.length; i++) {
-        if (currentAlertsData[i][0].toString() === alert.patrimonio
-            && currentAlertsData[i][4] !== STATUS.ENCONTRADA && currentAlertsData[i][4] !== STATUS.RECUPERADA) {
-          rowIndex = i + 1; break;
+        const bikeHistory = {};
+        // Processamos sequencialmente (assumindo ordem cronológica da planilha)
+        for (let i = 0; i < reportData.length; i++) {
+          const row = reportData[i];
+          const tsRaw = row[0];
+          const pat = String(row[1] || '').trim();
+          const st = String(row[2] || '').trim().toLowerCase();
+          
+          if (!tsRaw || !pat) continue;
+          const ts = parseTimestamp(tsRaw);
+          if (!ts) continue;
+          
+          const tsTime = ts.getTime();
+          
+          // Se já foi confirmada como encontrada APÓS este registro, ignoramos
+          if (confirmedAlerts[pat] && confirmedAlerts[pat] >= tsTime) {
+            delete bikeHistory[pat];
+            continue;
+          }
+          
+          const isMissing = st === 'não encontrada' || st === 'nao encontrada';
+          const isFound = st.includes('remanejada') || st.includes('estação') || st.includes('estacao') || st.includes('filial') || st.includes('vandalizada');
+          
+          if (isMissing) {
+            if (!bikeHistory[pat] || bikeHistory[pat].situacao === STATUS.LOCALIZADA) {
+              bikeHistory[pat] = { patrimonio: pat, checks: [ts], situacao: STATUS.PENDENTE };
+            } else if (bikeHistory[pat].situacao === STATUS.PENDENTE) {
+              if (bikeHistory[pat].checks.length < 3) {
+                bikeHistory[pat].checks.push(ts);
+              }
+            }
+          } else if (isFound) {
+            if (bikeHistory[pat] && bikeHistory[pat].situacao === STATUS.PENDENTE) {
+              bikeHistory[pat].situacao = STATUS.LOCALIZADA;
+            }
+          }
+        }
+
+        // Atualização em lote da alertsSheet
+        const patsInSheet = alertsData.map(r => String(r[0]).trim());
+        let sheetChanged = false;
+        
+        for (let i = 0; i < alertsData.length; i++) {
+          const pat = patsInSheet[i];
+          const sit = String(alertsData[i][4]).trim().toLowerCase();
+          if (sit !== STATUS.ENCONTRADA.toLowerCase() && sit !== STATUS.RECUPERADA.toLowerCase() && bikeHistory[pat]) {
+            const h = bikeHistory[pat];
+            // Só atualiza se houver mudança real
+            if (String(alertsData[i][4]) !== h.situacao || String(alertsData[i][1]) !== String(h.checks[0] || '')) {
+              alertsData[i][1] = h.checks[0] || '';
+              alertsData[i][2] = h.checks[1] || '';
+              alertsData[i][3] = h.checks[2] || '';
+              alertsData[i][4] = h.situacao;
+              sheetChanged = true;
+            }
+            delete bikeHistory[pat];
+          }
+        }
+        
+        if (sheetChanged && alertsData.length > 0) {
+          alertsSheet.getRange(2, 1, alertsData.length, 7).setValues(alertsData);
+        }
+        
+        const newRows = Object.values(bikeHistory).filter(h => h.checks.length > 0).map(h => {
+          const row = new Array(7).fill('');
+          row[0] = h.patrimonio;
+          row[1] = h.checks[0] || '';
+          row[2] = h.checks[1] || '';
+          row[3] = h.checks[2] || '';
+          row[4] = h.situacao;
+          return row;
+        });
+        
+        if (newRows.length > 0) {
+          alertsSheet.getRange(alertsSheet.getLastRow() + 1, 1, newRows.length, 7).setValues(newRows);
+          sheetChanged = true;
+        }
+        
+        // Se mudou algo, relê os dados finais
+        if (sheetChanged) {
+          const finalData = alertsSheet.getDataRange().getValues();
+          finalData.shift();
+          alertsData = finalData;
         }
       }
-      const lastCol = alertsSheet.getLastColumn() || 7;
-      if (rowIndex === -1) {
-        const newRow = new Array(lastCol).fill('');
-        newRow[0] = alert.patrimonio; newRow[1] = alert.checks[0] || '';
-        newRow[2] = alert.checks[1] || ''; newRow[3] = alert.checks[2] || '';
-        newRow[4] = alert.situacao;
-        alertsSheet.appendRow(newRow);
-      } else {
-        alertsSheet.getRange(rowIndex, 2, 1, 4).setValues([[
-          alert.checks[0] || '', alert.checks[1] || '', alert.checks[2] || '', alert.situacao
-        ]]);
-      }
-    });
+    }
 
-    const lastRowFinal = alertsSheet.getLastRow();
-    if (lastRowFinal < 2) return { success: true, data: [] };
-    const finalData = alertsSheet.getRange(2, 1, lastRowFinal - 1, alertsSheet.getLastColumn()).getValues();
-    const alerts = finalData.map((row, idx) => {
-      if (row[4] === STATUS.PENDENTE || row[4] === STATUS.LOCALIZADA) {
-        return { id: idx + 2, patrimonio: row[0], check1: row[1], check2: row[2], check3: row[3], situacao: row[4] };
+    const alerts = alertsData.map((row, idx) => {
+      const sit = String(row[4] || '').trim().toLowerCase();
+      if (sit === STATUS.PENDENTE.toLowerCase() || sit === STATUS.LOCALIZADA.toLowerCase()) {
+        return { 
+          id: idx + 2, 
+          patrimonio: row[0], 
+          check1: row[1], 
+          check2: row[2], 
+          check3: row[3], 
+          situacao: row[4] 
+        };
       }
       return null;
     }).filter(Boolean);
 
-    try { cache.put(cacheKey, JSON.stringify(alerts), 30); } catch (e) {}
-    return { success: true, data: alerts };
+    try { cache.put(cacheKey, JSON.stringify(alerts), 120); } catch (e) {}
+    return { success: true, data: alerts, version: 'v5' };
   } catch (e) {
-    return { success: false, error: 'Erro ao sincronizar alertas: ' + e.message };
+    console.error('Erro em getAlerts:', e);
+    return { success: false, error: 'Erro ao processar varredura de alertas: ' + e.message };
   }
 }
 
@@ -1869,64 +1937,81 @@ function getVandalized() {
   if (cached) { try { return { success: true, data: JSON.parse(cached), cached: true }; } catch (e) {} }
 
   try {
+    const ss = getSpreadsheet();
     const vandalizedSheet = getOrCreateSheet(VANDALIZED_SHEET_NAME,
       ['Patrimônio', 'Data', 'Defeito', 'Local', 'Situação', 'Encontrada Por', 'Data Encontrada']);
-    const reportSheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
-    if (!reportSheet) return { success: true, data: [] };
-
-    const lastRowReport = reportSheet.getLastRow();
-    const rowsToRead = Math.min(lastRowReport - 1, 5000);
-    const reportData = rowsToRead > 0
-      ? reportSheet.getRange(lastRowReport - rowsToRead + 1, 1, rowsToRead, reportSheet.getLastColumn()).getValues() : [];
+    
+    let reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
+    if (!reportSheet) {
+      reportSheet = ss.getSheetByName('Relatório'); // Tenta com acento
+    }
 
     const confirmedVandalized = {};
     const lastRowV = vandalizedSheet.getLastRow();
     if (lastRowV > 1) {
-      vandalizedSheet.getRange(2, 1, lastRowV - 1, COLUMN_INDICES.VANDALIZED.DATA_ENCONTRADA).getValues()
+      vandalizedSheet.getRange(2, 1, lastRowV - 1, Math.max(vandalizedSheet.getLastColumn(), 7)).getValues()
         .forEach(row => {
-          const pat = (row[COLUMN_INDICES.VANDALIZED.PATRIMONIO - 1] || '').toString();
-          const sit = row[COLUMN_INDICES.VANDALIZED.SITUACAO - 1];
+          const pat = (row[COLUMN_INDICES.VANDALIZED.PATRIMONIO - 1] || '').toString().trim();
+          const sit = (row[COLUMN_INDICES.VANDALIZED.SITUACAO - 1] || '').toString().trim().toLowerCase();
           const dt  = row[COLUMN_INDICES.VANDALIZED.DATA_ENCONTRADA - 1];
-          if (sit === STATUS.ENCONTRADA && dt) {
+          if ((sit === STATUS.ENCONTRADA.toLowerCase() || sit === 'encontrada') && dt) {
             const t = new Date(dt).getTime();
             if (!confirmedVandalized[pat] || t > confirmedVandalized[pat]) confirmedVandalized[pat] = t;
           }
         });
     }
 
-    const vandalizedHistory = {};
-    [...reportData].sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime()).forEach(row => {
-      const ts  = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]); if (!ts) return;
-      const pat = (row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString();
-      const st  = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
-      if (st !== 'vandalizada') return;
-      if (confirmedVandalized[pat] && confirmedVandalized[pat] >= ts.getTime()) return;
-      if (!vandalizedHistory[pat]) {
-        vandalizedHistory[pat] = {
-          patrimonio: pat, data: ts,
-          defeito: row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || 'Vandalismo reportado',
-          local: row[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] || 'N/A',
-          situacao: STATUS.PENDENTE
-        };
-      }
-    });
+    if (reportSheet) {
+      const lastRowReport = reportSheet.getLastRow();
+      const rowsToRead = Math.min(lastRowReport - 1, 5000);
+      const reportData = rowsToRead > 0
+        ? reportSheet.getRange(lastRowReport - rowsToRead + 1, 1, rowsToRead, reportSheet.getLastColumn()).getValues() : [];
 
-    const currentVData = vandalizedSheet.getDataRange().getValues();
-    Object.values(vandalizedHistory).forEach(v => {
-      let rowIndex = -1;
-      for (let i = 1; i < currentVData.length; i++) {
-        if (currentVData[i][0].toString() === v.patrimonio && currentVData[i][4] !== STATUS.ENCONTRADA) { rowIndex = i + 1; break; }
-      }
-      if (rowIndex === -1) {
-        const newRow = new Array(vandalizedSheet.getLastColumn() || 7).fill('');
-        newRow[COLUMN_INDICES.VANDALIZED.PATRIMONIO - 1] = v.patrimonio;
-        newRow[COLUMN_INDICES.VANDALIZED.DATA - 1]       = v.data;
-        newRow[COLUMN_INDICES.VANDALIZED.DEFEITO - 1]    = v.defeito;
-        newRow[COLUMN_INDICES.VANDALIZED.LOCAL - 1]      = v.local;
-        newRow[COLUMN_INDICES.VANDALIZED.SITUACAO - 1]   = v.situacao;
-        vandalizedSheet.appendRow(newRow);
-      }
-    });
+      const vandalizedHistory = {};
+      [...reportData].sort((a, b) => {
+        const dateA = a[0] instanceof Date ? a[0] : new Date(a[0]);
+        const dateB = b[0] instanceof Date ? b[0] : new Date(b[0]);
+        return dateB.getTime() - dateA.getTime();
+      }).forEach(row => {
+        const ts  = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]); if (!ts) return;
+        const pat = (row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim();
+        const st  = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
+        if (st !== 'vandalizada') return;
+        if (confirmedVandalized[pat] && confirmedVandalized[pat] >= ts.getTime()) return;
+        if (!vandalizedHistory[pat]) {
+          vandalizedHistory[pat] = {
+            patrimonio: pat, data: ts,
+            defeito: row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || 'Vandalismo reportado',
+            local: row[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] || 'N/A',
+            situacao: STATUS.PENDENTE
+          };
+        }
+      });
+
+      const currentVData = vandalizedSheet.getDataRange().getValues();
+      Object.values(vandalizedHistory).forEach(v => {
+        let rowIndex = -1;
+        for (let i = 1; i < currentVData.length; i++) {
+          const patInSheet = (currentVData[i][0] || '').toString().trim();
+          const sitInSheet = (currentVData[i][4] || '').toString().trim().toLowerCase();
+          if (patInSheet === v.patrimonio && 
+              sitInSheet !== STATUS.ENCONTRADA.toLowerCase() && 
+              sitInSheet !== 'encontrada') {
+            rowIndex = i + 1; 
+            break;
+          }
+        }
+        if (rowIndex === -1) {
+          const newRow = new Array(vandalizedSheet.getLastColumn() || 7).fill('');
+          newRow[COLUMN_INDICES.VANDALIZED.PATRIMONIO - 1] = v.patrimonio;
+          newRow[COLUMN_INDICES.VANDALIZED.DATA - 1]       = v.data;
+          newRow[COLUMN_INDICES.VANDALIZED.DEFEITO - 1]    = v.defeito;
+          newRow[COLUMN_INDICES.VANDALIZED.LOCAL - 1]      = v.local;
+          newRow[COLUMN_INDICES.VANDALIZED.SITUACAO - 1]   = v.situacao;
+          vandalizedSheet.appendRow(newRow);
+        }
+      });
+    }
 
     const lastRowFinal = vandalizedSheet.getLastRow();
     if (lastRowFinal < 2) return { success: true, data: [] };
@@ -3092,8 +3177,8 @@ function getMechanicsList() {
     // Se a bike está na mecânica e o registro é manual ou ativo, damos preferência a ele
     // a menos que haja um registro de saída (estação) posterior à última ação do mecânico.
     if (mechData && (mechData.tsMs >= entry.tsMs || (isMechActive && isReportInitial))) {
-      // Se foi marcada como Remanejada APÓS o último registro do Relatório → suprime
-      if (mechData.status === 'Remanejada') return;
+      // Se foi marcada como Remanejada ou Vandalizada APÓS o último registro do Relatório → suprime
+      if (mechData.status === 'Remanejada' || mechData.status === 'Vandalizada') return;
       
       // Já processada pelo mecânico — usa status da aba, mas mantém motorista/observacao do Relatório
       bikeMap[pat] = {
