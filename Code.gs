@@ -163,17 +163,30 @@ function normalizeCategory(str) {
 function parseTimestamp(raw) {
   if (!raw) return null;
   if (raw instanceof Date) return raw;
-  const s = raw.toString().trim();
-  // Formato BR: DD/MM/YYYY ou DD/MM/YYYY HH:mm:ss
-  if (s.includes('/')) {
-    const parts = s.split(' ');
-    const dateParts = parts[0].split('/');
-    if (dateParts.length === 3) {
-      const iso = `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}`;
-      const d = new Date(iso + (parts[1] ? 'T' + parts[1] : ''));
-      return isNaN(d.getTime()) ? null : d;
-    }
+  
+  // Suporte a números (serial dates do Google Sheets)
+  if (typeof raw === 'number') {
+    // Google Sheets usa dias desde 30/12/1899. 
+    // 25569 é a diferença de dias entre 30/12/1899 e 01/01/1970.
+    const d = new Date((raw - 25569) * 86400 * 1000);
+    return isNaN(d.getTime()) ? null : d;
   }
+
+  const s = raw.toString().trim();
+  
+  // Formato BR: DD/MM/YYYY HH:mm:ss ou DD/MM/YYYY (suporta : ou . como separador de tempo)
+  const brMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2})[:.](\d{1,2})(?:[:.](\d{1,2}))?)?/);
+  if (brMatch) {
+    const day = parseInt(brMatch[1], 10);
+    const month = parseInt(brMatch[2], 10);
+    const year = parseInt(brMatch[3], 10);
+    const hour = parseInt(brMatch[4] || '0', 10);
+    const minute = parseInt(brMatch[5] || '0', 10);
+    const second = parseInt(brMatch[6] || '0', 10);
+    const d = new Date(year, month - 1, day, hour, minute, second);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d;
 }
@@ -3160,7 +3173,7 @@ function getMechanicsList() {
   let reportEntries = {};
   let lastStatusByBike = {};
   const cache = CacheService.getScriptCache();
-  const cacheKey = 'mechanics_report_scan_v2';
+  const cacheKey = 'mechanics_report_scan_v6';
   let cached = cache.get(cacheKey);
   
   if (cached) {
@@ -3172,58 +3185,77 @@ function getMechanicsList() {
   }
 
   if (!cached) {
-    const EXIT_STATUSES = new Set([
+    const EXIT_STATUSES = [
       'estação', 'estacao', 'não encontrada', 'nao encontrada',
       'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno',
-      'Remanejada', 'recuperada', 'encontrada', 'localizada'
-    ]);
+      'remanejada', 'recuperada', 'encontrada', 'localizada'
+    ];
 
     try {
-      const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
-      if (reportSheet && reportSheet.getLastRow() > 1) {
-        const lastRow = reportSheet.getLastRow();
-        const rowsToRead = Math.min(lastRow - 1, 8000);
-        const reportData = reportSheet.getRange(lastRow - rowsToRead + 1, 1, rowsToRead, 5).getValues();
+      const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório') || ss.getSheetByName('relatorio');
+      if (reportSheet) {
+        console.log('getMechanicsList: Usando planilha de relatório: ' + reportSheet.getName());
+        if (reportSheet.getLastRow() > 1) {
+          const lastRow = reportSheet.getLastRow();
+          const rowsToRead = Math.min(lastRow - 1, 10000);
+          const reportData = reportSheet.getRange(lastRow - rowsToRead + 1, 1, rowsToRead, 10).getValues();
 
-        reportData.forEach(row => {
-          const tsMs = toMs(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
-          if (!tsMs || tsMs < CUTOFF_MS) return;
-          const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
-          if (!pat) return;
-          const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
-          if (!status) return;
-          const observacao = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
-          const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
+          reportData.forEach((row, idx) => {
+            const rawTs = row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1];
+            const tsMsBase = toMs(rawTs);
+            if (!tsMsBase || tsMsBase < CUTOFF_MS) return;
+            
+            const tsMs = tsMsBase + (idx / 1000000);
+            
+            const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
+            if (!pat) return;
+            const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
+            if (!status) return;
+            const observacao = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
+            const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
 
-          // Último status geral
-          if (!lastStatusByBike[pat] || tsMs > lastStatusByBike[pat].tsMs) {
-            lastStatusByBike[pat] = { tsMs, status };
-          }
-
-          // Última ocorrência de Recolhida/Vandalizada
-          if (status === 'recolhida' || status === 'vandalizada') {
-            if (!reportEntries[pat] || tsMs > reportEntries[pat].tsMs) {
-              const prev = reportEntries[pat] || {};
-              reportEntries[pat] = { 
-                tsMs, 
-                status, 
-                motorista: motorista || prev.motorista || '', 
-                observacao: observacao || prev.observacao || '' 
-              };
+            // Último status geral
+            if (!lastStatusByBike[pat] || tsMs >= lastStatusByBike[pat].tsMs) {
+              lastStatusByBike[pat] = { tsMs, status };
             }
-          }
-        });
+
+            // Última ocorrência de status inicial (Recolhida, Vandalizada, etc.)
+            // Expandido para capturar variações e também checar o status do sistema (coluna F)
+            const statusSistema = (row[COLUMN_INDICES.REPORTS.STATUS_SISTEMA - 1] || '').toString().trim().toLowerCase();
+            
+            const isInitial = /recolhida|vandalizad|filial|recolher|vandalismo|roubada|recuperada|manuten[çc]ão|oficina/.test(status) || 
+                             /manuten[çc]ão/.test(statusSistema);
+            
+            if (isInitial) {
+              if (!reportEntries[pat] || tsMs >= reportEntries[pat].tsMs) {
+                const prev = reportEntries[pat] || {};
+                reportEntries[pat] = { 
+                  tsMs, 
+                  status, 
+                  motorista: motorista || prev.motorista || '', 
+                  observacao: observacao || prev.observacao || '' 
+                };
+              }
+            }
+          });
+        }
+      } else {
+        console.error('getMechanicsList: Planilha de relatório não encontrada!');
+      }
+        console.log('getMechanicsList: Report scan complete. Found ' + Object.keys(reportEntries).length + ' initial entries.');
 
         // Remove bikes cuja última ocorrência geral é uma saída posterior à última Recolhida
         Object.keys(reportEntries).forEach(pat => {
           const last = lastStatusByBike[pat];
-          if (last && EXIT_STATUSES.has(last.status) && last.tsMs > reportEntries[pat].tsMs) {
+          // Se o último status contém qualquer um dos EXIT_STATUSES e é posterior à recolhida, remove
+          const isExit = EXIT_STATUSES.some(s => last.status.includes(s));
+          if (last && isExit && last.tsMs > reportEntries[pat].tsMs) {
+            console.log('getMechanicsList: Removing ' + pat + ' because last status is exit: ' + last.status);
             delete reportEntries[pat];
           }
         });
         
-        cache.put(cacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 30);
-      }
+        cache.put(cacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 300);
     } catch (e) {
       console.error('getMechanicsList - erro ao ler relatório:', e);
     }
@@ -3288,16 +3320,17 @@ function getMechanicsList() {
     const info = bikeInfoMap[pat] || {};
     
     // SÓ usa o status da Mecânica se ele for MAIS RECENTE que o registro do Relatório
-    // OU se o status da Mecânica for um status ativo e o do Relatório for apenas uma sinalização inicial (recolhida/vandalizada)
+    // OU se o status da Mecânica for um status ativo e o do Relatório for apenas uma sinalização inicial (recolhida/vandalizada/filial)
     // A ÚLTIMA AÇÃO DEVE SER SOBERANA: Se o mecânico mexeu na bike recentemente, o status da aba Mecânica prevalece.
-    const isMechActive = (mechData.status === 'Aguardando Manutenção' || mechData.status === 'Em Manutenção' || mechData.status === 'Reserva' || mechData.status === 'Aguardando Técnica' || mechData.status === 'Em Técnica');
-    const isReportInitial = (entry.status === 'recolhida' || entry.status === 'vandalizada');
+    const isMechActive = mechData && (mechData.status === 'Aguardando Manutenção' || mechData.status === 'Em Manutenção' || mechData.status === 'Reserva' || mechData.status === 'Aguardando Técnica' || mechData.status === 'Em Técnica');
+    const statusLow = entry.status.toLowerCase();
+    const isReportInitial = statusLow.includes('recolhida') || statusLow.includes('vandalizada') || statusLow.includes('filial') || statusLow.includes('recolher') || statusLow.includes('vandalismo') || statusLow.includes('roubada');
 
     // Se a bike está na mecânica e o registro é manual ou ativo, damos preferência a ele
     // a menos que haja um registro de saída (estação) posterior à última ação do mecânico.
     if (mechData && (mechData.tsMs >= entry.tsMs || (isMechActive && isReportInitial))) {
-      // Se foi marcada como Remanejada ou Vandalizada APÓS o último registro do Relatório → suprime
-      if (mechData.status === 'Remanejada' || mechData.status === 'Vandalizada') return;
+      // Se foi marcada como Remanejada APÓS o último registro do Relatório → suprime
+      if (mechData.status === 'Remanejada') return;
       
       // Já processada pelo mecânico — usa status da aba, mas mantém motorista/observacao do Relatório
       bikeMap[pat] = {

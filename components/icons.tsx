@@ -193,3 +193,32 @@ export const HistoryIcon: React.FC<IconProps> = ({ className = "w-6 h-6" }) => (
   </svg>
 );
 
+export const SteeringWheelIcon: React.FC<IconProps> = ({ className = "w-6 h-6" }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+    <path d="M12 10v-8" />
+    <path d="M8 14l-5.5 2.2" />
+    <path d="M16 14l5.5 2.2" />
+  </svg>
+);
+
+export const SirenIcon: React.FC<IconProps> = ({ className = "w-6 h-6" }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M7 18v-6a5 5 0 1 1 10 0v6" />
+    <path d="M5 21a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v1z" />
+    <path d="M21 12h1" />
+    <path d="M18.5 4.5 18 5" />
+    <path d="M2 12h1" />
+    <path d="M12 2v1" />
+    <path d="M4.929 4.929 5.5 5.5" />
+    <path d="M12 12v6" />
+  </svg>
+);
+
+export const ZapIcon: React.FC<IconProps> = ({ className = "w-6 h-6" }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+  </svg>
+);
+

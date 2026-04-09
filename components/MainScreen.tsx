@@ -4,12 +4,13 @@ import {
   LogoutIcon, PlusIcon, PlusPlusIcon, MapIcon, SheetIcon, SearchIcon,
   AlertIcon, CalendarIcon, CarIcon, XIcon, BicycleIcon, MovingIcon,
   UserIcon, AlertTriangleIcon, QrCodeIcon, TrailerIcon, SwitchIcon,
-  RefreshIcon, DatabaseIcon, CheckCircleIcon, DocumentTextIcon, HistoryIcon
+  RefreshIcon, DatabaseIcon, CheckCircleIcon, DocumentTextIcon, HistoryIcon,
+  SteeringWheelIcon, SirenIcon, ZapIcon
 } from './icons';
 import { 
-  Settings, Battery, Lock, Map as MapIconLucide, 
+  Settings, Battery, Lock, Map as LucideMap, 
   WifiOff, AlertCircle, RefreshCw, ChevronUp, ChevronDown, ChevronLeft, 
-  ChevronRight, Circle, Play, Locate, Map, Wrench, Loader2, TrendingUp
+  ChevronRight, Circle, Play, Locate, Wrench, Loader2, TrendingUp
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
@@ -189,12 +190,12 @@ const localDateStr = () => {
 const AdminAlerts: React.FC<{adminName: string, isOpen: boolean, onClose: () => void}> = ({ adminName, isOpen, onClose }) => {
   const [admAlerts, setAdmAlerts] = React.useState<any[]>([]);
   const [admLoading, setAdmLoading] = React.useState(false);
-  const fetchAdmAlerts = async () => {
+  const fetchAdmAlerts = React.useCallback(async () => {
     if (!adminName) return;
     setAdmLoading(true);
     try { const r = await apiCall({ action: 'getAdminAlerts', adminName }); if (r.success) setAdmAlerts(r.alerts || []); }
     catch {} finally { setAdmLoading(false); }
-  };
+  }, [adminName]);
   const clearAdmAlerts = async () => {
     if (!confirm('Confirmar leitura de todos os alertas?')) return;
     setAdmLoading(true);
@@ -203,7 +204,7 @@ const AdminAlerts: React.FC<{adminName: string, isOpen: boolean, onClose: () => 
   };
   React.useEffect(() => {
     if (isOpen) { fetchAdmAlerts(); const t = setInterval(fetchAdmAlerts, 10000); return () => clearInterval(t); }
-  }, [isOpen, adminName]);
+  }, [isOpen, adminName, fetchAdmAlerts]);
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
@@ -319,7 +320,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [timelineDate, setTimelineDate] = useState<string>(localDateStr()); // YYYY-MM-DD
   const [summaryTimeRange, setSummaryTimeRange] = useState<'day' | 'week' | 'month' | '-1' | '-7'>('day');
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
-  const [activeQuadrant, setActiveQuadrant] = useState<'summary' | 'alerts' | 'vandalized' | 'status' | 'mechanics' | 'bike_search' | 'boletim'>('summary');
+  const [activeQuadrant, setActiveQuadrant] = useState<'summary' | 'alerts' | 'vandalized' | 'status' | 'mechanics' | 'technica' | 'bike_search' | 'boletim'>('summary');
   const [bikeSearchTerm, setBikeSearchTerm] = useState('');
   const [bikeSearchLimit, setBikeSearchLimit] = useState<5|10|15>(5);
   const [bikeSearchResult, setBikeSearchResult] = useState<any[]>([]);
@@ -473,29 +474,60 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const mergeMechanicsList = useCallback((serverBikes: any[], fbFlow: any[]) => {
     const now = Date.now();
-    const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
+    const activeStatuses = ['Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
+    const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', ...activeStatuses];
     
-    // 1. Filtra bikes do servidor: apenas "Alterar Status" e "Não encontrada"
-    // E que não estejam no fluxo do Firebase
-    const fbPatrimonios = new Set(fbFlow.map(b => String(b.patrimonio)));
-    
-    const filteredServerBikes = serverBikes.filter(b => {
-      const pat = String(b.patrimonio);
-      const status = b.status;
-      return (status === 'Alterar Status' || status === 'Não encontrada') && !fbPatrimonios.has(pat);
+    const fbMap: Record<string, any> = {};
+    fbFlow.forEach(b => {
+      fbMap[String(b.patrimonio)] = b;
+    });
+    const result: any[] = [];
+
+    // 1. Processa bikes do servidor (Sheets)
+    serverBikes.forEach(sBike => {
+      const pat = String(sBike.patrimonio);
+      const fbBike = fbMap[pat];
+
+      if (!fbBike) {
+        // Não está no Firebase, adiciona se for status válido
+        if (validMechanicsStatuses.includes(sBike.status)) {
+          result.push(sBike);
+        }
+      } else {
+        // Está no Firebase. 
+        // Prioridade 1: Se o status do Firebase for ATIVO, ele prevalece sobre o servidor.
+        if (activeStatuses.includes(fbBike.status)) {
+          result.push({
+            ...fbBike,
+            dataEntrada: fbBike.dataEntrada?.toDate?.() || fbBike.dataEntrada || new Date(),
+          });
+        } 
+        // Prioridade 2: Se o status do Firebase NÃO for ativo (ex: 'Remanejada' ou 'Finalizada')
+        // mas o servidor diz 'Alterar Status' (novo registro no Relatório), o servidor prevalece.
+        else if (sBike.status === 'Alterar Status') {
+          result.push(sBike);
+        }
+        // Caso contrário, se o status do servidor for válido (ex: 'Não encontrada'), mantém ele
+        else if (validMechanicsStatuses.includes(sBike.status)) {
+          result.push(sBike);
+        }
+      }
     });
 
-    // 2. Mapeia bikes do Firebase para o formato esperado
-    const processedFbBikes = fbFlow.map(b => ({
-      ...b,
-      // Garante campos básicos se faltarem
-      dataEntrada: b.dataEntrada?.toDate?.() || b.dataEntrada || new Date(),
-    }));
+    // 2. Adiciona bikes do Firebase que NÃO estão no servidor (ex: inserção manual recente no app)
+    const serverPatrimonios = new Set(serverBikes.map(b => String(b.patrimonio)));
+    fbFlow.forEach(fbBike => {
+      const pat = String(fbBike.patrimonio);
+      if (!serverPatrimonios.has(pat) && activeStatuses.includes(fbBike.status)) {
+        result.push({
+          ...fbBike,
+          dataEntrada: fbBike.dataEntrada?.toDate?.() || fbBike.dataEntrada || new Date(),
+        });
+      }
+    });
 
-    // 3. Aplica proteção otimista
-    const combined = [...filteredServerBikes, ...processedFbBikes];
-    
-    return combined.map(bike => {
+    // 3. Aplica proteção otimista (ações recentes do usuário local)
+    return result.map(bike => {
       const pat = String(bike.patrimonio);
       const protected_ = mechanicOptimisticRef.current[pat];
       if (protected_ && protected_.expiresAt > now) {
@@ -1030,7 +1062,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           date: localDateStr()
         }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
 
-        await persistDriverState(newRoute, newCollected);
+        persistDriverState(newRoute, newCollected);
         setSuccessMessage(`Bicicleta ${bikeNumber} recolhida!`);
 
       } else if (status === 'Não encontrada') {
@@ -1054,7 +1086,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           driverName, bikeNumber, status: 'Não encontrada', timestamp: serverTimestamp(), observation: ''
         }).catch(err => console.warn('[Firebase] reports write:', err.code));
 
-        await persistDriverState(newRoute, newCollected);
+        persistDriverState(newRoute, newCollected);
         apiCall({
           action: 'finalizeRouteBike', driverName, bikeNumber,
           finalStatus: 'Não encontrada', finalObservation: ''
@@ -1103,7 +1135,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         driverName, bikeNumber, status: 'Não atendida', timestamp: serverTimestamp(), observation: ''
       }).catch(e => console.warn('[Firebase] reports write:', e.code));
 
-      await persistDriverState(newRoute, newCollected);
+      persistDriverState(newRoute, newCollected);
       apiCall({
         action: 'finalizeRouteBike', driverName, bikeNumber,
         finalStatus: 'Não atendida', finalObservation: ''
@@ -1174,8 +1206,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
         console.warn('[Firebase] reports write failed:', e);
       }
 
-      // 5. Sheets — aguarda persistência para evitar race condition
-      await persistDriverState(newRoute, newCollected);
+      // 5. Sheets — fire-and-forget para resposta imediata
+      persistDriverState(newRoute, newCollected);
       
       apiCall({
         action: 'finalizeCollectedBike', driverName, bikeNumber,
@@ -1288,7 +1320,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         });
       }
 
-      await persistDriverState(newRoute, newCollected);
+      persistDriverState(newRoute, newCollected);
 
       // Sheets
       apiCall({ action: 'acceptRequest', requestId, driverName }, 1, true)
@@ -4648,38 +4680,38 @@ const MainScreen: React.FC<MainScreenProps> = ({
         {isMecanica && (
           <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-6">
             <button 
-              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Alterar status' ? null : 'Alterar status')}
-              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Alterar status' ? 'bg-purple-600 border-purple-700 text-white' : 'bg-purple-50 border-purple-100 hover:bg-purple-100'}`}
+              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Alterar Status' ? null : 'Alterar Status')}
+              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Alterar Status' ? 'bg-purple-600 border-purple-700 text-white' : 'bg-purple-50 border-purple-100 hover:bg-purple-100'}`}
             >
-              <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Alterar status' ? 'bg-white text-purple-600' : 'bg-purple-600 text-white'}`}>
+              <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Alterar Status' ? 'bg-white text-purple-600' : 'bg-purple-600 text-white'}`}>
                 <PlusPlusIcon className="w-4 h-4" />
               </div>
-              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Alterar status' ? 'text-white' : 'text-purple-800'}`}>Alterar status</span>
-              <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Alterar status' ? 'text-white' : 'text-purple-600'}`}>
+              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Alterar Status' ? 'text-white' : 'text-purple-800'}`}>Alterar Status</span>
+              <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Alterar Status' ? 'text-white' : 'text-purple-600'}`}>
                 {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length}
               </span>
             </button>
             <button 
-              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Aguardando manutenção' ? null : 'Aguardando manutenção')}
-              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Aguardando manutenção' ? 'bg-blue-600 border-blue-700 text-white' : 'bg-blue-50 border-blue-100 hover:bg-blue-100'}`}
+              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Aguardando Manutenção' ? null : 'Aguardando Manutenção')}
+              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Aguardando Manutenção' ? 'bg-blue-600 border-blue-700 text-white' : 'bg-blue-50 border-blue-100 hover:bg-blue-100'}`}
             >
-              <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Aguardando manutenção' ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
+              <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Aguardando Manutenção' ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
                 <CarIcon className="w-4 h-4" />
               </div>
-              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Aguardando manutenção' ? 'text-white' : 'text-blue-800'}`}>Aguardando manutenção</span>
-              <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Aguardando manutenção' ? 'text-white' : 'text-blue-600'}`}>
+              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Aguardando Manutenção' ? 'text-white' : 'text-blue-800'}`}>Aguardando Manutenção</span>
+              <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Aguardando Manutenção' ? 'text-white' : 'text-blue-600'}`}>
                 {mechanicsList.filter(b => b.status === 'Aguardando Manutenção').length}
               </span>
             </button>
             <button 
-              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Manutenção' ? null : 'Manutenção')}
-              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Manutenção' ? 'bg-orange-600 border-orange-700 text-white' : 'bg-orange-50 border-orange-100 hover:bg-orange-100'}`}
+              onClick={() => setActiveMechanicCategory(activeMechanicCategory === 'Em Manutenção' ? null : 'Em Manutenção')}
+              className={`flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 ${activeMechanicCategory === 'Em Manutenção' ? 'bg-orange-600 border-orange-700 text-white' : 'bg-orange-50 border-orange-100 hover:bg-orange-100'}`}
             >
-              <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Manutenção' ? 'bg-white text-orange-600' : 'bg-orange-600 text-white'}`}>
+              <div className={`p-1.5 rounded-full mb-1 ${activeMechanicCategory === 'Em Manutenção' ? 'bg-white text-orange-600' : 'bg-orange-600 text-white'}`}>
                 <BicycleIcon className="w-4 h-4" />
               </div>
-              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Manutenção' ? 'text-white' : 'text-orange-800'}`}>Em manutenção</span>
-              <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Manutenção' ? 'text-white' : 'text-orange-600'}`}>
+              <span className={`text-[8px] font-bold text-center leading-tight h-5 flex items-center ${activeMechanicCategory === 'Em Manutenção' ? 'text-white' : 'text-orange-800'}`}>Em Manutenção</span>
+              <span className={`mt-0.5 text-[10px] font-black ${activeMechanicCategory === 'Em Manutenção' ? 'text-white' : 'text-orange-600'}`}>
                 {mechanicsList.filter(b => b.status === 'Em Manutenção').length}
               </span>
             </button>
@@ -4712,7 +4744,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         {/* MECÂNICA */}
         {isMecanica && activeMechanicCategory && (
           <div className="mt-6 space-y-6">
-            {activeMechanicCategory === 'Alterar status' && (
+            {activeMechanicCategory === 'Alterar Status' && (
               <div id="section-alterar-status" className="p-4 border rounded-lg bg-purple-50 shadow-sm scroll-mt-4">
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-lg font-bold text-purple-800 flex items-center gap-2"><PlusPlusIcon className="w-5 h-5"/>Alterar Status</h2>
@@ -4782,7 +4814,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
             )}
 
-            {activeMechanicCategory === 'Aguardando manutenção' && (
+            {activeMechanicCategory === 'Aguardando Manutenção' && (
               <div id="section-aguardando-manutencao" className="p-4 border rounded-lg bg-blue-50 shadow-sm scroll-mt-4">
                 <h2 className="text-lg font-bold text-blue-800 mb-3 flex items-center gap-2"><CarIcon className="w-5 h-5"/>Aguardando Manutenção</h2>
                 {mechanicsList.filter(b => b.status === 'Aguardando Manutenção').length > 0 ? (
@@ -4811,7 +4843,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
             )}
 
-            {activeMechanicCategory === 'Manutenção' && (
+            {activeMechanicCategory === 'Em Manutenção' && (
               <div id="section-manutencao" className="p-4 border rounded-lg bg-orange-50 shadow-sm scroll-mt-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
                   <h2 className="text-lg font-bold text-orange-800 flex items-center gap-2"><BicycleIcon className="w-5 h-5"/>Mecânica - Em Manutenção</h2>
@@ -5268,8 +5300,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
           <div className="mt-6 overflow-hidden">
             <div className="flex gap-2 mb-2 px-1">
               {[
-                { key: 'summary', icon: <UserIcon className="w-5 h-5"/>, color: 'blue', title: 'Resumo' },
-                { key: 'alerts', icon: <AlertIcon className="w-5 h-5"/>, color: 'red', title: 'Alertas' },
+                { key: 'summary', icon: <SteeringWheelIcon className="w-5 h-5"/>, color: 'blue', title: 'Resumo' },
+                { key: 'alerts', icon: <SirenIcon className="w-5 h-5"/>, color: 'red', title: 'Alertas' },
                 { key: 'vandalized', icon: <AlertTriangleIcon className="w-5 h-5"/>, color: 'orange', title: 'Vandalizadas' },
                 { key: 'status', icon: (
                   <div className="relative">
@@ -5286,6 +5318,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
                   </svg>
                 ), color: 'orange', title: 'Mecânica' },
+                { key: 'technica', icon: <ZapIcon className="w-5 h-5"/>, color: 'blue', title: 'Técnica' },
                 { key: 'bike_search', icon: <SearchIcon className="w-5 h-5"/>, color: 'purple', title: 'Busca de Bike' },
                 { key: 'boletim', icon: <SheetIcon className="w-5 h-5"/>, color: 'blue', title: 'Boletim' },
               ].map(({ key, icon, color, title }) => (
@@ -5299,7 +5332,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
             <div className="relative w-full overflow-hidden rounded-lg border bg-gray-50 shadow-inner min-h-[400px]">
               <div className="flex transition-transform duration-500 ease-in-out"
-                style={{ transform: `translateX(${activeQuadrant === 'summary' ? '0%' : activeQuadrant === 'alerts' ? '-100%' : activeQuadrant === 'vandalized' ? '-200%' : activeQuadrant === 'status' ? '-300%' : activeQuadrant === 'mechanics' ? '-400%' : activeQuadrant === 'bike_search' ? '-500%' : '-600%'})` }}>
+                style={{ transform: `translateX(${
+                  activeQuadrant === 'summary' ? '0%' : 
+                  activeQuadrant === 'alerts' ? '-100%' : 
+                  activeQuadrant === 'vandalized' ? '-200%' : 
+                  activeQuadrant === 'status' ? '-300%' : 
+                  activeQuadrant === 'mechanics' ? '-400%' : 
+                  activeQuadrant === 'technica' ? '-500%' :
+                  activeQuadrant === 'bike_search' ? '-600%' : 
+                  '-700%'
+                })` }}>
 
                 {/* Quadrante 1: Resumo */}
                 <div className="w-full flex-shrink-0 p-3">
@@ -5770,9 +5812,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <div className="flex justify-between items-center mb-2 border-b pb-1">
                       <h3 className="font-black text-gray-900 text-sm uppercase">Visão Geral</h3>
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                       {[
-                        { l: 'Aguardando', v: mechanicsList.filter(b => b.status === 'Aguardando Confirmação').length, c: 'blue' },
+                        { 
+                          l: 'Status', 
+                          v: mechanicsList.filter(b => b.status === 'Alterar Status').length, 
+                          c: 'red' 
+                        },
+                        { l: 'Aguardando', v: mechanicsList.filter(b => b.status === 'Aguardando Manutenção').length, c: 'blue' },
                         { l: 'Manutenção', v: mechanicsList.filter(b => b.status === 'Em Manutenção').length, c: 'orange' },
                         { l: 'Reserva', v: mechanicsList.filter(b => b.status === 'Reserva').length, c: 'green' },
                       ].map(item => (
@@ -5892,6 +5939,84 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                     b.status === 'Em Manutenção'
                                       ? 'bg-orange-500 text-white'
                                       : 'bg-green-600 text-white'
+                                  }`}>{b.patrimonio}</span>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Quadrante: Técnica */}
+                <div className="min-w-full p-3">
+                  <h2 className="text-base font-bold text-gray-700 flex items-center gap-2 mb-4">
+                    <BicycleIcon className="w-4 h-4 text-blue-600"/>
+                    Técnica
+                  </h2>
+
+                  {/* Totais Técnica */}
+                  <div className="bg-white p-3 rounded-lg border shadow-sm mb-3">
+                    <div className="flex justify-between items-center mb-2 border-b pb-1">
+                      <h3 className="font-black text-gray-900 text-sm uppercase">Visão Geral Técnica</h3>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {[
+                        { l: 'Aguardando', v: technicaList.filter(b => b.status === 'Aguardando Técnica').length, c: 'blue' },
+                        { l: 'Em Técnica', v: technicaList.filter(b => b.status === 'Em Técnica').length, c: 'indigo' },
+                      ].map(item => (
+                        <div key={item.l} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
+                          <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.l}</p>
+                          <p className={`text-sm font-black text-${item.c}-800`}>{item.v}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Card por técnico */}
+                  {(() => {
+                    const byTechnician: Record<string, {aguardando: number, emTecnica: number, bikes: string[]}> = {};
+                    technicaList.filter(b => b.status === 'Aguardando Técnica' || b.status === 'Em Técnica').forEach(b => {
+                      const t = b.tecnico || '—';
+                      if (!byTechnician[t]) byTechnician[t] = { aguardando: 0, emTecnica: 0, bikes: [] };
+                      if (b.status === 'Aguardando Técnica') byTechnician[t].aguardando++;
+                      else byTechnician[t].emTecnica++;
+                      byTechnician[t].bikes.push(b.patrimonio);
+                    });
+                    const techs = Object.entries(byTechnician);
+                    if (techs.length === 0) return (
+                      <div className="text-center py-6 bg-white rounded-lg border border-dashed">
+                        <p className="text-gray-400 text-xs">Nenhum técnico em atividade</p>
+                      </div>
+                    );
+                    return (
+                      <div className="grid grid-cols-1 gap-3">
+                        {techs.map(([name, data]) => (
+                          <div key={name} className="bg-white p-3 rounded-lg border shadow-sm">
+                            <div className="flex justify-between items-center mb-2 border-b pb-1">
+                              <h3 className="font-black text-gray-900 text-sm uppercase">{name}</h3>
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5 mb-2">
+                              {[
+                                { l: 'Aguardando', v: data.aguardando, c: 'blue' },
+                                { l: 'Em Técnica', v: data.emTecnica, c: 'indigo' },
+                              ].map(item => (
+                                <div key={item.l} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
+                                  <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.l}</p>
+                                  <p className={`text-sm font-black text-${item.c}-800`}>{item.v}</p>
+                                </div>
+                              ))}
+                            </div>
+                            <div>
+                              <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Bikes ({data.bikes.length})</p>
+                              <div className="flex flex-wrap gap-1">
+                                {technicaList.filter(b => (b.status === 'Aguardando Técnica' || b.status === 'Em Técnica') && b.tecnico === name).map((b: any) => (
+                                  <span key={b.patrimonio} className={`px-2 py-0.5 rounded text-[10px] font-black font-mono ${
+                                    b.status === 'Aguardando Técnica'
+                                      ? 'bg-blue-500 text-white'
+                                      : 'bg-indigo-600 text-white'
                                   }`}>{b.patrimonio}</span>
                                 ))}
                               </div>
@@ -6386,7 +6511,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         : 'border-gray-100 text-gray-500 hover:bg-gray-50'
                     }`}
                   >
-                    <Map size={12} />
+                    <LucideMap size={12} />
                     <span>Por Zona</span>
                   </button>
                 </div>
@@ -6419,7 +6544,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   {[
                     { id: 'lowBattery', label: 'Bateria Baixa (<50%)', icon: <Battery size={14} className="text-red-500" /> },
                     { id: 'openLock', label: 'Trava Aberta', icon: <Lock size={14} className="text-orange-500" /> },
-                    { id: 'outOfStation', label: 'Fora de Estação', icon: <MapIconLucide size={14} className="text-purple-500" /> },
+                    { id: 'outOfStation', label: 'Fora de Estação', icon: <LucideMap size={14} className="text-purple-500" /> },
                     { id: 'offline', label: 'Offline (>30min)', icon: <WifiOff size={14} className="text-gray-400" /> },
                     { id: 'wrongStatus', label: 'Status Incorreto', icon: <AlertCircle size={14} className="text-yellow-500" /> },
                   ].map((filter) => (

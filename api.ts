@@ -32,30 +32,30 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-const memoryCache = new Map<string, CacheEntry>();
+const memoryCache: Record<string, CacheEntry> = {};
 
 function getCached(key: string): any | null {
-  const entry = memoryCache.get(key);
+  const entry = memoryCache[key];
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
-    memoryCache.delete(key);
+    delete memoryCache[key];
     return null;
   }
   return entry.data;
 }
 
 function setCache(key: string, data: any): void {
-  memoryCache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+  memoryCache[key] = { data, expiresAt: Date.now() + CACHE_TTL_MS };
 }
 
 export function clearCache(action?: string): void {
   if (action) {
     // Remove todas as entradas que começam com a action
-    for (const key of memoryCache.keys()) {
-      if (key.startsWith(action + ':')) memoryCache.delete(key);
+    for (const key in memoryCache) {
+      if (key.startsWith(action + ':')) delete memoryCache[key];
     }
   } else {
-    memoryCache.clear();
+    for (const key in memoryCache) delete memoryCache[key];
   }
 }
 
