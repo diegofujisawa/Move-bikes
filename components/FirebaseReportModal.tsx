@@ -33,6 +33,12 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
   const [searchTerm, setSearchTerm] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   
+  // Filters state
+  const [filterDriver, setFilterDriver] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+  const [filterStartDate, setFilterStartDate] = useState('');
+  const [filterEndDate, setFilterEndDate] = useState('');
+  
   // Form state for adding new report
   const [newReport, setNewReport] = useState<Partial<FirebaseReport>>({
     patrimonio: '',
@@ -46,7 +52,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     if (!isOpen) return;
 
     setIsLoading(true);
-    const q = query(collection(db, 'reports'), orderBy('timestamp', 'desc'), limit(100));
+    const q = query(collection(db, 'reports'), orderBy('timestamp', 'desc'), limit(500));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const reportsData = snapshot.docs.map(doc => {
@@ -111,14 +117,48 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     const o = (r.observacao || r.observation || '').toLowerCase();
     const l = (r.localidade || '').toLowerCase();
     const st = (r.statusSistema || '').toLowerCase();
+    const type = (r.type || '').toLowerCase();
     
-    return p.includes(searchTerm.toLowerCase()) ||
+    // Search term filter
+    const matchesSearch = p.includes(searchTerm.toLowerCase()) ||
            m.includes(searchTerm.toLowerCase()) ||
            s.includes(searchTerm.toLowerCase()) ||
            o.includes(searchTerm.toLowerCase()) ||
            l.includes(searchTerm.toLowerCase()) ||
-           st.includes(searchTerm.toLowerCase());
+           st.includes(searchTerm.toLowerCase()) ||
+           type.includes(searchTerm.toLowerCase());
+
+    // Driver filter
+    const matchesDriver = !filterDriver || m === filterDriver.toLowerCase();
+    
+    // Status filter
+    const matchesStatus = !filterStatus || s === filterStatus.toLowerCase();
+    
+    // Date filter
+    let matchesDate = true;
+    if (r.timestamp instanceof Date) {
+      const reportDate = new Date(r.timestamp);
+      reportDate.setHours(0, 0, 0, 0);
+      
+      if (filterStartDate) {
+        const start = new Date(filterStartDate);
+        start.setHours(0, 0, 0, 0);
+        if (reportDate < start) matchesDate = false;
+      }
+      
+      if (filterEndDate) {
+        const end = new Date(filterEndDate);
+        end.setHours(0, 0, 0, 0);
+        if (reportDate > end) matchesDate = false;
+      }
+    }
+
+    return matchesSearch && matchesDriver && matchesStatus && matchesDate;
   });
+
+  // Get unique drivers and statuses for filters
+  const uniqueDrivers = Array.from(new Set(reports.map(r => r.motorista || r.driverName).filter(Boolean))).sort();
+  const uniqueStatuses = Array.from(new Set(reports.map(r => r.status).filter(Boolean))).sort();
 
   if (!isOpen) return null;
 
@@ -127,31 +167,88 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-7xl flex flex-col max-h-[95vh] overflow-hidden animate-scale-in">
         
         {/* Header */}
-        <div className="p-4 border-b flex items-center justify-between bg-gray-50">
-          <div className="flex items-center gap-2">
-            <SheetIcon className="w-6 h-6 text-green-600" />
-            <h2 className="text-xl font-black text-gray-800 uppercase tracking-tight">Relatório Firebase</h2>
+        <div className="p-4 border-b bg-gray-50 relative">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <SheetIcon className="w-6 h-6 text-green-600" />
+              <h2 className="text-xl font-black text-gray-800 uppercase tracking-tight">Relatório Firebase</h2>
+            </div>
+            <button onClick={onClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
+              <XIcon className="w-6 h-6 text-gray-500" />
+            </button>
           </div>
-          <div className="flex items-center gap-3">
+
+          <div className="flex flex-wrap items-center gap-3">
             <div className="relative">
               <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input 
                 type="text" 
-                placeholder="Buscar por patrimônio, motorista, status..." 
+                placeholder="Buscar patrimônio..." 
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-green-500 outline-none w-80"
+                className="pl-9 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-green-500 outline-none w-48"
               />
             </div>
+            
+            <select 
+              value={filterDriver}
+              onChange={(e) => setFilterDriver(e.target.value)}
+              className="px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-green-500 outline-none max-w-[150px]"
+            >
+              <option value="">Todos Motoristas</option>
+              {uniqueDrivers.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+
+            <select 
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
+              className="px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-green-500 outline-none max-w-[150px]"
+            >
+              <option value="">Todos Status</option>
+              {uniqueStatuses.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+
+            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-2 py-1">
+              <input 
+                type="date" 
+                value={filterStartDate}
+                onChange={(e) => setFilterStartDate(e.target.value)}
+                className="text-xs outline-none bg-transparent"
+                title="Data Inicial"
+              />
+              <span className="text-gray-400 text-xs">até</span>
+              <input 
+                type="date" 
+                value={filterEndDate}
+                onChange={(e) => setFilterEndDate(e.target.value)}
+                className="text-xs outline-none bg-transparent"
+                title="Data Final"
+              />
+            </div>
+
+            {(filterDriver || filterStatus || filterStartDate || filterEndDate || searchTerm) && (
+              <button 
+                onClick={() => {
+                  setFilterDriver('');
+                  setFilterStatus('');
+                  setFilterStartDate('');
+                  setFilterEndDate('');
+                  setSearchTerm('');
+                }}
+                className="text-[10px] font-bold text-red-500 hover:text-red-700 uppercase tracking-tighter px-2"
+              >
+                Limpar Filtros
+              </button>
+            )}
+
+            <div className="flex-1"></div>
+
             <button 
               onClick={() => setIsAdding(!isAdding)}
               className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-xl text-sm font-bold hover:bg-green-700 transition-all active:scale-95"
             >
               <PlusIcon className="w-4 h-4" />
               Novo Registro
-            </button>
-            <button onClick={onClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
-              <XIcon className="w-6 h-6 text-gray-500" />
             </button>
           </div>
         </div>
