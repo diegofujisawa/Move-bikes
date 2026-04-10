@@ -32,6 +32,7 @@ import DestinationModal from './DestinationModal';
 import HistoryModal from './HistoryModal';
 import VehicleSwitchModal from './VehicleSwitchModal';
 import EditDriverModal from './EditDriverModal';
+import FirebaseReportModal from './FirebaseReportModal';
 import { AnalyticalDashboard } from './AnalyticalDashboard';
 import { apiCall, apiGetCall, clearCache } from '../api';
 import { User } from '../types';
@@ -289,6 +290,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [isEditDriverModalOpen, setIsEditDriverModalOpen] = useState(false);
   const [showAnalyticalDashboard, setShowAnalyticalDashboard] = useState(false);
+  const [isFirebaseReportOpen, setIsFirebaseReportOpen] = useState(false);
   const [isNotFoundConfirmOpen, setIsNotFoundConfirmOpen] = useState(false);
   const [isMechanicRepairModalOpen, setIsMechanicRepairModalOpen] = useState(false);
   const [technicaList, setTechnicaList] = useState<any[]>([]);
@@ -1062,6 +1064,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
           date: localDateStr()
         }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
 
+        addDoc(collection(db, 'reports'), {
+          patrimonio: bikeNumber,
+          motorista: driverName,
+          status: 'Recolhida',
+          timestamp: serverTimestamp(),
+          observacao: '',
+          statusSistema: searchedBike['Status'],
+          bateria: formatBattery(searchedBike['Bateria']) + '%',
+          trava: searchedBike['Trava'],
+          localidade: searchedBike['Localidade'],
+          type: 'Recolhida'
+        }).catch(err => console.warn('[Firebase] reports write:', err.code));
+
         persistDriverState(newRoute, newCollected);
         setSuccessMessage(`Bicicleta ${bikeNumber} recolhida!`);
 
@@ -1083,7 +1098,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }, { merge: true }).catch(err => console.warn('[Firebase] bikes write:', err.code));
 
         addDoc(collection(db, 'reports'), {
-          driverName, bikeNumber, status: 'Não encontrada', timestamp: serverTimestamp(), observation: ''
+          patrimonio: bikeNumber,
+          motorista: driverName,
+          status: 'Não encontrada',
+          timestamp: serverTimestamp(),
+          observacao: '',
+          statusSistema: searchedBike['Status'],
+          bateria: formatBattery(searchedBike['Bateria']) + '%',
+          trava: searchedBike['Trava'],
+          localidade: searchedBike['Localidade'],
+          type: 'Não encontrada'
         }).catch(err => console.warn('[Firebase] reports write:', err.code));
 
         persistDriverState(newRoute, newCollected);
@@ -1132,7 +1156,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
 
       addDoc(collection(db, 'reports'), {
-        driverName, bikeNumber, status: 'Não atendida', timestamp: serverTimestamp(), observation: ''
+        patrimonio: bikeNumber,
+        motorista: driverName,
+        status: 'Não atendida',
+        timestamp: serverTimestamp(),
+        observacao: '',
+        type: 'Não atendida'
       }).catch(e => console.warn('[Firebase] reports write:', e.code));
 
       persistDriverState(newRoute, newCollected);
@@ -1199,8 +1228,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       try {
         await addDoc(collection(db, 'reports'), {
-          driverName, bikeNumber, status: finalStatus,
-          observation, timestamp: serverTimestamp()
+          patrimonio: bikeNumber,
+          motorista: driverName,
+          status: finalStatus,
+          observacao: observation,
+          timestamp: serverTimestamp(),
+          type: 'Finalização'
         });
       } catch (e) {
         console.warn('[Firebase] reports write failed:', e);
@@ -1295,13 +1328,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
             date: localDateStr()
           }).catch(() => {});
           addDoc(collection(db, 'reports'), {
-            bikeNumber: id,
+            patrimonio: id,
             status: 'Carretinha',
-            driverName,
-            observation: `${trailerLabel} — aceita por ${driverName}`,
+            motorista: driverName,
+            observacao: `${trailerLabel} — aceita por ${driverName}`,
             timestamp: serverTimestamp(),
             type: 'Carretinha',
-            trailerName: trailerLabel,
+            carretinha: trailerLabel,
           }).catch(() => {});
         });
       } else {
@@ -1855,12 +1888,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
         
         try {
           await addDoc(collection(db, 'reports'), {
-            bikeNumber: bikeId,
             patrimonio: bikeId,
             status: 'Aguardando Manutenção',
-            driverName, mecanico: driverName,
-            observation: `Enviada para Aguardando Manutenção por ${driverName}`,
-            timestamp: serverTimestamp(), type: 'Mecânica'
+            motorista: driverName,
+            observacao: `Enviada para Aguardando Manutenção por ${driverName}`,
+            timestamp: serverTimestamp(),
+            type: 'Mecânica'
           });
         } catch (e) {
           console.warn('[Firebase] reports write failed, but continuing:', e);
@@ -2001,10 +2034,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       // 4. Relatório
       try {
         await addDoc(collection(db, 'reports'), {
-          bikeNumber: bikePat, patrimonio: bikePat, status: 'Aguardando Técnica',
-          driverName: finalMechanic || driverName, mecanico: finalMechanic,
-          observation: `Enviada para Técnica por ${driverName}`,
-          timestamp: serverTimestamp(), type: 'Técnica'
+          patrimonio: bikePat,
+          status: 'Aguardando Técnica',
+          motorista: finalMechanic || driverName,
+          observacao: `Enviada para Técnica por ${driverName}`,
+          timestamp: serverTimestamp(),
+          type: 'Técnica'
         });
       } catch (e) {
         console.warn('[Firebase] reports write failed:', e);
@@ -2053,10 +2088,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       // 3. Relatório
       try {
         await addDoc(collection(db, 'reports'), {
-          bikeNumber, status: 'Em Técnica',
-          driverName: technicianName, tecnico: technicianName,
-          observation: `Recebida pela Técnica — ${technicianName}`,
-          timestamp: serverTimestamp(), type: 'Técnica'
+          patrimonio: bikeNumber,
+          status: 'Em Técnica',
+          motorista: technicianName,
+          observacao: `Recebida pela Técnica — ${technicianName}`,
+          timestamp: serverTimestamp(),
+          type: 'Técnica'
         });
       } catch (e) {
         console.warn('[Firebase] reports write failed:', e);
@@ -2137,11 +2174,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       // 4. Relatório
       try {
         await addDoc(collection(db, 'reports'), {
-          bikeNumber, status: 'Devolvida da Técnica',
-          driverName, tecnico: driverName,
-          treatment, originalMechanic,
-          observation: `Técnica finalizada por ${driverName} — ${treatment}. Devolvida para ${originalMechanic || 'Aguardando Manutenção'}`,
-          timestamp: serverTimestamp(), type: 'Técnica'
+          patrimonio: bikeNumber,
+          status: 'Devolvida da Técnica',
+          motorista: driverName,
+          observacao: `Técnica finalizada por ${driverName} — ${treatment}. Devolvida para ${originalMechanic || 'Aguardando Manutenção'}`,
+          timestamp: serverTimestamp(),
+          type: 'Técnica'
         });
       } catch (e) {
         console.warn('[Firebase] reports write failed:', e);
@@ -2260,7 +2298,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
       
       try {
-        await addDoc(collection(db, 'reports'), { bikeNumber, patrimonio: bikeNumber, status: 'Mecânica', driverName, mechanicName, timestamp: serverTimestamp(), type: 'Mecânica' });
+        await addDoc(collection(db, 'reports'), {
+          patrimonio: bikeNumber,
+          status: 'Mecânica',
+          motorista: mechanicName,
+          timestamp: serverTimestamp(),
+          type: 'Mecânica'
+        });
       } catch (e) {
         console.warn('[Firebase] reports write failed:', e);
       }
@@ -2300,13 +2344,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       try {
         await addDoc(collection(db, 'reports'), {
-          bikeNumber,
           patrimonio: bikeNumber,
           status: 'Reserva',
-          driverName: mechanicName, mecanico: mechanicName, treatment,
-          observation: `Reparo finalizado por ${mechanicName} — ${treatment}`,
-          dataEntrada: selectedMechanicBike?.dataEntrada || null,
-          timestamp: serverTimestamp(), type: 'Reparo'
+          motorista: mechanicName,
+          observacao: `Reparo finalizado por ${mechanicName} — ${treatment}`,
+          timestamp: serverTimestamp(),
+          type: 'Reparo'
         });
       } catch (e) {
         console.warn('[Firebase] reports write failed:', e);
@@ -2337,23 +2380,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
         })
       ));
 
-      await Promise.all(bikeNumbers.map(id => {
-        const bike = mechanicsList.find(b => b.patrimonio === id);
-        return setDoc(doc(db, 'bikes', id), { 
+      await Promise.all(bikeNumbers.map(async (id) => {
+        await setDoc(doc(db, 'bikes', id), { 
           carretinha: trailerName, 
           status: 'Reserva', 
           trailerStatus: null, // Reseta status se estiver sendo re-organizada
           ultimaAtualizacao: serverTimestamp() 
         }, { merge: true }).catch(() => {});
         
-        return addDoc(collection(db, 'reports'), {
-          bikeNumber: id,
+        await addDoc(collection(db, 'reports'), {
           patrimonio: id,
           status: 'Carretinha',
-          carretinha: trailerName,
-          driverName: driverName,
-          mecanico: bike?.mecanico || driverName,
-          observation: `Adicionada à carretinha ${trailerName}`,
+          motorista: driverName,
+          observacao: `Adicionada à carretinha ${trailerName}`,
           timestamp: serverTimestamp(),
           type: 'Logística'
         }).catch(() => {});
@@ -2392,7 +2431,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
           }
           
           try {
-            await addDoc(collection(db, 'reports'), { bikeNumber: action.bikeNumber, status: 'Em Estação', driverName: action.mechanicName, treatment: action.treatment, timestamp: serverTimestamp(), type: 'Reparo' });
+            await addDoc(collection(db, 'reports'), {
+              patrimonio: action.bikeNumber,
+              status: 'Em Estação',
+              motorista: action.mechanicName,
+              observacao: action.treatment || 'Reparo finalizado',
+              timestamp: serverTimestamp(),
+              type: 'Reparo'
+            });
           } catch (e) {
             console.warn('[Firebase] reports write failed:', e);
           }
@@ -2826,13 +2872,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
       // Logar no relatório para cada bike
       await Promise.all(bikeIds.map(id => 
         addDoc(collection(db, 'reports'), {
-          bikeNumber: id,
           patrimonio: id,
           status: 'Carretinha Finalizada',
-          carretinha: trailerName,
-          driverName,
-          mecanico: driverName,
-          observation: `Carretinha ${trailerName} finalizada e pronta para remanejamento`,
+          motorista: driverName,
+          observacao: `Carretinha ${trailerName} finalizada e pronta para remanejamento`,
           timestamp: serverTimestamp(),
           type: 'Logística'
         }).catch(() => {})
@@ -4323,6 +4366,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors"
               >
                 <TrendingUp className="w-6 h-6 sm:w-7 sm:h-7" />
+              </button>
+            )}
+            {isAdm && (
+              <button 
+                onClick={() => setIsFirebaseReportOpen(true)} 
+                title="Relatório Firebase" 
+                className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-green-50 hover:text-green-600 transition-colors"
+              >
+                <SheetIcon className="w-6 h-6 sm:w-7 sm:h-7" />
               </button>
             )}
             {isAdm && (
@@ -6714,6 +6766,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         onConfirm={obs => executeCollectedBikeAction(destinationModal.bikeNumber, destinationModal.type === 'Estação' ? 'Enviada para Estação' : destinationModal.type === 'Filial' ? 'Enviada para Filial' : 'Vandalizada', obs)}
         type={destinationModal.type} bikeNumber={destinationModal.bikeNumber} stationName={destinationModal.stationName} isLoading={isLoading} onRecalculate={recalculateStation}/>
       <HistoryModal isOpen={isHistoryModalOpen} onClose={() => setIsHistoryModalOpen(false)} history={requestsHistory} isLoading={isHistoryLoading} driverName={driverName}/>
+      {isFirebaseReportOpen && <FirebaseReportModal isOpen={isFirebaseReportOpen} onClose={() => setIsFirebaseReportOpen(false)} />}
       {showAnalyticalDashboard && <AnalyticalDashboard onClose={() => setShowAnalyticalDashboard(false)} apiCall={apiCall} />}
       
       {/* Modal de Seleção de Mecânico para Inserção Manual */}

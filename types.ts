@@ -80,3 +80,22 @@ export interface DriverLocation {
     timestamp: string;
     speed?: number;
 }
+
+export interface FirebaseReport {
+  id?: string;
+  timestamp: any;
+  patrimonio: string;
+  status: string;
+  observacao: string;
+  motorista: string;
+  statusSistema?: string;
+  bateria?: string;
+  trava?: string;
+  localidade?: string;
+  type?: string;
+  carretinha?: string;
+  // Fallbacks for legacy/inconsistent data
+  bikeNumber?: string;
+  driverName?: string;
+  observation?: string;
+}
