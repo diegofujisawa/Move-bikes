@@ -1064,19 +1064,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
           date: localDateStr()
         }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
 
-        addDoc(collection(db, 'reports'), {
-          patrimonio: bikeNumber,
-          motorista: driverName,
-          status: 'Recolhida',
-          timestamp: serverTimestamp(),
-          observacao: '',
-          statusSistema: searchedBike['Status'],
-          bateria: formatBattery(searchedBike['Bateria']) + '%',
-          trava: searchedBike['Trava'],
-          localidade: searchedBike['Localidade'],
-          type: 'Recolhida'
-        }).catch(err => console.warn('[Firebase] reports write:', err.code));
-
         persistDriverState(newRoute, newCollected);
         setSuccessMessage(`Bicicleta ${bikeNumber} recolhida!`);
 
@@ -1097,25 +1084,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           status: 'Não encontrada', responsavel: null, ultimaAtualizacao: serverTimestamp()
         }, { merge: true }).catch(err => console.warn('[Firebase] bikes write:', err.code));
 
-        addDoc(collection(db, 'reports'), {
-          patrimonio: bikeNumber,
-          motorista: driverName,
-          status: 'Não encontrada',
-          timestamp: serverTimestamp(),
-          observacao: '',
-          statusSistema: searchedBike['Status'],
-          bateria: formatBattery(searchedBike['Bateria']) + '%',
-          trava: searchedBike['Trava'],
-          localidade: searchedBike['Localidade'],
-          type: 'Não encontrada'
-        }).catch(err => console.warn('[Firebase] reports write:', err.code));
-
         persistDriverState(newRoute, newCollected);
-        apiCall({
-          action: 'finalizeRouteBike', driverName, bikeNumber,
-          finalStatus: 'Não encontrada', finalObservation: ''
-        }, 1, true).catch(e => console.warn('[Sheets] finalizeRouteBike:', e));
-
         setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não encontrada.`);
       }
 
@@ -1155,21 +1124,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         status: 'Pendente', responsavel: null, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
 
-      addDoc(collection(db, 'reports'), {
-        patrimonio: bikeNumber,
-        motorista: driverName,
-        status: 'Não atendida',
-        timestamp: serverTimestamp(),
-        observacao: '',
-        type: 'Não atendida'
-      }).catch(e => console.warn('[Firebase] reports write:', e.code));
-
       persistDriverState(newRoute, newCollected);
-      apiCall({
-        action: 'finalizeRouteBike', driverName, bikeNumber,
-        finalStatus: 'Não atendida', finalObservation: ''
-      }, 1, true).catch(e => console.warn('[Sheets] finalizeRouteBike:', e));
-
       if (!silent) setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não atendida.`);
     } catch (err: any) {
       console.error('Erro não atendida:', err);

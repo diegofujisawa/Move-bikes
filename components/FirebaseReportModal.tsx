@@ -13,6 +13,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { FirebaseReport } from '../types';
+import { apiCall } from '../api';
 import { 
   XIcon, 
   PlusIcon, 
@@ -52,7 +53,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     if (!isOpen) return;
 
     setIsLoading(true);
-    const q = query(collection(db, 'reports'), orderBy('timestamp', 'desc'), limit(500));
+    const q = query(collection(db, 'reports'), orderBy('timestamp', 'desc'), limit(1000));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const reportsData = snapshot.docs.map(doc => {
@@ -96,6 +97,23 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
         timestamp: serverTimestamp(),
         type: newReport.type || 'Manual'
       });
+
+      // Sync to Sheets
+      apiCall({
+        action: 'logReport',
+        rowData: [
+          new Date().toISOString(),
+          newReport.patrimonio,
+          newReport.status,
+          newReport.observacao || '',
+          newReport.motorista,
+          '', // Status Sistema (optional)
+          '', // Bateria (optional)
+          '', // Trava (optional)
+          newReport.localidade || ''
+        ]
+      }, 1, true).catch(err => console.warn('[Sheets] Manual report sync failed:', err));
+
       setNewReport({
         patrimonio: '',
         status: '',
@@ -132,7 +150,8 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     const matchesDriver = !filterDriver || m === filterDriver.toLowerCase();
     
     // Status filter
-    const matchesStatus = !filterStatus || s === filterStatus.toLowerCase();
+    const displayStatus = (r.status || '').toUpperCase() === 'FILIAL' ? 'RECOLHIDA' : (r.status || '').toUpperCase();
+    const matchesStatus = !filterStatus || displayStatus === filterStatus.toUpperCase();
     
     // Date filter
     let matchesDate = true;
@@ -153,12 +172,48 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
       }
     }
 
+    // New requirement: Only driver app registrations (Recolhida, Vandalizada, Estação)
+    // Exclude MECANICA profile and maintenance statuses
+    const statusLow = (r.status || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const typeLow = (r.type || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const motoristaLow = (r.motorista || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    
+    const isAllowedStatus = statusLow.includes('recolhida') || 
+                           statusLow.includes('vandalizada') || 
+                           statusLow.includes('estacao') ||
+                           statusLow.includes('filial');
+    
+    const isMecanica = motoristaLow.includes('mecanica') || typeLow.includes('mecanica');
+    const isTrailerLogistics = statusLow.includes('carretinha') || typeLow === 'logistica';
+    const isIntermediate = typeLow === 'recolhida' || typeLow === 'nao encontrada' || typeLow === 'nao atendida';
+
+    if (!isAllowedStatus || isMecanica || isTrailerLogistics || isIntermediate) return false;
+
     return matchesSearch && matchesDriver && matchesStatus && matchesDate;
   });
 
-  // Get unique drivers and statuses for filters
-  const uniqueDrivers = Array.from(new Set(reports.map(r => r.motorista || r.driverName).filter(Boolean))).sort();
-  const uniqueStatuses = Array.from(new Set(reports.map(r => r.status).filter(Boolean))).sort();
+  // Get unique drivers and statuses for filters based on the allowed records
+  const allowedReports = reports.filter(r => {
+    const statusLow = (r.status || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const typeLow = (r.type || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const motoristaLow = (r.motorista || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    const isAllowedStatus = statusLow.includes('recolhida') || 
+                           statusLow.includes('vandalizada') || 
+                           statusLow.includes('estacao') ||
+                           statusLow.includes('filial');
+    
+    const isMecanica = motoristaLow.includes('mecanica') || typeLow.includes('mecanica');
+    const isTrailerLogistics = statusLow.includes('carretinha') || typeLow === 'logistica';
+    const isIntermediate = typeLow === 'recolhida' || typeLow === 'nao encontrada' || typeLow === 'nao atendida';
+    
+    return isAllowedStatus && !isMecanica && !isTrailerLogistics && !isIntermediate;
+  });
+
+  const uniqueDrivers = Array.from(new Set(allowedReports.map(r => r.motorista || r.driverName).filter(Boolean))).sort();
+  const uniqueStatuses = Array.from(new Set(allowedReports.map(r => 
+    (r.status || '').toUpperCase() === 'FILIAL' ? 'RECOLHIDA' : (r.status || '').toUpperCase()
+  ).filter(Boolean))).sort();
 
   if (!isOpen) return null;
 
@@ -353,12 +408,13 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
                     </td>
                     <td className="p-3">
                       <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase whitespace-nowrap ${
-                        (report.status || '').toLowerCase().includes('recolhida') ? 'bg-orange-100 text-orange-700' :
-                        (report.status || '').toLowerCase().includes('manutenção') ? 'bg-blue-100 text-blue-700' :
+                        (report.status || '').toLowerCase().includes('recolhida') || (report.status || '').toLowerCase().includes('filial') ? 'bg-orange-100 text-orange-700' :
+                        (report.status || '').toLowerCase().includes('manutenção') || (report.status || '').toLowerCase().includes('manutencao') ? 'bg-blue-100 text-blue-700' :
                         (report.status || '').toLowerCase().includes('vandalizada') ? 'bg-red-100 text-red-700' :
+                        (report.status || '').toLowerCase().includes('estação') || (report.status || '').toLowerCase().includes('estacao') ? 'bg-green-100 text-green-700' :
                         'bg-gray-100 text-gray-600'
                       }`}>
-                        {report.status || '---'}
+                        {(report.status || '').toUpperCase() === 'FILIAL' ? 'RECOLHIDA' : (report.status || '---')}
                       </span>
                     </td>
                     <td className="p-3 text-xs font-medium text-gray-700">
@@ -403,7 +459,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
 
         {/* Footer */}
         <div className="p-3 bg-gray-50 border-t flex justify-between items-center text-[10px] text-gray-400 font-medium">
-          <p>Exibindo {filteredReports.length} registros recentes</p>
+          <p>Exibindo {filteredReports.length} registros (Filtrado: Recolhidas, Vandalizadas e Estação)</p>
           <p>Fonte: Firebase Firestore (Coleção: reports)</p>
         </div>
       </div>
