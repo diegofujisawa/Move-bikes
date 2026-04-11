@@ -1214,14 +1214,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
 
       try {
-        await addDoc(collection(db, 'reports'), {
+        // Gera um ID determinístico para evitar duplicidade no Firebase (mesma bike, motorista e minuto)
+        const now = new Date();
+        const deterministicId = `${bikeNumber}_${normalizeName(driverName)}_${localDateStr()}_${now.getHours()}_${now.getMinutes()}`;
+        
+        await setDoc(doc(db, 'reports', deterministicId), {
           patrimonio: bikeNumber,
           motorista: driverName,
           status: finalStatus,
           observacao: observation,
           timestamp: serverTimestamp(),
           type: 'Finalização'
-        });
+        }, { merge: true });
       } catch (e) {
         console.warn('[Firebase] reports write failed:', e);
       }
