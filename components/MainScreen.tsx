@@ -6766,7 +6766,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-xs font-black text-gray-700">
-                            {cl.type === 'carretinha' && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}
+                            {(cl.type === 'carretinha' || cl.type === 'removida_por_adm') && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}
                           </span>
                           {cl.count > 1 && <span className="text-[9px] bg-gray-200 text-gray-600 px-1.5 rounded-full font-bold">{cl.count} bikes</span>}
                         </div>
@@ -6784,7 +6784,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             ))}
                           </div>
                         )}
-                        {cl.observacoes && cl.observacoes.filter(Boolean).length > 0 && cl.type !== 'em_posse' && (
+                        {cl.observacoes && cl.observacoes.filter(Boolean).length > 0 && cl.type !== 'em_posse' && cl.type !== 'carretinha' && cl.type !== 'removida_por_adm' && (
                           <p className="text-[8px] text-gray-400 mt-0.5 italic">{cl.observacoes.filter(Boolean).join(' · ')}</p>
                         )}
                       </div>
