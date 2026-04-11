@@ -2897,6 +2897,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const handleUpdateDriverState = async (targetDriver: string, route: string[], collected: string[]) => {
     setIsLoading(true);
     try {
+      // Detecta bikes removidas da posse pelo ADM
+      if (editingDriver) {
+        const currentCollected = editingDriver.realTime.collected.map(String);
+        const newCollected = collected.map(String);
+        const removedBikes = currentCollected.filter(b => !newCollected.includes(b));
+        
+        removedBikes.forEach(bikeNumber => {
+          addDoc(collection(db, 'timeline_events'), {
+            driverName: targetDriver,
+            bikeNumber,
+            type: 'removida_por_adm',
+            timestamp: serverTimestamp(),
+            date: localDateStr(),
+            observacao: `Removido por: ${driverName}`
+          }).catch(err => console.warn('[Timeline] Erro ao registrar remoção:', err));
+        });
+      }
+
       // Firebase não-bloqueante
       setDoc(doc(db, 'users', normalizeName(targetDriver)), { routeBikes: route, collectedBikes: collected, lastUpdate: serverTimestamp(), sheetsSync: false }, { merge: true }).catch(e => console.warn('[Firebase] users write:', e.code));
       route.forEach(id => setDoc(doc(db, 'bikes', id), { status: 'Em Rota', responsavel: targetDriver, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {}));
@@ -5536,6 +5554,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               nao_atendida:  { bg: 'bg-yellow-500',  label: 'Não atend.' },
                               nao_encontrada:{ bg: 'bg-red-500',     label: 'Não enc.' },
                               carretinha:    { bg: 'bg-purple-600',  label: 'Carretinha' },
+                              removida_por_adm: { bg: 'bg-black',    label: 'Removida por ADM' },
                             };
 
                             return (
@@ -6684,6 +6703,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           nao_atendida:   { bg: 'bg-yellow-500', label: 'Não atend.' },
           nao_encontrada: { bg: 'bg-red-500',    label: 'Não enc.' },
           carretinha:     { bg: 'bg-purple-600', label: 'Carretinha' },
+          removida_por_adm: { bg: 'bg-black',    label: 'Removida por ADM' },
         };
         // Marca de hora a cada 30min
         const hourMarks: Array<{ms: number, label: string}> = [];
@@ -6754,6 +6774,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 cl.type === 'recolhida' ? 'bg-green-100 border-green-300 text-green-800' :
                                 cl.type === 'estacao' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' :
                                 cl.type === 'filial' ? 'bg-blue-50 border-blue-200 text-blue-700' :
+                                cl.type === 'removida_por_adm' ? 'bg-red-50 border-red-200 text-red-700' :
                                 'bg-gray-100 border-gray-200 text-gray-600'
                               }`}>{b}</span>
                             ))}
