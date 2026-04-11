@@ -5489,7 +5489,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             // Eventos Firebase (em_posse) disponíveis para a data selecionada
                             const fbEvents = (firebaseTimelineEvents[driver.name] || []).map((e: any) => ({
                               tsMs: e.tsMs, hour: new Date(e.tsMs).getHours(),
-                              min: new Date(e.tsMs).getMinutes(), type: e.type, bikeNumber: e.bikeNumber
+                              min: new Date(e.tsMs).getMinutes(), type: e.type, bikeNumber: e.bikeNumber,
+                              observacao: e.observacao
                             }));
                             const merged = [...sheetsEvents];
                             fbEvents.forEach(fe => {
@@ -5581,7 +5582,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                     return (
                                       <div key={ci} className="absolute -translate-x-1/2 top-0.5 flex flex-col items-center"
                                         style={{left: `${pos}%`}}
-                                        title={`${cl.type === 'carretinha' && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}${cl.type === 'em_posse' && cl.bikes.length > 0 ? ` Bike ${cl.bikes.join(', ')}` : isMulti ? ` (${cl.count} bikes)` : ''} — ${fmtTime(cl.tsMs)}`}
+                                        title={`${(cl.type === 'carretinha' || cl.type === 'removida_por_adm') && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}${cl.type === 'em_posse' && cl.bikes.length > 0 ? ` Bike ${cl.bikes.join(', ')}` : isMulti ? ` (${cl.count} bikes)` : ''} — ${fmtTime(cl.tsMs)}`}
                                       >
                                         <div className={`rounded-full border-2 border-white shadow-sm flex items-center justify-center ${isMulti ? 'w-4 h-4' : 'w-2.5 h-2.5'} ${cfg.bg}`}>
                                           {isMulti && <span className="text-[7px] font-black text-white leading-none">{cl.count}</span>}
