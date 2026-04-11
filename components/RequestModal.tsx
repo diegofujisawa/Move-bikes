@@ -12,6 +12,7 @@ interface RequestModalProps {
   driverLocations: DriverLocation[];
   error: string | null;
   clearError: () => void;
+  initialBikeNumber?: string;
 }
 
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -36,8 +37,8 @@ function usePrevious<T>(value: T): T | undefined {
   return ref.current;
 }
 
-const RequestModal: React.FC<RequestModalProps> = ({ isOpen, onClose, onSubmit, isLoading, motoristas, driverLocations, error, clearError }) => {
-  const [bikeNumber, setBikeNumber] = useState('');
+const RequestModal: React.FC<RequestModalProps> = ({ isOpen, onClose, onSubmit, isLoading, motoristas, driverLocations, error, clearError, initialBikeNumber = '' }) => {
+  const [bikeNumber, setBikeNumber] = useState(initialBikeNumber);
   const [location, setLocation] = useState('');
   const [reason, setReason] = useState('');
   const [recipient, setRecipient] = useState('Todos');
@@ -106,8 +107,10 @@ const RequestModal: React.FC<RequestModalProps> = ({ isOpen, onClose, onSubmit, 
       setLocation('');
       setReason('');
       setRecipient('Todos');
+    } else if (isOpen && !prevIsOpen && initialBikeNumber) {
+      setBikeNumber(initialBikeNumber);
     }
-  }, [isOpen, prevIsOpen]);
+  }, [isOpen, prevIsOpen, initialBikeNumber]);
 
 
   if (!isOpen) return null;

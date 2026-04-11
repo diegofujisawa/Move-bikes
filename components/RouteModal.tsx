@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { PlusPlusIcon, QrCodeIcon, XIcon, TrailerIcon } from './icons';
-import { Html5Qrcode } from 'html5-qrcode';
+import { PlusPlusIcon, XIcon, TrailerIcon, MapIcon } from './icons';
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
+import { Upload, Loader2, Clipboard, AlertCircle } from 'lucide-react';
 
 interface RouteModalProps {
   isOpen: boolean;
@@ -29,15 +30,87 @@ const RouteModal: React.FC<RouteModalProps> = ({
   const [bikeListText, setBikeListText] = useState('');
   const [recipient, setRecipient] = useState('Todos');
   const [isScannerOpen, setIsScannerOpen] = useState(false);
-  const scannerRef = useRef<Html5Qrcode | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
   const prevIsOpen = usePrevious(isOpen);
 
-  const stopScanner = async () => {
-    if (scannerRef.current) {
-      try { await scannerRef.current.stop(); scannerRef.current = null; }
-      catch (err) { console.error("Erro ao parar scanner:", err); }
+  useEffect(() => {
+    if (!isOpen) return;
+    const handlePaste = (e: ClipboardEvent) => {
+      if (!isScannerOpen) return;
+      const items = e.clipboardData?.items;
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].type.indexOf("image") !== -1) {
+            const blob = items[i].getAsFile();
+            if (blob) {
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                processImage(reader.result as string);
+              };
+              reader.readAsDataURL(blob);
+            }
+          }
+        }
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [isOpen, isScannerOpen]);
+
+  const processImage = async (base64Image: string) => {
+    setIsScanning(true);
+    setScanError(null);
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+      const base64Data = base64Image.split(',')[1];
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          {
+            parts: [
+              { inlineData: { mimeType: "image/png", data: base64Data } },
+              { text: "List bike numbers in this map. Return ONLY a JSON array of strings. Fast mode." }
+            ]
+          }
+        ],
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING }
+          }
+        }
+      });
+
+      const bikes = JSON.parse(response.text || "[]");
+      if (Array.isArray(bikes) && bikes.length > 0) {
+        setBikeListText(prev => {
+          const current = prev.split(/[\s,;\n]+/).map(s => s.trim()).filter(Boolean);
+          const newBikes = bikes.filter(b => !current.includes(b));
+          return current.concat(newBikes).join(', ');
+        });
+        setIsScannerOpen(false);
+      } else {
+        setScanError("Nenhuma bike detectada.");
+      }
+    } catch (err) {
+      console.error("Scan error:", err);
+      setScanError("Erro ao processar imagem.");
+    } finally {
+      setIsScanning(false);
     }
-    setIsScannerOpen(false);
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => processImage(reader.result as string);
+      reader.readAsDataURL(file);
+    }
   };
 
   useEffect(() => {
@@ -45,34 +118,10 @@ const RouteModal: React.FC<RouteModalProps> = ({
       setRouteName(''); 
       setBikeListText(''); 
       setRecipient('Todos'); 
-      stopScanner();
+      setIsScannerOpen(false);
+      setScanError(null);
     }
   }, [isOpen, prevIsOpen]);
-
-  const startScanner = async () => {
-    setIsScannerOpen(true);
-    setTimeout(async () => {
-      try {
-        const scanner = new Html5Qrcode("route-qr-reader");
-        scannerRef.current = scanner;
-        await scanner.start(
-          { facingMode: "environment" },
-          { fps: 10, qrbox: { width: 250, height: 250 } },
-          (decodedText) => {
-            const bikeNum = decodedText.replace(/\D/g, '');
-            if (bikeNum) {
-              setBikeListText(prev => {
-                const current = prev.split(/[\s,;\n]+/).map(s => s.trim()).filter(Boolean);
-                return !current.includes(bikeNum) ? (prev ? `${prev}, ${bikeNum}` : bikeNum) : prev;
-              });
-              if (navigator.vibrate) navigator.vibrate(100);
-            }
-          },
-          () => {}
-        );
-      } catch (err) { console.error("Erro ao iniciar scanner:", err); setIsScannerOpen(false); }
-    }, 100);
-  };
 
   if (!isOpen) return null;
 
@@ -120,14 +169,39 @@ const RouteModal: React.FC<RouteModalProps> = ({
           <div>
             <div className="flex justify-between items-center mb-1">
               <label htmlFor="route-bike-list" className="block text-sm font-medium text-gray-700">Números das Bicicletas</label>
-              <button type="button" onClick={isScannerOpen ? stopScanner : startScanner}
-                className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded ${isScannerOpen ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
-                {isScannerOpen ? <><XIcon className="w-3 h-3"/> Fechar Scanner</> : <><QrCodeIcon className="w-3 h-3"/> Escanear QR</>}
+              <button type="button" onClick={() => setIsScannerOpen(!isScannerOpen)}
+                className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded ${isScannerOpen ? 'bg-red-100 text-red-600' : 'bg-indigo-100 text-indigo-600'}`}>
+                {isScannerOpen ? <><XIcon className="w-3 h-3"/> Fechar</> : <><MapIcon className="w-3 h-3"/> Escanear Mapa</>}
               </button>
             </div>
             {isScannerOpen && (
-              <div className="mb-3 border-2 border-blue-500 rounded-lg overflow-hidden bg-black">
-                <div id="route-qr-reader" className="w-full"></div>
+              <div className="mb-3 p-4 border-2 border-dashed border-indigo-200 rounded-xl bg-indigo-50/30 space-y-3">
+                {isScanning ? (
+                  <div className="flex flex-col items-center py-4">
+                    <Loader2 className="w-8 h-8 text-indigo-600 animate-spin mb-2" />
+                    <p className="text-[10px] font-bold text-indigo-700 uppercase tracking-widest">Analisando Mapa...</p>
+                  </div>
+                ) : (
+                  <>
+                    <label className="flex flex-col items-center justify-center py-4 cursor-pointer group">
+                      <div className="p-3 bg-indigo-100 rounded-full mb-2 group-hover:scale-110 transition-transform">
+                        <Upload className="w-5 h-5 text-indigo-600" />
+                      </div>
+                      <p className="text-[10px] font-bold text-indigo-700 uppercase text-center">Clique para Upload ou Cole (Ctrl+V)</p>
+                      <input type="file" className="hidden" accept="image/*" onChange={handleFileUpload} />
+                    </label>
+                    <div className="flex items-center justify-center gap-1.5 text-[8px] text-indigo-400 font-bold uppercase">
+                      <Clipboard className="w-2.5 h-2.5" />
+                      <span>Área de Transferência Suportada</span>
+                    </div>
+                  </>
+                )}
+                {scanError && (
+                  <div className="flex items-center gap-2 text-red-600 bg-red-50 p-2 rounded-lg text-[9px] font-bold uppercase">
+                    <AlertCircle className="w-3 h-3" />
+                    {scanError}
+                  </div>
+                )}
               </div>
             )}
             <p className="text-xs text-gray-500 mb-2">Cole ou digite os números, separados por espaço, vírgula ou quebra de linha.</p>

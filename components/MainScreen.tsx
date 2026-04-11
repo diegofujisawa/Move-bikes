@@ -279,6 +279,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   // --- Modais ---
   const [isRequestModalOpen, setRequestModalOpen] = useState(false);
+  const [prefilledBikeNumber, setPrefilledBikeNumber] = useState<string | undefined>(undefined);
   const [isRouteModalOpen, setRouteModalOpen] = useState(false);
   const [isTrailerModalOpen, setTrailerModalOpen] = useState(false);
   const [isReportModalOpen, setReportModalOpen] = useState(false);
@@ -372,6 +373,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // --- Dados auxiliares ---
   const [mechanicsList, setMechanicsList] = useState<any[]>([]);
   const [sheetsMechanicsList, setSheetsMechanicsList] = useState<any[]>([]);
+  const [mechanicsLiveDetails, setMechanicsLiveDetails] = useState<Record<string, any>>({});
   const [fbMechanicsFlow, setFbMechanicsFlow] = useState<any[]>([]);
   const [fbTechnicalFlow, setFbTechnicalFlow] = useState<any[]>([]);
   const [selectedMechanicBike, setSelectedMechanicBike] = useState<any>(null);
@@ -489,11 +491,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
     serverBikes.forEach(sBike => {
       const pat = String(sBike.patrimonio);
       const fbBike = fbMap[pat];
+      const live = mechanicsLiveDetails[pat];
 
       if (!fbBike) {
         // Não está no Firebase, adiciona se for status válido
         if (validMechanicsStatuses.includes(sBike.status)) {
-          result.push(sBike);
+          result.push({
+            ...sBike,
+            bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : sBike.bateria,
+            carregamento: live?.['Carregando'] !== undefined ? live['Carregando'] : sBike.carregamento
+          });
         }
       } else {
         // Está no Firebase. 
@@ -501,17 +508,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
         if (activeStatuses.includes(fbBike.status)) {
           result.push({
             ...fbBike,
+            // Prioridade para bateria e carregamento LIVE, depois servidor (Sheets), depois Firebase
+            bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : (sBike.bateria !== undefined ? sBike.bateria : fbBike.bateria),
+            carregamento: live?.['Carregando'] !== undefined ? live['Carregando'] : (sBike.carregamento !== undefined ? sBike.carregamento : fbBike.carregamento),
             dataEntrada: fbBike.dataEntrada?.toDate?.() || fbBike.dataEntrada || new Date(),
           });
         } 
         // Prioridade 2: Se o status do Firebase NÃO for ativo (ex: 'Remanejada' ou 'Finalizada')
         // mas o servidor diz 'Alterar Status' (novo registro no Relatório), o servidor prevalece.
         else if (sBike.status === 'Alterar Status') {
-          result.push(sBike);
+          result.push({
+            ...sBike,
+            bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : sBike.bateria,
+            carregamento: live?.['Carregando'] !== undefined ? live['Carregando'] : sBike.carregamento
+          });
         }
         // Caso contrário, se o status do servidor for válido (ex: 'Não encontrada'), mantém ele
         else if (validMechanicsStatuses.includes(sBike.status)) {
-          result.push(sBike);
+          result.push({
+            ...sBike,
+            bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : sBike.bateria,
+            carregamento: live?.['Carregando'] !== undefined ? live['Carregando'] : sBike.carregamento
+          });
         }
       }
     });
@@ -520,9 +538,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const serverPatrimonios = new Set(serverBikes.map(b => String(b.patrimonio)));
     fbFlow.forEach(fbBike => {
       const pat = String(fbBike.patrimonio);
+      const live = mechanicsLiveDetails[pat];
       if (!serverPatrimonios.has(pat) && activeStatuses.includes(fbBike.status)) {
         result.push({
           ...fbBike,
+          bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : fbBike.bateria,
+          carregamento: live?.['Carregando'] !== undefined ? live['Carregando'] : fbBike.carregamento,
           dataEntrada: fbBike.dataEntrada?.toDate?.() || fbBike.dataEntrada || new Date(),
         });
       }
@@ -539,7 +560,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
       return bike;
     }).filter(b => validMechanicsStatuses.includes(b.status));
-  }, []);
+  }, [mechanicsLiveDetails]);
 
   useEffect(() => {
     setMechanicsList(mergeMechanicsList(sheetsMechanicsList, fbMechanicsFlow));
@@ -667,13 +688,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
     });
   }, [driverName]);
 
-  // Remove bikes do roteiro se elas entrarem em alerta
+  // Remove bikes do roteiro se elas atingirem o limite de boletim
   useEffect(() => {
     if (alerts.length > 0 && routeBikes.length > 0) {
-      const alertPats = new Set(alerts.map(a => a.patrimonio?.toString().trim()));
-      const filtered = routeBikes.filter(id => !alertPats.has(id.toString().trim()));
+      const boletimPats = new Set(
+        alerts
+          .filter(a => a.check1 && a.check2 && a.check3)
+          .map(a => (a.patrimonio?.toString().trim() || a.id?.toString().trim()))
+      );
+      const filtered = routeBikes.filter(id => !boletimPats.has(id.toString().trim()));
       if (filtered.length !== routeBikes.length) {
-        console.log('[Alerts] Removendo bikes em alerta do roteiro:', routeBikes.length - filtered.length);
+        console.log('[Alerts] Removendo bikes com limite de boletim do roteiro:', routeBikes.length - filtered.length);
         setRouteBikes(filtered);
       }
     }
@@ -1034,6 +1059,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
       let newCollected: string[] = [...currentCollected];
 
       if (status === 'Recolhida') {
+        // Impede recolha de bikes em alerta que atingiram o limite de boletim
+        const alertForBike = alerts.find(a => (a.patrimonio?.toString().trim() || a.id?.toString().trim()) === bikeNumber);
+        if (alertForBike && alertForBike.check1 && alertForBike.check2 && alertForBike.check3) {
+          alert(`Atenção! A bicicleta ${bikeNumber} atingiu o limite para Boletim e não pode ser recolhida.`);
+          return;
+        }
+
         if (currentCollected.includes(bikeNumber)) {
           alert(`Você já está em posse da bicicleta ${bikeNumber}.`);
           return;
@@ -1352,10 +1384,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
   };
 
   const handleCreateRequest = async (details: { bikeNumber: string; location: string; reason: string; recipient: string }) => {
-    // Impede solicitações para bikes em alerta
-    const alertPats = new Set(alerts.map(a => a.patrimonio?.toString().trim()));
-    if (alertPats.has(details.bikeNumber.trim())) {
-      alert(`Atenção! A bicicleta ${details.bikeNumber} está em ALERTA e não pode receber novas solicitações.`);
+    // Impede solicitações para bikes em alerta que atingiram o limite de boletim
+    const bikeNum = details.bikeNumber.trim();
+    const alertForBike = alerts.find(a => (a.patrimonio?.toString().trim() || a.id?.toString().trim()) === bikeNum);
+    
+    if (alertForBike && alertForBike.check1 && alertForBike.check2 && alertForBike.check3) {
+      alert(`Atenção! A bicicleta ${details.bikeNumber} atingiu o limite para Boletim e não pode receber novas solicitações.`);
       return;
     }
 
@@ -1372,11 +1406,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const handleCreateRoute = async (details: { routeName: string; bikeNumbers: string[]; recipient: string }) => {
     if (!details.bikeNumbers?.length) { alert('Insira ao menos uma bicicleta.'); return; }
     
-    // Impede envio de bikes em alerta para o roteiro
-    const alertPats = new Set(alerts.map(a => a.patrimonio?.toString().trim()));
-    const blockedBikes = details.bikeNumbers.filter(num => alertPats.has(num.trim()));
+    // Impede envio de bikes em alerta que atingiram o limite de boletim para o roteiro
+    const boletimPats = new Set(
+      alerts
+        .filter(a => a.check1 && a.check2 && a.check3)
+        .map(a => (a.patrimonio?.toString().trim() || a.id?.toString().trim()))
+    );
+    const blockedBikes = details.bikeNumbers.filter(num => boletimPats.has(num.trim()));
     if (blockedBikes.length > 0) {
-      alert(`Atenção! As seguintes bicicletas estão em ALERTA e não podem ser enviadas para o roteiro:\n\n${blockedBikes.join(', ')}`);
+      alert(`Atenção! As seguintes bicicletas atingiram o limite para Boletim e não podem ser enviadas para o roteiro:\n\n${blockedBikes.join(', ')}`);
       return;
     }
 
@@ -1397,11 +1435,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const handleCreateTrailer = async (details: { routeName: string; bikeNumbers: string[]; recipient: string }) => {
     if (!details.bikeNumbers?.length) { alert('Insira ao menos uma bicicleta.'); return; }
 
-    // Impede envio de bikes em alerta para a carretinha
-    const alertPats = new Set(alerts.map(a => a.patrimonio?.toString().trim()));
-    const blockedBikes = details.bikeNumbers.filter(num => alertPats.has(num.trim()));
+    // Impede envio de bikes em alerta que atingiram o limite de boletim para a carretinha
+    const boletimPats = new Set(
+      alerts
+        .filter(a => a.check1 && a.check2 && a.check3)
+        .map(a => (a.patrimonio?.toString().trim() || a.id?.toString().trim()))
+    );
+    const blockedBikes = details.bikeNumbers.filter(num => boletimPats.has(num.trim()));
     if (blockedBikes.length > 0) {
-      alert(`Atenção! As seguintes bicicletas estão em ALERTA e não podem ser enviadas para a carretinha:\n\n${blockedBikes.join(', ')}`);
+      alert(`Atenção! As seguintes bicicletas atingiram o limite para Boletim e não podem ser enviadas para a carretinha:\n\n${blockedBikes.join(', ')}`);
       return;
     }
 
@@ -1446,12 +1488,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
           protectMechanicBike(bikePat, targetStatus);
           const finalName = mechanicName || driverName;
           
+          // Tenta pegar a bateria do resultado da consulta atual se o patrimônio bater
+          let currentBattery = undefined;
+          if (searchedBike && String(searchedBike['Patrimônio']) === String(bikePat)) {
+            currentBattery = formatBattery(searchedBike['Bateria']);
+          }
+
           if (isTecnica) {
             await setDoc(doc(db, 'technical_flow', bikePat), {
               patrimonio: bikePat,
               status: targetStatus,
               dataEntrada: serverTimestamp(),
               [targetStatus === 'Em Técnica' ? 'tecnico' : 'mecanico']: finalName,
+              bateria: currentBattery,
               ultimaAtualizacao: serverTimestamp()
             }, { merge: true }).catch(() => {});
           } else {
@@ -1461,6 +1510,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               dataEntrada: serverTimestamp(),
               mecanico: finalName,
               tratativa: 'MANUAL',
+              bateria: currentBattery,
               ultimaAtualizacao: serverTimestamp()
             }, { merge: true }).catch(() => {});
           }
@@ -1691,12 +1741,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
-  const handleBikeMovementSearch = async () => {
-    if (!bikeSearchTerm.trim()) return;
+  const handleBikeMovementSearch = async (termOverride?: string) => {
+    const term = (termOverride || bikeSearchTerm).trim();
+    if (!term) return;
     setIsBikeSearchLoading(true);
     setBikeSearchResult([]);
     try {
-      const result = await apiCall({ action: 'getBikeMovement', bikeNumber: bikeSearchTerm.trim(), limit: bikeSearchLimit });
+      const result = await apiCall({ action: 'getBikeMovement', bikeNumber: term, limit: bikeSearchLimit });
       if (result.success) setBikeSearchResult(result.data || []);
       else alert('Bike não encontrada: ' + result.error);
     } catch (e: any) { alert('Erro: ' + e.message); }
@@ -3210,6 +3261,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
       if (d.mechanicsList) {
         setSheetsMechanicsList(d.mechanicsList || []);
+        
+        // Busca baterias em tempo real para bikes na mecânica
+        const bikeNumbers = (d.mechanicsList as any[]).map(b => String(b.patrimonio));
+        if (bikeNumbers.length > 0) {
+          apiCall({ action: 'getBikeDetailsBatch', bikeNumbers }, 1, true).then(res => {
+            if (res.success && res.data) {
+              setMechanicsLiveDetails(prev => ({ ...prev, ...res.data }));
+            }
+          }).catch(() => {});
+        }
       }
       if (d.driversSummary) {
         const filteredSummary = d.driversSummary.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
@@ -4298,7 +4359,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             </button>
           )}
           {!isMecanica && !isTecnica && <>
-            <button onClick={() => setRequestModalOpen(true)} disabled={isLoading} title="Nova Solicitação" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
+            <button onClick={() => { setPrefilledBikeNumber(undefined); setRequestModalOpen(true); }} disabled={isLoading} title="Nova Solicitação" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             <button onClick={() => setRouteModalOpen(true)} disabled={isLoading} title="Criar Roteiro" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusPlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             {!isAdm && (
               <button onClick={() => setTrailerModalOpen(true)} disabled={isLoading} title="Carretinha" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><TrailerIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
@@ -4784,7 +4845,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               )}
                             </div>
                             <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                              {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {bike.bateria}%</p>}
+                              {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {formatBattery(bike.bateria)}%</p>}
                               {bike.carregamento === 'Carregando' && <p className="text-[10px] text-green-600 font-bold">⚡ Carregando</p>}
                               {bike.carregamento === 'Não carregando' && <p className="text-[10px] text-red-500 font-bold">🔌 Não carregando</p>}
                             </div>
@@ -4833,7 +4894,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             <span className="font-bold text-gray-700">Bike: {bike.patrimonio}</span>
                           </div>
                           <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                            {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {bike.bateria}%</p>}
+                            {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {formatBattery(bike.bateria)}%</p>}
                           </div>
                           {bike.motorista && <p className="text-[10px] text-blue-700 font-semibold">Motorista: {bike.motorista}</p>}
                           {bike.observacao && <p className="text-[10px] text-orange-600">Motivo: {bike.observacao}</p>}
@@ -4912,7 +4973,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           <div>
                             <span className="font-bold text-gray-700">Bike: {bike.patrimonio}</span>
                             <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                              {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {bike.bateria}%</p>}
+                              {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {formatBattery(bike.bateria)}%</p>}
                               {bike.carregamento === 'Carregando' && <p className="text-[10px] text-green-600 font-bold">⚡ Carregando</p>}
                               {bike.carregamento === 'Não carregando' && <p className="text-[10px] text-red-500 font-bold">🔌 Não carregando</p>}
                             </div>
@@ -4980,7 +5041,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               {bike.tratativa && bike.tratativa !== 'MANUAL' && <span className="text-gray-400 flex-1 truncate text-[9px]">{bike.tratativa}</span>}
                               <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
                                 {bike.bateria !== undefined && (
-                                  <span className={`text-[10px] font-bold ${Number(bike.bateria) < 85 ? 'text-red-500' : 'text-gray-500'}`}>🔋{bike.bateria}%</span>
+                                  <span className={`text-[10px] font-bold ${Number(formatBattery(bike.bateria)) < 85 ? 'text-red-500' : 'text-gray-500'}`}>🔋{formatBattery(bike.bateria)}%</span>
                                 )}
                                 {trailer !== 'Sem Carretinha' ? (
                                   <button onClick={async () => {
@@ -5607,7 +5668,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 ? <button onClick={() => handleConfirmFound(alert.id)} disabled={isLoading} className="px-1 py-0.5 bg-green-600 text-white text-[8px] font-bold rounded hover:bg-green-700 disabled:bg-gray-400 leading-none">{isLoading ? '...' : 'Confirmar'}</button>
                                 : (alert.check1 && alert.check2 && alert.check3)
                                   ? <span className="text-[9px] text-red-600 font-black uppercase">Boletim</span>
-                                  : <span className="text-[9px] text-gray-400 italic">Pendente</span>}
+                                  : (
+                                    <button 
+                                      onClick={() => { 
+                                        setPrefilledBikeNumber(alert.patrimonio || alert.id); 
+                                        setRequestModalOpen(true); 
+                                      }} 
+                                      className="px-1.5 py-1 bg-blue-600 text-white text-[8px] font-bold rounded hover:bg-blue-700 active:scale-95 transition-transform"
+                                    >
+                                      Solicitar
+                                    </button>
+                                  )}
                             </td>
                           </tr>
                         )) : (
@@ -6712,7 +6783,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
         );
       })()}
 
-      <RequestModal isOpen={isRequestModalOpen} onClose={() => setRequestModalOpen(false)} onSubmit={handleCreateRequest} isLoading={isLoading} motoristas={motoristas} driverLocations={driverLocations} error={error} clearError={() => setError(null)}/>
+      <RequestModal 
+        isOpen={isRequestModalOpen} 
+        onClose={() => setRequestModalOpen(false)} 
+        onSubmit={handleCreateRequest} 
+        isLoading={isLoading} 
+        motoristas={motoristas} 
+        driverLocations={driverLocations} 
+        error={error} 
+        clearError={() => setError(null)}
+        initialBikeNumber={prefilledBikeNumber}
+      />
       <EditDriverModal isOpen={isEditDriverModalOpen} onClose={() => setIsEditDriverModalOpen(false)} driver={editingDriver} onSave={handleUpdateDriverState} isLoading={isLoading}/>
       <RouteModal isOpen={isRouteModalOpen} onClose={() => setRouteModalOpen(false)} onSubmit={handleCreateRoute} isLoading={isLoading} pendingBikeNumbers={allActiveBikes} motoristas={motoristas} error={error} clearError={() => setError(null)} type="route"/>
       <RouteModal isOpen={isTrailerModalOpen} onClose={() => setTrailerModalOpen(false)} onSubmit={handleCreateTrailer} isLoading={isLoading} pendingBikeNumbers={allActiveBikes} motoristas={motoristas} error={error} clearError={() => setError(null)} type="trailer"/>

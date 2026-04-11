@@ -1840,7 +1840,7 @@ function getAlerts(forceScan = false) {
               }
               
               const isMissing = st === 'não encontrada' || st === 'nao encontrada';
-              const isFound = st.includes('remanejada') || st.includes('estação') || st.includes('estacao') || st.includes('filial') || st.includes('vandalizada');
+              const isFound = st.includes('remanejada') || st.includes('estação') || st.includes('estacao') || st.includes('filial') || st.includes('vandalizada') || st.includes('recolhida') || st.includes('mecanica') || st.includes('manutenção') || st.includes('manutencao') || st.includes('tecnica');
               
               if (isMissing) {
                 if (!bikeHistory[pat] || bikeHistory[pat].situacao === STATUS.LOCALIZADA) {
@@ -1939,7 +1939,7 @@ function updateAlertFromReport(patrimonio, status, timestamp) {
   const pat = patrimonio.toString().trim();
   
   const isMissing = st === 'não encontrada' || st === 'nao encontrada';
-  const isFound = st.includes('remanejada') || st.includes('estação') || st.includes('estacao') || st.includes('filial') || st.includes('vandalizada');
+  const isFound = st.includes('remanejada') || st.includes('estação') || st.includes('estacao') || st.includes('filial') || st.includes('vandalizada') || st.includes('recolhida') || st.includes('mecanica') || st.includes('manutenção') || st.includes('manutencao') || st.includes('tecnica');
   
   if (!isMissing && !isFound) return;
 
@@ -2948,6 +2948,7 @@ function getBikeDetailsBatch(bikeNumbers) {
         'Localidade': row[COLUMN_INDICES.BIKES.LOCALIDADE - 1],
         'Usuário':    row[COLUMN_INDICES.BIKES.USUARIO - 1],
         'Bateria':    row[COLUMN_INDICES.BIKES.BATERIA - 1],
+        'Carregando': row[COLUMN_INDICES.BIKES.CARREGAMENTO - 1],
         'Trava':      row[COLUMN_INDICES.BIKES.TRAVA - 1],
         'Latitude':   parseCoordinate(row[COLUMN_INDICES.BIKES.LATITUDE - 1]),
         'Longitude':  parseCoordinate(row[COLUMN_INDICES.BIKES.LONGITUDE - 1]),
