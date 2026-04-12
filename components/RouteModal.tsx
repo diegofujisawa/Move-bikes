@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PlusPlusIcon, XIcon, TrailerIcon, MapIcon } from './icons';
-import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { Upload, Loader2, Clipboard, AlertCircle } from 'lucide-react';
 
 interface RouteModalProps {
@@ -62,21 +62,28 @@ const RouteModal: React.FC<RouteModalProps> = ({
     setIsScanning(true);
     setScanError(null);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        console.error("GEMINI_API_KEY is not defined in the environment.");
+        setScanError("Erro: Chave API não configurada.");
+        return;
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
+      const mimeType = base64Image.split(';')[0].split(':')[1] || "image/png";
       const base64Data = base64Image.split(',')[1];
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-flash-latest",
         contents: [
           {
             parts: [
-              { inlineData: { mimeType: "image/png", data: base64Data } },
+              { inlineData: { mimeType, data: base64Data } },
               { text: "List bike numbers in this map. Return ONLY a JSON array of strings. Fast mode." }
             ]
           }
         ],
         config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.ARRAY,
@@ -96,9 +103,9 @@ const RouteModal: React.FC<RouteModalProps> = ({
       } else {
         setScanError("Nenhuma bike detectada.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Scan error:", err);
-      setScanError("Erro ao processar imagem.");
+      setScanError(`Erro ao processar imagem: ${err.message || 'Erro desconhecido'}`);
     } finally {
       setIsScanning(false);
     }
