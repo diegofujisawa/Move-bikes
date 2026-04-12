@@ -1116,7 +1116,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
           status: 'Não encontrada', responsavel: null, ultimaAtualizacao: serverTimestamp()
         }, { merge: true }).catch(err => console.warn('[Firebase] bikes write:', err.code));
 
+        try {
+          const deterministicId = `${bikeNumber}_${localDateStr()}`;
+          await setDoc(doc(db, 'reports', deterministicId), {
+            patrimonio: bikeNumber,
+            motorista: driverName,
+            status: 'Não encontrada',
+            observacao: 'Bicicleta não encontrada no local',
+            timestamp: serverTimestamp(),
+            type: 'Finalização'
+          }, { merge: true });
+        } catch (e) {
+          console.warn('[Firebase] reports write failed:', e);
+        }
+
         persistDriverState(newRoute, newCollected);
+        
+        apiCall({
+          action: 'finalizeCollectedBike', driverName, bikeNumber,
+          finalStatus: 'Não encontrada', finalObservation: 'Bicicleta não encontrada no local'
+        }, 1, true).catch(e => console.warn('[Sheets] finalizeCollectedBike (Não encontrada):', e));
+
         setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não encontrada.`);
       }
 
@@ -1214,9 +1234,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
 
       try {
-        // Gera um ID determinístico para evitar duplicidade no Firebase (mesma bike, motorista e minuto)
-        const now = new Date();
-        const deterministicId = `${bikeNumber}_${normalizeName(driverName)}_${localDateStr()}_${now.getHours()}_${now.getMinutes()}`;
+        // Gera um ID determinístico para evitar duplicidade no Firebase (mesma bike no mesmo dia)
+        const deterministicId = `${bikeNumber}_${localDateStr()}`;
         
         await setDoc(doc(db, 'reports', deterministicId), {
           patrimonio: bikeNumber,

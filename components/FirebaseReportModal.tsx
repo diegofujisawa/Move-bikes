@@ -7,13 +7,20 @@ import {
   onSnapshot, 
   deleteDoc, 
   doc, 
-  addDoc, 
+  setDoc,
   serverTimestamp,
   Timestamp
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { FirebaseReport } from '../types';
 import { apiCall } from '../api';
+
+// Helper: data local no formato YYYY-MM-DD
+const localDateStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+
 import { 
   XIcon, 
   PlusIcon, 
@@ -92,11 +99,13 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     }
 
     try {
-      await addDoc(collection(db, 'reports'), {
+      const deterministicId = `${newReport.patrimonio}_${localDateStr()}`;
+      
+      await setDoc(doc(db, 'reports', deterministicId), {
         ...newReport,
         timestamp: serverTimestamp(),
         type: newReport.type || 'Manual'
-      });
+      }, { merge: true });
 
       // Sync to Sheets
       apiCall({
@@ -181,11 +190,12 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     const isAllowedStatus = statusLow.includes('recolhida') || 
                            statusLow.includes('vandalizada') || 
                            statusLow.includes('estacao') ||
-                           statusLow.includes('filial');
+                           statusLow.includes('filial') ||
+                           statusLow.includes('nao encontrada');
     
     const isMecanica = motoristaLow.includes('mecanica') || typeLow.includes('mecanica');
     const isTrailerLogistics = statusLow.includes('carretinha') || typeLow === 'logistica';
-    const isIntermediate = typeLow === 'recolhida' || typeLow === 'nao encontrada' || typeLow === 'nao atendida';
+    const isIntermediate = typeLow === 'recolhida' || typeLow === 'nao atendida';
 
     if (!isAllowedStatus || isMecanica || isTrailerLogistics || isIntermediate) return false;
 
@@ -201,11 +211,12 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     const isAllowedStatus = statusLow.includes('recolhida') || 
                            statusLow.includes('vandalizada') || 
                            statusLow.includes('estacao') ||
-                           statusLow.includes('filial');
+                           statusLow.includes('filial') ||
+                           statusLow.includes('nao encontrada');
     
     const isMecanica = motoristaLow.includes('mecanica') || typeLow.includes('mecanica');
     const isTrailerLogistics = statusLow.includes('carretinha') || typeLow === 'logistica';
-    const isIntermediate = typeLow === 'recolhida' || typeLow === 'nao encontrada' || typeLow === 'nao atendida';
+    const isIntermediate = typeLow === 'recolhida' || typeLow === 'nao atendida';
     
     return isAllowedStatus && !isMecanica && !isTrailerLogistics && !isIntermediate;
   });
@@ -412,6 +423,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
                         (report.status || '').toLowerCase().includes('manutenção') || (report.status || '').toLowerCase().includes('manutencao') ? 'bg-blue-100 text-blue-700' :
                         (report.status || '').toLowerCase().includes('vandalizada') ? 'bg-red-100 text-red-700' :
                         (report.status || '').toLowerCase().includes('estação') || (report.status || '').toLowerCase().includes('estacao') ? 'bg-green-100 text-green-700' :
+                        (report.status || '').toLowerCase().includes('nao encontrada') ? 'bg-gray-200 text-gray-800' :
                         'bg-gray-100 text-gray-600'
                       }`}>
                         {(report.status || '').toUpperCase() === 'FILIAL' ? 'RECOLHIDA' : (report.status || '---')}
