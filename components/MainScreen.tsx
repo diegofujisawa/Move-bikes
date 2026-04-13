@@ -3133,8 +3133,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
     try {
       // Detecta bikes removidas da posse pelo ADM
       if (editingDriver) {
-        const currentCollected = editingDriver.realTime.collected.map(String);
-        const newCollected = collected.map(String);
+        const currentCollected = (editingDriver.realTime?.collected || []).map(String);
+        const newCollected = (collected || []).map(String);
         const removedBikes = currentCollected.filter(b => !newCollected.includes(b));
         
         removedBikes.forEach(bikeNumber => {
@@ -3403,7 +3403,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     try {
       const r = await apiCall({ action: 'getDriversSummary', timeRange: range, timelineDate }, 1, true);
       if (r.success && summaryTimeRange === range) {
-        const filteredData = r.data.filter((d: any) => d.name?.toUpperCase() !== 'MECANICA');
+        const filteredData = (r.data || []).filter((d: any) => d.name?.toUpperCase() !== 'MECANICA');
         setDriversSummary(prev => {
           // Preserva timeline e timelineWindow anteriores se o novo dado não tem eventos
           // (garante que eventos passados não somem entre syncs)
@@ -5800,7 +5800,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 <div className="flex items-center justify-between mb-1.5">
                                   <p className="text-[8px] font-black text-gray-400 uppercase tracking-wider">Linha do Tempo</p>
                                   <button
-                                    onClick={() => setTimelineModal({ driver: driver.name, events: clusters, startMs: startMs!, endMs: endMs! })}
+                                    onClick={() => setTimelineModal({ driver: driver.name, events, clusters, startMs: startMs!, endMs: endMs! })}
                                     className="text-[8px] text-blue-500 font-bold hover:underline"
                                   >⤢ Expandir</button>
                                 </div>
@@ -5867,14 +5867,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             ))}
                           </div>
                           <div className="mb-2">
-                            <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Bikes em Posse ({driver.realTime.collected.length})</p>
-                            {driver.realTime.collected.length > 0
+                            <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Bikes em Posse ({driver.realTime?.collected?.length || 0})</p>
+                            {driver.realTime?.collected && driver.realTime.collected.length > 0
                               ? <div className="flex flex-wrap gap-1">{driver.realTime.collected.map((b: string) => <span key={b} className="px-1.5 py-0.5 bg-gray-50 text-gray-700 rounded text-[10px] font-mono border border-gray-200">{b}</span>)}</div>
                               : <p className="text-[9px] text-gray-400 italic">Nenhuma bike recolhida</p>}
                           </div>
                           <div>
-                            <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Roteiro Atual ({driver.realTime.route.length})</p>
-                            {driver.realTime.route.length > 0
+                            <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Roteiro Atual ({driver.realTime?.route?.length || 0})</p>
+                            {driver.realTime?.route && driver.realTime.route.length > 0
                               ? <div className="flex flex-wrap gap-1">{driver.realTime.route.map((b: string) => <span key={b} className="px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded text-[10px] font-mono border border-blue-100">{b}</span>)}</div>
                               : <p className="text-[9px] text-gray-400 italic">Roteiro vazio</p>}
                           </div>
@@ -6954,7 +6954,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       {/* Modal Timeline Expandida */}
       {timelineModal && (() => {
-        const { driver, clusters, startMs, endMs } = timelineModal;
+        const { driver, clusters = [], startMs, endMs } = timelineModal;
         const totalMs = endMs - startMs || 1;
         const toPos = (tsMs: number) => Math.max(0, Math.min(100, (tsMs - startMs) / totalMs * 100));
         const fmtTime = (ms: number) => {
