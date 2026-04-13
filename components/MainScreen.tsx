@@ -319,7 +319,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [driversSummary, setDriversSummary] = useState<any[]>([]);
   const [trailersHistory, setTrailersHistory] = useState<any[]>([]);
   const [firebaseTimelineEvents, setFirebaseTimelineEvents] = useState<Record<string, Array<{tsMs: number, type: string, bikeNumber?: string}>>>({});
-  const [timelineModal, setTimelineModal] = useState<{driver: string, events: any[], startMs: number, endMs: number} | null>(null);
+  const [timelineModal, setTimelineModal] = useState<{driver: string, events: any[], clusters: any[], startMs: number, endMs: number} | null>(null);
   const [timelineDate, setTimelineDate] = useState<string>(localDateStr()); // YYYY-MM-DD
   const [summaryTimeRange, setSummaryTimeRange] = useState<'day' | 'week' | 'month' | '-1' | '-7'>('day');
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
@@ -1075,10 +1075,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
         newRoute = newRoute.filter(b => String(b) !== bikeNumber);
 
         // 1. Atualiza UI e Refs imediatamente
+        const isOcc = !!routeBikesDetails[bikeNumber]?.ocorrencia || !!searchedBike?.ocorrencia;
         setCollectedBikes(newCollected);
         setRouteBikes(newRoute);
         collectedBikesRef.current = newCollected;
         routeBikesRef.current = newRoute;
+        
+        setCollectedBikesDetails(prev => ({
+          ...prev,
+          [bikeNumber]: { 
+            ...(routeBikesDetails[bikeNumber] || searchedBike || {}), 
+            ocorrencia: isOcc 
+          }
+        }));
+
         setSearchedBike(null);
         setSearchTerm('');
 
@@ -1094,7 +1104,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           driverName, bikeNumber, type: 'em_posse',
           timestamp: serverTimestamp(),
           date: localDateStr(),
-          isOccurrence: !!bikeDetails[bikeNumber]?.ocorrencia
+          isOccurrence: !!routeBikesDetails[bikeNumber]?.ocorrencia || !!searchedBike?.ocorrencia
         }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
 
         await persistDriverState(newRoute, newCollected);
@@ -1137,7 +1147,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             driverName, bikeNumber, type: 'nao_encontrada',
             timestamp: serverTimestamp(),
             date: localDateStr(),
-            isOccurrence: !!bikeDetails[bikeNumber]?.ocorrencia,
+            isOccurrence: !!routeBikesDetails[bikeNumber]?.ocorrencia || !!searchedBike?.ocorrencia,
             observacao: 'Bicicleta não encontrada no local'
           }),
           apiCall({
@@ -1233,7 +1243,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     let finalObservation = observation;
     // Se a bike era uma ocorrência/solicitação, garante que o termo apareça na observação para o dashboard analítico
-    if (bikeDetails[bikeNumber]?.ocorrencia && !finalObservation.toLowerCase().includes('solicitado recolha')) {
+    const isOccurrence = !!collectedBikesDetails[bikeNumber]?.ocorrencia || !!routeBikesDetails[bikeNumber]?.ocorrencia;
+    if (isOccurrence && !finalObservation.toLowerCase().includes('solicitado recolha')) {
       finalObservation = `Solicitado Recolha - ${finalObservation}`;
     }
 
@@ -1271,7 +1282,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
           timestamp: serverTimestamp(),
           date: localDateStr(),
-          isOccurrence: !!bikeDetails[bikeNumber]?.ocorrencia,
+          isOccurrence: isOccurrence,
           observacao: finalObservation
         }),
         apiCall({
@@ -1340,6 +1351,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setRouteBikes(newRoute);
         collectedBikesRef.current = newCollected;
         routeBikesRef.current = newRoute;
+
+        setCollectedBikesDetails(prev => {
+          const next = { ...prev };
+          bikesToAdd.forEach(id => {
+            next[id] = { ...next[id], ocorrencia: true };
+          });
+          return next;
+        });
+
         // Firebase não-bloqueante
         bikesToAdd.forEach(id => {
           setDoc(doc(db, 'bikes', id), {
@@ -1378,6 +1398,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setCollectedBikes(newCollected);
         routeBikesRef.current = newRoute;
         collectedBikesRef.current = newCollected;
+
+        setRouteBikesDetails(prev => {
+          const next = { ...prev };
+          bikesToAdd.forEach(id => {
+            next[id] = { ...next[id], ocorrencia: true };
+          });
+          return next;
+        });
+
         // Firebase não-bloqueante
         bikesToAdd.forEach(id => {
           setDoc(doc(db, 'bikes', id), {
@@ -5775,23 +5804,26 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                     className="text-[8px] text-blue-500 font-bold hover:underline"
                                   >⤢ Expandir</button>
                                 </div>
-                                <div className="relative h-5 mx-1">
-                                  <div className="absolute top-2 left-0 right-0 h-px bg-gray-900"/>
-                                  <span className="absolute top-3.5 left-0 text-[7px] text-gray-400 font-mono">{fmtTime(startMs!)}</span>
-                                  <span className="absolute top-3.5 right-0 text-[7px] text-gray-400 font-mono">{fmtTime(endMs!)}</span>
+                                <div className="relative h-8 mx-1">
+                                  <div className="absolute top-4 left-0 right-0 h-px bg-gray-900"/>
+                                  <span className="absolute top-5.5 left-0 text-[7px] text-gray-400 font-mono">{fmtTime(startMs!)}</span>
+                                  <span className="absolute top-5.5 right-0 text-[7px] text-gray-400 font-mono">{fmtTime(endMs!)}</span>
                                   {clusters.map((cl, ci) => {
                                     const pos = toPos(cl.tsMs);
                                     const cfg = dotConfig[cl.type] || { bg: 'bg-gray-400', label: cl.type };
                                     const isMulti = cl.count > 1;
                                     return (
-                                      <div key={ci} className="absolute -translate-x-1/2 top-0.5 flex flex-col items-center"
+                                      <div key={ci} className="absolute -translate-x-1/2 top-2.5 flex flex-col items-center"
                                         style={{left: `${pos}%`}}
                                         title={`${cl.isOccurrence ? '[OCORRÊNCIA] ' : ''}${(cl.type === 'carretinha' || cl.type === 'removida_por_adm') && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}${cl.type === 'em_posse' && cl.bikes.length > 0 ? ` Bike ${cl.bikes.join(', ')}` : isMulti ? ` (${cl.count} bikes)` : ''} — ${fmtTime(cl.tsMs)}`}
                                       >
-                                        <div className={`rounded-full border-2 shadow-sm flex items-center justify-center ${isMulti ? 'w-4 h-4' : 'w-2.5 h-2.5'} ${cfg.bg} ${cl.isOccurrence ? (cl.type === 'nao_encontrada' ? 'border-red-500 ring-2 ring-red-400/50' : 'border-yellow-400 ring-2 ring-yellow-400/50') + ' animate-pulse' : 'border-white'}`}>
-                                          {cl.isOccurrence ? (
-                                            <span className={`text-[6px] font-bold ${cl.type === 'nao_encontrada' ? 'text-red-100' : 'text-yellow-100'}`}>★</span>
-                                          ) : isMulti && (
+                                        {cl.isOccurrence && (
+                                          <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 flex flex-col items-center animate-pulse">
+                                            <span className={`text-[12px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
+                                          </div>
+                                        )}
+                                        <div className={`rounded-full border-2 shadow-sm flex items-center justify-center ${isMulti ? 'w-4 h-4' : 'w-2.5 h-2.5'} ${cfg.bg} ${cl.isOccurrence ? (cl.type === 'nao_encontrada' ? 'border-red-500 ring-2 ring-red-400/50' : 'border-yellow-400 ring-2 ring-yellow-400/50') : 'border-white'}`}>
+                                          {isMulti && !cl.isOccurrence && (
                                             <span className="text-[7px] font-black text-white leading-none">{cl.count}</span>
                                           )}
                                         </div>
@@ -5806,6 +5838,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                       <span className="text-[7px] text-gray-400">{v.label}</span>
                                     </div>
                                   ))}
+                                  <div className="flex items-center gap-1 ml-auto">
+                                    <div className="flex items-center gap-0.5">
+                                      <span className="text-[10px] text-yellow-500">★</span>
+                                      <span className="text-[7px] text-gray-400">Ocorrência Recolhida</span>
+                                    </div>
+                                    <div className="flex items-center gap-0.5">
+                                      <span className="text-[10px] text-red-600">★</span>
+                                      <span className="text-[7px] text-gray-400">Ocorrência Não Encontrada</span>
+                                    </div>
+                                  </div>
                                 </div>
                               </div>
                             );
@@ -6912,7 +6954,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       {/* Modal Timeline Expandida */}
       {timelineModal && (() => {
-        const { driver, events, startMs, endMs } = timelineModal;
+        const { driver, clusters, startMs, endMs } = timelineModal;
         const totalMs = endMs - startMs || 1;
         const toPos = (tsMs: number) => Math.max(0, Math.min(100, (tsMs - startMs) / totalMs * 100));
         const fmtTime = (ms: number) => {
@@ -6948,7 +6990,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
 
               {/* Linha do tempo expandida */}
-              <div className="relative mb-6" style={{height: '60px'}}>
+              <div className="relative mb-8" style={{height: '80px'}}>
                 {/* Marcas de hora */}
                 {hourMarks.map((m, i) => (
                   <div key={i} className="absolute flex flex-col items-center" style={{left: `${toPos(m.ms)}%`}}>
@@ -6957,19 +6999,26 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   </div>
                 ))}
                 {/* Linha base */}
-                <div className="absolute top-3 left-0 right-0 h-0.5 bg-gray-900 rounded"/>
+                <div className="absolute top-6 left-0 right-0 h-0.5 bg-gray-900 rounded"/>
                 {/* Horários extremos */}
-                <span className="absolute top-6 left-0 text-[9px] text-gray-600 font-mono font-bold">{fmtTime(startMs)}</span>
-                <span className="absolute top-6 right-0 text-[9px] text-gray-600 font-mono font-bold">{fmtTime(endMs)}</span>
+                <span className="absolute top-9 left-0 text-[9px] text-gray-600 font-mono font-bold">{fmtTime(startMs)}</span>
+                <span className="absolute top-9 right-0 text-[9px] text-gray-600 font-mono font-bold">{fmtTime(endMs)}</span>
                 {/* Eventos agrupados */}
-                {events.map((cl: any, ci: number) => {
+                {clusters.map((cl: any, ci: number) => {
                   const pos = toPos(cl.tsMs);
                   const cfg = dotConfig[cl.type] || { bg: 'bg-gray-400', label: cl.type };
                   const isMulti = cl.count > 1;
                   return (
                     <div key={ci} className="absolute -translate-x-1/2 flex flex-col items-center" style={{left: `${pos}%`, top: 0}}>
-                      <div className={`rounded-full border-2 border-white shadow flex items-center justify-center ${isMulti ? 'w-6 h-6' : 'w-4 h-4'} ${cfg.bg}`}>
-                        {isMulti && <span className="text-[9px] font-black text-white">{cl.count}</span>}
+                      {cl.isOccurrence && (
+                        <div className="absolute -top-4 left-1/2 -translate-x-1/2 flex flex-col items-center animate-pulse">
+                          <span className={`text-[14px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
+                        </div>
+                      )}
+                      <div className={`rounded-full border-2 shadow flex items-center justify-center ${isMulti ? 'w-6 h-6' : 'w-4 h-4'} ${cfg.bg} ${cl.isOccurrence ? (cl.type === 'nao_encontrada' ? 'border-red-500 ring-2 ring-red-400/50' : 'border-yellow-400 ring-2 ring-yellow-400/50') : 'border-white'} mt-3`}>
+                        {isMulti && !cl.isOccurrence && (
+                          <span className="text-[9px] font-black text-white">{cl.count}</span>
+                        )}
                       </div>
                     </div>
                   );
@@ -6978,7 +7027,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
               {/* Lista detalhada de eventos */}
               <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                {events.map((cl: any, ci: number) => {
+                {clusters.map((cl: any, ci: number) => {
                   const cfg = dotConfig[cl.type] || { bg: 'bg-gray-400', label: cl.type };
                   return (
                     <div key={ci} className="flex items-start gap-3 p-2.5 bg-gray-50 rounded-lg border">
@@ -7022,6 +7071,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     <span className="text-[9px] text-gray-500">{v.label}</span>
                   </div>
                 ))}
+                <div className="flex items-center gap-2 ml-auto">
+                  <div className="flex items-center gap-1">
+                    <span className="text-[12px] text-yellow-500">★</span>
+                    <span className="text-[9px] text-gray-500 font-bold">Ocorrência Recolhida</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-[12px] text-red-600">★</span>
+                    <span className="text-[9px] text-gray-500 font-bold">Ocorrência Não Encontrada</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

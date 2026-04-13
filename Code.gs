@@ -1101,7 +1101,29 @@ function searchBike(bikeNumber) {
       'Última informação da posição':row[COLUMN_INDICES.BIKES.ULTIMA_INFO - 1],
       'Latitude':  parseCoordinate(row[COLUMN_INDICES.BIKES.LATITUDE - 1]),
       'Longitude': parseCoordinate(row[COLUMN_INDICES.BIKES.LONGITUDE - 1]),
+      'ocorrencia': false
     };
+
+    // Check if it's an active request
+    const requestsSheet = getSpreadsheet().getSheetByName(REQUESTS_SHEET_NAME);
+    if (requestsSheet) {
+      const lastRow = requestsSheet.getLastRow();
+      if (lastRow > 1) {
+        const numRows = Math.min(lastRow - 1, 500);
+        const reqData = requestsSheet.getRange(lastRow - numRows + 1, 1, numRows, requestsSheet.getLastColumn()).getValues();
+        const normalizedSearch = String(parseFloat(bikeStr) || bikeStr);
+        for (let i = reqData.length - 1; i >= 0; i--) {
+          const patRaw = String(reqData[i][COLUMN_INDICES.REQUESTS.PATRIMONIO - 1]).trim();
+          const situacao = String(reqData[i][COLUMN_INDICES.REQUESTS.SITUACAO - 1]).trim().toLowerCase();
+          const pats = patRaw.split(',').map(s => String(parseFloat(s.trim()) || s.trim()));
+          if (pats.includes(normalizedSearch) && (situacao === 'aceita' || situacao === 'pendente')) {
+            bikeObject.ocorrencia = true;
+            break;
+          }
+        }
+      }
+    }
+
     return { success: true, data: bikeObject };
   } catch (e) {
     return { success: false, error: 'Erro ao buscar bike: ' + e.message };
@@ -2747,7 +2769,16 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
         if (type) {
           const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
           const obs = String(row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').trim();
-          timelines[driverKey].push({ tsMs: ts.getTime(), hour: ts.getHours(), min: ts.getMinutes(), type, bikeNumber: pat, observacao: obs });
+          const isOcc = String(row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').trim() === 'Ocorrência';
+          timelines[driverKey].push({ 
+            tsMs: ts.getTime(), 
+            hour: ts.getHours(), 
+            min: ts.getMinutes(), 
+            type, 
+            bikeNumber: pat, 
+            observacao: obs,
+            isOccurrence: isOcc
+          });
         }
       });
 
@@ -2953,18 +2984,23 @@ function getRouteDetails(driverName, bikeNumbers, providedBikesSheet, providedRe
     const requestsData = lastRowReq > 1
       ? requestsSheet.getRange(lastRowReq - numRowsReq + 1, 1, numRowsReq, requestsSheet.getLastColumn()).getValues() : [];
 
-    const bikeNumberSet = new Set(bikeNumbers.map(String));
+    const bikeNumberSet = new Set(bikeNumbers.map(n => String(parseFloat(n) || String(n).trim())));
     const result = {};
 
     bikeNumbers.forEach(pat => {
-      const row = bikeIndex[String(pat).trim()];
+      const bikeStr = String(pat).trim();
+      const bikeNum = parseFloat(bikeStr);
+      let row = bikeIndex[bikeStr];
+      if (!row && !isNaN(bikeNum)) row = bikeIndex[String(bikeNum)];
+
       if (row) {
         result[pat] = {
           bikeNumber: pat,
           currentLat: parseCoordinate(row[COLUMN_INDICES.BIKES.LATITUDE - 1]),
           currentLng: parseCoordinate(row[COLUMN_INDICES.BIKES.LONGITUDE - 1]),
           battery: row[COLUMN_INDICES.BIKES.BATERIA - 1],
-          initialLat: null, initialLng: null
+          initialLat: null, initialLng: null,
+          ocorrencia: false
         };
       }
     });
@@ -2973,12 +3009,19 @@ function getRouteDetails(driverName, bikeNumbers, providedBikesSheet, providedRe
       const patrimonioRaw = String(requestsData[i][COLUMN_INDICES.REQUESTS.PATRIMONIO - 1]).trim();
       const acceptedBy    = String(requestsData[i][COLUMN_INDICES.REQUESTS.ACEITA_POR - 1]).trim().toLowerCase();
       const situacao      = String(requestsData[i][COLUMN_INDICES.REQUESTS.SITUACAO - 1]).trim().toLowerCase();
-      patrimonioRaw.split(',').map(s => s.trim()).filter(Boolean).forEach(patrimonio => {
-        if (bikeNumberSet.has(patrimonio) && acceptedBy === driverName.toLowerCase() && situacao === 'aceita') {
-          if (result[patrimonio] && result[patrimonio].initialLat === null) {
-            const local = String(requestsData[i][COLUMN_INDICES.REQUESTS.LOCAL - 1]);
-            const m = local.match(/(-?\d+[.,]\d+)\s*[,;]\s*(-?\d+[.,]\d+)/);
-            if (m) { result[patrimonio].initialLat = parseCoordinate(m[1]); result[patrimonio].initialLng = parseCoordinate(m[2]); }
+      
+      patrimonioRaw.split(',').map(s => s.trim()).filter(Boolean).forEach(rawPat => {
+        const patrimonio = String(parseFloat(rawPat) || rawPat);
+        if (bikeNumberSet.has(patrimonio) && acceptedBy === driverName.toLowerCase() && (situacao === 'aceita' || situacao === 'finalizada')) {
+          // Find the original bike number key in result
+          const originalKey = bikeNumbers.find(n => String(parseFloat(n) || String(n).trim()) === patrimonio);
+          if (originalKey && result[originalKey]) {
+            result[originalKey].ocorrencia = true;
+            if (result[originalKey].initialLat === null) {
+              const local = String(requestsData[i][COLUMN_INDICES.REQUESTS.LOCAL - 1]);
+              const m = local.match(/(-?\d+[.,]\d+)\s*[,;]\s*(-?\d+[.,]\d+)/);
+              if (m) { result[originalKey].initialLat = parseCoordinate(m[1]); result[originalKey].initialLng = parseCoordinate(m[2]); }
+            }
           }
         }
       });
