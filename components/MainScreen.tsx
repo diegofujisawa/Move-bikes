@@ -478,8 +478,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const mergeMechanicsList = useCallback((serverBikes: any[], fbFlow: any[]) => {
     const now = Date.now();
-    const activeStatuses = ['Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
-    const validMechanicsStatuses = ['Alterar Status', 'Não encontrada', ...activeStatuses];
+    const activeStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
+    const validMechanicsStatuses = activeStatuses;
     
     const fbMap: Record<string, any> = {};
     fbFlow.forEach(b => {
@@ -1505,7 +1505,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (isMecanica || isTecnica) {
         const directStatuses = isTecnica 
           ? ['Aguardando Técnica', 'Em Técnica']
-          : ['Alterar Status', 'Reserva', 'Aguardando Manutenção', 'Em Manutenção'];
+          : ['Alterar Status', 'Reserva', 'Aguardando Manutenção', 'Em Manutenção', 'Não encontrada'];
           
         if (directStatuses.includes(targetStatus)) {
           protectMechanicBike(bikePat, targetStatus);
@@ -1859,7 +1859,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
         else ts = new Date(); // Fallback para agora se não houver data
 
         const author = data.motorista || data.author || data.driverName || data.mecanico || data.tecnico || data.responsavel || '—';
-        const description = data.observacao || data.observation || data.tratativa || data.treatment || data.status || data.summary || data.action || data.motivo || data.reasons || '—';
+        
+        // Constrói uma descrição mais rica combinando status e outros campos
+        let description = data.observacao || data.observation || data.tratativa || data.treatment || data.summary || data.action || data.motivo || data.reasons || '';
+        const status = data.status || '';
+        
+        if (status && description && status !== description) {
+          description = `${status}: ${description}`;
+        } else if (status) {
+          description = status;
+        } else if (!description) {
+          description = '—';
+        }
+
         const location = data.localidade || data.room || data.estacao || data.station || '';
 
         return {
