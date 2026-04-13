@@ -17,7 +17,7 @@ import { auth, db } from '../firebase';
 import { signInWithPopup, GoogleAuthProvider, signInAnonymously } from 'firebase/auth';
 import {
   collection, onSnapshot, doc, updateDoc, addDoc, getDocs, deleteDoc,
-  serverTimestamp, setDoc, query, where, getDocFromServer
+  serverTimestamp, setDoc, query, where, getDocFromServer, getDoc
 } from 'firebase/firestore';
 import ScheduleModal from './ScheduleModal';
 import ReporModal from './ReporModal';
@@ -1764,17 +1764,164 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
-  const handleBikeMovementSearch = async (termOverride?: string) => {
-    const term = (termOverride || bikeSearchTerm).trim();
+  const handleBikeMovementSearch = async (termOverride?: any) => {
+    // Se termOverride for um evento (objeto), ignoramos e usamos bikeSearchTerm
+    const isEvent = termOverride && typeof termOverride === 'object' && 'nativeEvent' in termOverride;
+    const finalTerm = isEvent ? bikeSearchTerm : (termOverride || bikeSearchTerm);
+    
+    const term = String(finalTerm || '').trim();
     if (!term) return;
+    
+    setBikeSearchTerm(term); // Sincroniza o campo de busca
+    console.log('[Search] Iniciando busca para:', term);
     setIsBikeSearchLoading(true);
     setBikeSearchResult([]);
+    
     try {
-      const result = await apiCall({ action: 'getBikeMovement', bikeNumber: term, limit: bikeSearchLimit });
-      if (result.success) setBikeSearchResult(result.data || []);
-      else alert('Bike não encontrada: ' + result.error);
-    } catch (e: any) { alert('Erro: ' + e.message); }
-    finally { setIsBikeSearchLoading(false); }
+      // 1. Busca no Sheets (legado/sincronia)
+      let allRecords: any[] = [];
+      try {
+        const sheetsResult = await apiCall({ action: 'getBikeMovement', bikeNumber: term, limit: bikeSearchLimit });
+        if (sheetsResult.success && sheetsResult.data) {
+          console.log('[Search] Sheets encontrou:', sheetsResult.data.length);
+          allRecords = sheetsResult.data.map((r: any) => ({
+            ...r,
+            source: 'Sheets',
+            timestamp: r.timestamp || r['Data/Hora'] || r.date,
+            author: r.motorista || r['Nome do Motorista'] || r.author || '—',
+            description: r.status || r.observacao || '—'
+          }));
+        }
+      } catch (err) {
+        console.warn('[Search] Erro ao buscar no Sheets:', err);
+      }
+
+      // 2. Busca no Firebase
+      const termAsNum = parseInt(term);
+      const isNum = !isNaN(termAsNum) && /^\d+$/.test(term);
+
+      // Mapeamento de coleções e campos para busca
+      const searchConfigs = [
+        { col: 'bikes', field: 'patrimonio', type: 'Status Atual', useId: true },
+        { col: 'reports', field: 'patrimonio', type: 'Relatório' },
+        { col: 'reports', field: 'bikeNumber', type: 'Relatório' },
+        { col: 'boletins', field: 'bikeNumber', type: 'Boletim' },
+        { col: 'timeline_events', field: 'patrimonio', type: 'Linha do Tempo' },
+        { col: 'timeline_events', field: 'bikeNumber', type: 'Linha do Tempo' },
+        { col: 'mechanics_flow', field: 'patrimonio', type: 'Mecânica', useId: true },
+        { col: 'technical_flow', field: 'patrimonio', type: 'Técnica', useId: true }
+      ];
+
+      const queryPromises: Promise<any>[] = [];
+      
+      searchConfigs.forEach(config => {
+        if (config.useId) {
+          // Busca direta pelo ID do documento
+          queryPromises.push(getDoc(doc(db, config.col, term)));
+        } else {
+          // Busca como string
+          queryPromises.push(getDocs(query(collection(db, config.col), where(config.field, '==', term))));
+          // Busca como número se aplicável
+          if (isNum) {
+            queryPromises.push(getDocs(query(collection(db, config.col), where(config.field, '==', termAsNum))));
+          }
+        }
+      });
+
+      const snapshots = await Promise.all(queryPromises);
+      console.log('[Search] Firebase results recebidos:', snapshots.length);
+
+      const firebaseRecords: any[] = [];
+      const seenIds = new Set();
+
+      const processDoc = (docSnap: any, defaultType: string, collectionName: string) => {
+        if (!docSnap.exists()) return null;
+        
+        // Para coleções de fluxo ou status atual, usamos um ID composto para não serem barrados pelo seenIds
+        // se a bike aparecer em múltiplas coleções (ex: bikes e mechanics_flow)
+        const docId = collectionName === 'reports' || collectionName === 'timeline_events' || collectionName === 'boletins' 
+          ? docSnap.id 
+          : `${collectionName}_${docSnap.id}`;
+
+        if (seenIds.has(docId)) return null;
+        seenIds.add(docId);
+        
+        const data = docSnap.data();
+        
+        let ts = null;
+        if (data.timestamp?.toDate) ts = data.timestamp.toDate();
+        else if (data.date) ts = new Date(data.date);
+        else if (data.timestamp) ts = new Date(data.timestamp);
+        else if (data.dataEntrada?.toDate) ts = data.dataEntrada.toDate();
+        else if (data.ultimaAtualizacao?.toDate) ts = data.ultimaAtualizacao.toDate();
+        else if (data.dataSaida?.toDate) ts = data.dataSaida.toDate();
+        else if (data.dataFinalizacao) ts = new Date(data.dataFinalizacao);
+        else ts = new Date(); // Fallback para agora se não houver data
+
+        const author = data.motorista || data.author || data.driverName || data.mecanico || data.tecnico || data.responsavel || '—';
+        const description = data.observacao || data.observation || data.tratativa || data.treatment || data.status || data.summary || data.action || data.motivo || data.reasons || '—';
+        const location = data.localidade || data.room || data.estacao || data.station || '';
+
+        return {
+          id: docId,
+          ...data,
+          source: 'Firebase',
+          timestamp: ts,
+          author,
+          description: location ? `${description} (${location})` : description,
+          type: data.type || defaultType,
+          origem: collectionName
+        };
+      };
+
+      let resultIndex = 0;
+      searchConfigs.forEach(config => {
+        if (config.useId) {
+          const docSnap = snapshots[resultIndex++];
+          const r = processDoc(docSnap, config.type, config.col);
+          if (r) firebaseRecords.push(r);
+        } else {
+          // Processa snapshot da busca por string
+          const snapStr = snapshots[resultIndex++];
+          if (snapStr && !snapStr.empty) {
+            console.log(`[Search] ${config.col} (string) encontrou ${snapStr.docs.length}`);
+            snapStr.docs.forEach((d: any) => {
+              const r = processDoc(d, config.type, config.col);
+              if (r) firebaseRecords.push(r);
+            });
+          }
+
+          // Processa snapshot da busca por número
+          if (isNum) {
+            const snapNum = snapshots[resultIndex++];
+            if (snapNum && !snapNum.empty) {
+              console.log(`[Search] ${config.col} (number) encontrou ${snapNum.docs.length}`);
+              snapNum.docs.forEach((d: any) => {
+                const r = processDoc(d, config.type, config.col);
+                if (r) firebaseRecords.push(r);
+              });
+            }
+          }
+        }
+      });
+
+      console.log('[Search] Total Firebase processado:', firebaseRecords.length);
+
+      // Merge e Ordenação
+      const merged = [...allRecords, ...firebaseRecords].sort((a, b) => {
+        const dateA = a.timestamp instanceof Date ? a.timestamp : new Date(a.timestamp || 0);
+        const dateB = b.timestamp instanceof Date ? b.timestamp : new Date(b.timestamp || 0);
+        return dateB.getTime() - dateA.getTime();
+      });
+
+      console.log('[Search] Total final merged:', merged.length);
+      setBikeSearchResult(merged.slice(0, bikeSearchLimit));
+    } catch (e: any) { 
+      console.error('handleBikeMovementSearch error:', e);
+      alert('Erro ao buscar movimentação: ' + e.message); 
+    } finally { 
+      setIsBikeSearchLoading(false); 
+    }
   };
 
   const handleSearch = async (bikeToSearch?: string) => {
@@ -2329,8 +2476,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
       try {
         await addDoc(collection(db, 'reports'), {
           patrimonio: bikeNumber,
-          status: 'Mecânica',
+          status: 'Em Manutenção',
           motorista: mechanicName,
+          observacao: `Iniciada manutenção por ${mechanicName}`,
           timestamp: serverTimestamp(),
           type: 'Mecânica'
         });
@@ -6168,7 +6316,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         className="flex-1 p-1.5 border border-gray-300 rounded-md text-sm focus:ring-purple-500 focus:border-purple-500"
                       />
                       <button
-                        onClick={handleBikeMovementSearch}
+                        onClick={() => handleBikeMovementSearch()}
                         disabled={isBikeSearchLoading || !bikeSearchTerm.trim()}
                         className="px-3 py-1.5 bg-purple-600 text-white text-xs font-bold rounded-md hover:bg-purple-700 disabled:bg-gray-300 flex items-center gap-1"
                       >
@@ -6207,7 +6355,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         const isEstacao     = statusLow === 'estação' || statusLow === 'estacao' || statusLow === 'em estação';
                         const isVandalizada = statusLow === 'vandalizada';
                         const isNaoEnc      = statusLow.includes('não encontrada') || statusLow.includes('nao encontrada');
-                        const isMec         = statusLow.includes('manutenção') || statusLow.includes('manutencao') || statusLow === 'em manutenção' || statusLow === 'aguardando manutenção';
+                        const isMec         = statusLow.includes('manutenção') || statusLow.includes('manutencao') || statusLow.includes('mecânica') || statusLow.includes('mecanica');
                         // Reserva = saiu da mecânica (type Reparo ou status reserva/remanejada)
                         // Estação = motorista entregou a bike na estação (não deve virar Reserva)
                         const isReserva     = record.type === 'Reparo'
@@ -6218,9 +6366,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         const isTec         = statusLow.includes('técnica') || statusLow.includes('tecnica');
 
                         // Label exibido
-                        const displayLabel = isReserva ? 'Reserva'
-                          : isEstacaoMot ? 'Estação'
-                          : record.status;
+                        let displayLabel = record.status;
+                        
+                        if (isReserva) displayLabel = 'Reserva';
+                        else if (isEstacaoMot) displayLabel = 'Estação';
+                        else if (statusLow === 'mecânica' || statusLow === 'mecanica') {
+                          if (record.type === 'Finalização') displayLabel = 'Alterar Status';
+                          else displayLabel = 'Mecânica';
+                        }
 
                         const badgeClass = isRecolhida ? 'bg-green-700 text-white' :
                           isEstacao ? 'bg-indigo-500 text-white' :
@@ -6245,26 +6398,32 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 {isMecanicaRecord && (
                                   <span className="px-1.5 py-0.5 text-[8px] font-bold bg-orange-50 text-orange-500 border border-orange-200 rounded">🔧 Mecânica</span>
                                 )}
+                                {record.source === 'Firebase' && (
+                                  <span className="px-1.5 py-0.5 text-[8px] font-bold bg-blue-50 text-blue-500 border border-blue-200 rounded">🔥 Firebase</span>
+                                )}
                               </div>
-                              <span className="text-[9px] text-gray-800 font-mono font-bold whitespace-nowrap">{record.timestamp}</span>
+                              <span className="text-[9px] text-gray-800 font-mono font-bold whitespace-nowrap">
+                                {record.timestamp instanceof Date 
+                                  ? record.timestamp.toLocaleString('pt-BR') 
+                                  : String(record.timestamp || '---')}
+                              </span>
                             </div>
+                            
                             {/* Responsável */}
-                            {(record.mecanico || record.motorista || record.driverName) && (
-                              <p className="text-[10px] font-semibold text-gray-700">
-                                {isTecnicaRecord ? '🔬' : isCarretinha ? '🚌' : isMecanicaRecord ? '🔧' : '👤'}{' '}
-                                {record.mecanico || record.motorista || record.driverName}
-                              </p>
-                            )}
-                            {/* Observação / tratativa */}
-                            {record.observation && (
-                              <p className="text-[10px] text-gray-500 mt-0.5">📝 {record.observation}</p>
-                            )}
-                            {!record.observation && record.observacao && (
-                              <p className="text-[10px] text-gray-500 mt-0.5">📝 {record.observacao}</p>
-                            )}
+                            <p className="text-[10px] font-semibold text-gray-700 flex items-center gap-1">
+                              {isTecnicaRecord ? '🔬' : isCarretinha ? '🚌' : isMecanicaRecord ? '🔧' : '👤'}{' '}
+                              {record.author || record.mecanico || record.motorista || record.driverName || '—'}
+                            </p>
+
+                            {/* Descrição / Observação */}
+                            <p className="text-[10px] text-gray-500 mt-0.5 leading-tight">
+                              📝 {record.description || record.observation || record.observacao || record.summary || '—'}
+                            </p>
+
                             {record.treatment && (
-                              <p className="text-[10px] text-gray-500 mt-0.5">🛠 {record.treatment}</p>
+                              <p className="text-[10px] text-gray-500 mt-0.5 italic">🛠 {record.treatment}</p>
                             )}
+                            
                             {record.bateria && (() => {
                               const raw = String(record.bateria).replace(',', '.');
                               const num = parseFloat(raw);
