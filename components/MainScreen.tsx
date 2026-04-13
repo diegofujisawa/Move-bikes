@@ -1096,7 +1096,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           date: localDateStr()
         }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
 
-        persistDriverState(newRoute, newCollected);
+        await persistDriverState(newRoute, newCollected);
         setSuccessMessage(`Bicicleta ${bikeNumber} recolhida!`);
 
       } else if (status === 'Não encontrada') {
@@ -1130,12 +1130,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
           console.warn('[Firebase] reports write failed:', e);
         }
 
-        persistDriverState(newRoute, newCollected);
-        
-        apiCall({
-          action: 'finalizeCollectedBike', driverName, bikeNumber,
-          finalStatus: 'Não encontrada', finalObservation: 'Bicicleta não encontrada no local'
-        }, 1, true).catch(e => console.warn('[Sheets] finalizeCollectedBike (Não encontrada):', e));
+        await Promise.all([
+          persistDriverState(newRoute, newCollected),
+          apiCall({
+            action: 'finalizeCollectedBike', driverName, bikeNumber,
+            finalStatus: 'Não encontrada', finalObservation: 'Bicicleta não encontrada no local'
+          }, 1, true)
+        ]).catch(e => console.warn('[Sheets] finalizeCollectedBike (Não encontrada):', e));
 
         setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não encontrada.`);
       }
@@ -1176,7 +1177,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         status: 'Pendente', responsavel: null, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
 
-      persistDriverState(newRoute, newCollected);
+      await persistDriverState(newRoute, newCollected);
       if (!silent) setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não atendida.`);
     } catch (err: any) {
       console.error('Erro não atendida:', err);
@@ -1250,17 +1251,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
 
       // 5. Sheets — fire-and-forget para resposta imediata
-      persistDriverState(newRoute, newCollected);
-      
-      apiCall({
-        action: 'finalizeCollectedBike', driverName, bikeNumber,
-        finalStatus, finalObservation: observation
-      }, 1, true).then(() => {
-        if (finalStatus === 'Mecânica') {
-          clearCache('getMechanicsList');
-          clearCache('sync');
-        }
-      }).catch(e => console.warn('[Sheets] finalizeCollectedBike:', e));
+      await Promise.all([
+        persistDriverState(newRoute, newCollected),
+        apiCall({
+          action: 'finalizeCollectedBike', driverName, bikeNumber,
+          finalStatus, finalObservation: observation
+        }, 1, true).then(() => {
+          if (finalStatus === 'Mecânica') {
+            clearCache('getMechanicsList');
+            clearCache('sync');
+          }
+        })
+      ]).catch(e => console.warn('[Sheets] finalizeCollectedBike:', e));
 
       setSuccessMessage(`Bicicleta ${bikeNumber} finalizada!`);
     } catch (err: any) {
@@ -1363,11 +1365,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
         });
       }
 
-      persistDriverState(newRoute, newCollected);
-
-      // Sheets
-      apiCall({ action: 'acceptRequest', requestId, driverName }, 1, true)
-        .catch(e => console.warn('[Sheets] acceptRequest:', e));
+      await Promise.all([
+        persistDriverState(newRoute, newCollected),
+        apiCall({ action: 'acceptRequest', requestId, driverName }, 1, true)
+      ]).catch(e => console.warn('[Sheets] acceptRequest:', e));
 
       markDriverAction();
       setSuccessMessage('Pedido aceito!');
@@ -1395,7 +1396,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           status: 'RECUSADO', declinedBy: driverName, declinedAt: serverTimestamp()
         }).catch(e => console.warn('[Firebase] requests decline:', e.code));
       }
-      apiCall({ action: 'declineRequest', requestId, driverName }, 1, true)
+      await apiCall({ action: 'declineRequest', requestId, driverName }, 1, true)
         .catch(e => console.warn('[Sheets] declineRequest:', e));
       setSuccessMessage('Pedido recusado.');
     } catch (err: any) {
