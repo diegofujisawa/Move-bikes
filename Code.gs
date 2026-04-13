@@ -70,7 +70,7 @@ const COLUMN_INDICES = {
   },
   REPORTS: {
     TIMESTAMP: 1, PATRIMONIO: 2, STATUS: 3, OBSERVACAO: 4, MOTORISTA: 5,
-    STATUS_SISTEMA: 6, BATERIA: 7, TRAVA: 8, LOCALIDADE: 9
+    STATUS_SISTEMA: 6, BATERIA: 7, TRAVA: 8, LOCALIDADE: 9, OCORRENCIA: 10
   },
   STATE: { MOTORISTA: 1, ROTEIRO: 3, RECOLHIDAS: 4 },
   NOTIFICATIONS: { USUARIO: 1, JSON: 2 },
@@ -1720,9 +1720,26 @@ function finalizeCollectedBike(request) {
 
     collectedBikes = collectedBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
     const reportStatus = finalStatus === 'Filial' ? 'Recolhida' : finalStatus;
-    const rowData = [new Date(), bikeNumber, reportStatus, finalObservation, driverName,
-      bikeDetails['Status'], bikeDetails['Bateria'], bikeDetails['Trava'], bikeDetails['Localidade']];
     
+    // Create row with 10 columns to include the new OCORRENCIA column
+    const rowData = new Array(10).fill('');
+    rowData[COLUMN_INDICES.REPORTS.TIMESTAMP - 1] = new Date();
+    rowData[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] = bikeNumber;
+    rowData[COLUMN_INDICES.REPORTS.STATUS - 1] = reportStatus;
+    rowData[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = finalObservation;
+    rowData[COLUMN_INDICES.REPORTS.MOTORISTA - 1] = driverName;
+    rowData[COLUMN_INDICES.REPORTS.STATUS_SISTEMA - 1] = bikeDetails['Status'];
+    rowData[COLUMN_INDICES.REPORTS.BATERIA - 1] = bikeDetails['Bateria'];
+    rowData[COLUMN_INDICES.REPORTS.TRAVA - 1] = bikeDetails['Trava'];
+    rowData[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] = bikeDetails['Localidade'];
+    
+    // If it's an occurrence, mark it in the new column
+    if (finalObservation.includes('Solicitado Recolha')) {
+      rowData[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] = 'Ocorrência';
+      // Remove the tag from observation as requested
+      rowData[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = finalObservation.replace('Solicitado Recolha - ', '').replace('Solicitado Recolha', '').trim();
+    }
+
     let reportResult = { success: true };
     if (finalStatus !== 'Carretinha') {
       reportResult = logReport(rowData);
@@ -2820,6 +2837,17 @@ function getAnalyticalDashboardData(timeRange) {
     }
 
     const stats = {}; 
+    motoristasSet.forEach(driver => {
+      const lowerDriver = driver.toLowerCase();
+      if (lowerDriver.includes('aline') || lowerDriver.includes('diego')) return;
+      stats[driver] = { 
+        recolhidas: 0, 
+        remanejadas: 0, 
+        ocorrencias: 0, 
+        naoEncontradas: 0,
+        solicitacoesRecebidas: 0
+      };
+    });
 
     // Process Report Data for counts
     for (let i = 0; i < reportData.length; i++) {
@@ -2828,21 +2856,7 @@ function getAnalyticalDashboardData(timeRange) {
       if (!ts || ts < filterDate || ts > endDate) continue;
 
       const driver = (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
-      if (!driver) continue;
-
-      // Filter: Only include users with MOTORISTA category and exclude Aline/Diego explicitly
-      if (!motoristasSet.has(driver)) continue;
-      const lowerDriver = driver.toLowerCase();
-      if (lowerDriver.includes('aline') || lowerDriver.includes('diego')) continue;
-
-      if (!stats[driver]) {
-        stats[driver] = { 
-          recolhidas: 0, 
-          remanejadas: 0, 
-          ocorrencias: 0, 
-          naoEncontradas: 0
-        };
-      }
+      if (!driver || !stats[driver]) continue;
 
       const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
       const obs = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().toLowerCase();
@@ -2850,13 +2864,53 @@ function getAnalyticalDashboardData(timeRange) {
       // Logic consistent with getDriversSummary and getDailyReportData
       if (status.includes('filial') || status.includes('recolhida') || status === 'vandalizada') {
         stats[driver].recolhidas++;
-        if (obs.includes('solicitado recolha') || status.includes('solicitado recolha') || obs.includes('ocorrência') || obs.includes('ocorrencia')) {
+        // Check the new OCORRENCIA column (index 10) or fallback to observation for old records
+        const isOccurrence = (row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').toString().trim() === 'Ocorrência' || 
+                            obs.includes('solicitado recolha');
+        if (isOccurrence) {
           stats[driver].ocorrencias++;
         }
       } else if (status.includes('estação') || status.includes('estacao')) {
         stats[driver].remanejadas++;
       } else if (status.includes('não encontrada') || status.includes('nao encontrada')) {
         stats[driver].naoEncontradas++;
+        // Check the new OCORRENCIA column or fallback to observation
+        const isOccurrence = (row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').toString().trim() === 'Ocorrência' || 
+                            obs.includes('solicitado recolha');
+        if (isOccurrence) {
+          // We don't increment ocorrencias here because ocorrencias represents "found" in the current formula
+        }
+      }
+    }
+
+    // Process Requests Data (Solicitacao) to count sent requests
+    const requestSheet = ss.getSheetByName(REQUESTS_SHEET_NAME);
+    if (requestSheet && requestSheet.getLastRow() > 1) {
+      const requestData = requestSheet.getRange(2, 1, requestSheet.getLastRow() - 1, requestSheet.getLastColumn()).getValues();
+      for (let i = 0; i < requestData.length; i++) {
+        const row = requestData[i];
+        const ts = parseTimestamp(row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1]);
+        if (!ts || ts < filterDate || ts > endDate) continue;
+
+        const recipient = (row[COLUMN_INDICES.REQUESTS.DESTINATARIO - 1] || '').toString().trim();
+        const acceptedBy = (row[COLUMN_INDICES.REQUESTS.ACEITA_POR - 1] || '').toString().trim();
+        
+        // If it was sent to a specific driver or accepted by a driver
+        const driversToCount = [];
+        if (recipient.toLowerCase() === 'todos (geral)') {
+          // For "Todos", we could count it for everyone or only those who interacted
+          // The user wants to know how many were SENT to the driver. 
+          // If it's Geral, it's sent to all active drivers.
+          Object.keys(stats).forEach(d => driversToCount.push(d));
+        } else if (recipient) {
+          driversToCount.push(recipient);
+        }
+
+        driversToCount.forEach(driver => {
+          if (stats[driver]) {
+            stats[driver].solicitacoesRecebidas++;
+          }
+        });
       }
     }
 
@@ -2868,7 +2922,9 @@ function getAnalyticalDashboardData(timeRange) {
         recolhidas: d.recolhidas,
         remanejadas: d.remanejadas,
         totalBikes: d.recolhidas + d.remanejadas,
-        percOcorrencia: (d.ocorrencias + d.naoEncontradas) > 0 ? (d.ocorrencias / (d.ocorrencias + d.naoEncontradas)) * 100 : 0
+        solicitacoesRecebidas: d.solicitacoesRecebidas,
+        solicitacoesAtendidas: d.ocorrencias,
+        percOcorrencia: d.solicitacoesRecebidas > 0 ? (d.ocorrencias / d.solicitacoesRecebidas) * 100 : 0
       };
     });
 

@@ -1093,7 +1093,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
         addDoc(collection(db, 'timeline_events'), {
           driverName, bikeNumber, type: 'em_posse',
           timestamp: serverTimestamp(),
-          date: localDateStr()
+          date: localDateStr(),
+          isOccurrence: !!bikeDetails[bikeNumber]?.ocorrencia
         }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
 
         await persistDriverState(newRoute, newCollected);
@@ -1132,6 +1133,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         await Promise.all([
           persistDriverState(newRoute, newCollected),
+          addDoc(collection(db, 'timeline_events'), {
+            driverName, bikeNumber, type: 'nao_encontrada',
+            timestamp: serverTimestamp(),
+            date: localDateStr(),
+            isOccurrence: !!bikeDetails[bikeNumber]?.ocorrencia,
+            observacao: 'Bicicleta não encontrada no local'
+          }),
           apiCall({
             action: 'finalizeCollectedBike', driverName, bikeNumber,
             finalStatus: 'Não encontrada', finalObservation: 'Bicicleta não encontrada no local'
@@ -1223,12 +1231,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // 3. Registra ação ANTES das chamadas ao Sheets — protege contra sync que devolveria a bike
     markDriverAction();
 
+    let finalObservation = observation;
+    // Se a bike era uma ocorrência/solicitação, garante que o termo apareça na observação para o dashboard analítico
+    if (bikeDetails[bikeNumber]?.ocorrencia && !finalObservation.toLowerCase().includes('solicitado recolha')) {
+      finalObservation = `Solicitado Recolha - ${finalObservation}`;
+    }
+
     try {
       // 4. Firebase — não-bloqueante (resposta imediata ao motorista)
       try {
         await setDoc(doc(db, 'bikes', bikeNumber), {
           status: finalStatus, responsavel: null,
-          observacao: observation, ultimaAtualizacao: serverTimestamp()
+          observacao: finalObservation, ultimaAtualizacao: serverTimestamp()
         }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeNumber}`);
@@ -1242,7 +1256,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           patrimonio: bikeNumber,
           motorista: driverName,
           status: finalStatus,
-          observacao: observation,
+          observacao: finalObservation,
           timestamp: serverTimestamp(),
           type: 'Finalização'
         }, { merge: true });
@@ -1253,9 +1267,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
       // 5. Sheets — fire-and-forget para resposta imediata
       await Promise.all([
         persistDriverState(newRoute, newCollected),
+        addDoc(collection(db, 'timeline_events'), {
+          driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
+          timestamp: serverTimestamp(),
+          date: localDateStr(),
+          isOccurrence: !!bikeDetails[bikeNumber]?.ocorrencia,
+          observacao: finalObservation
+        }),
         apiCall({
           action: 'finalizeCollectedBike', driverName, bikeNumber,
-          finalStatus, finalObservation: observation
+          finalStatus, finalObservation: finalObservation
         }, 1, true).then(() => {
           if (finalStatus === 'Mecânica') {
             clearCache('getMechanicsList');
@@ -5670,7 +5691,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             const fbEvents = (firebaseTimelineEvents[driver.name] || []).map((e: any) => ({
                               tsMs: e.tsMs, hour: new Date(e.tsMs).getHours(),
                               min: new Date(e.tsMs).getMinutes(), type: e.type, bikeNumber: e.bikeNumber,
-                              observacao: e.observacao
+                              observacao: e.observacao,
+                              isOccurrence: e.isOccurrence
                             }));
                             const merged = [...sheetsEvents];
                             fbEvents.forEach(fe => {
@@ -5712,13 +5734,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
                             // Agrupa eventos próximos (mesmo tipo, ±3 minutos) em clusters
                             const CLUSTER_MS = 3 * 60 * 1000;
-                            const clusters: Array<{type: string, tsMs: number, bikes: string[], count: number, observacoes: string[]}> = [];
+                            const clusters: Array<{type: string, tsMs: number, bikes: string[], count: number, observacoes: string[], isOccurrence: boolean}> = [];
                             events.forEach(ev => {
                               const last = clusters[clusters.length - 1];
                               if (last && last.type === ev.type && Math.abs(ev.tsMs - last.tsMs) < CLUSTER_MS) {
                                 last.count++;
                                 if (ev.bikeNumber && !last.bikes.includes(ev.bikeNumber)) last.bikes.push(ev.bikeNumber);
                                 if (ev.observacao && !last.observacoes.includes(ev.observacao)) last.observacoes.push(ev.observacao);
+                                if ((ev as any).isOccurrence) last.isOccurrence = true;
                                 last.tsMs = Math.round((last.tsMs * (last.count - 1) + ev.tsMs) / last.count);
                               } else {
                                 clusters.push({
@@ -5726,7 +5749,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                   tsMs: ev.tsMs,
                                   bikes: ev.bikeNumber ? [ev.bikeNumber] : [],
                                   observacoes: ev.observacao ? [ev.observacao] : [],
-                                  count: 1
+                                  count: 1,
+                                  isOccurrence: !!(ev as any).isOccurrence
                                 });
                               }
                             });
@@ -5762,10 +5786,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                     return (
                                       <div key={ci} className="absolute -translate-x-1/2 top-0.5 flex flex-col items-center"
                                         style={{left: `${pos}%`}}
-                                        title={`${(cl.type === 'carretinha' || cl.type === 'removida_por_adm') && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}${cl.type === 'em_posse' && cl.bikes.length > 0 ? ` Bike ${cl.bikes.join(', ')}` : isMulti ? ` (${cl.count} bikes)` : ''} — ${fmtTime(cl.tsMs)}`}
+                                        title={`${cl.isOccurrence ? '[OCORRÊNCIA] ' : ''}${(cl.type === 'carretinha' || cl.type === 'removida_por_adm') && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}${cl.type === 'em_posse' && cl.bikes.length > 0 ? ` Bike ${cl.bikes.join(', ')}` : isMulti ? ` (${cl.count} bikes)` : ''} — ${fmtTime(cl.tsMs)}`}
                                       >
-                                        <div className={`rounded-full border-2 border-white shadow-sm flex items-center justify-center ${isMulti ? 'w-4 h-4' : 'w-2.5 h-2.5'} ${cfg.bg}`}>
-                                          {isMulti && <span className="text-[7px] font-black text-white leading-none">{cl.count}</span>}
+                                        <div className={`rounded-full border-2 shadow-sm flex items-center justify-center ${isMulti ? 'w-4 h-4' : 'w-2.5 h-2.5'} ${cfg.bg} ${cl.isOccurrence ? (cl.type === 'nao_encontrada' ? 'border-red-500 ring-2 ring-red-400/50' : 'border-yellow-400 ring-2 ring-yellow-400/50') + ' animate-pulse' : 'border-white'}`}>
+                                          {cl.isOccurrence ? (
+                                            <span className={`text-[6px] font-bold ${cl.type === 'nao_encontrada' ? 'text-red-100' : 'text-yellow-100'}`}>★</span>
+                                          ) : isMulti && (
+                                            <span className="text-[7px] font-black text-white leading-none">{cl.count}</span>
+                                          )}
                                         </div>
                                       </div>
                                     );

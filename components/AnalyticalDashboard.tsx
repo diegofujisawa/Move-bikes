@@ -12,6 +12,8 @@ interface DashboardData {
   recolhidas: number;
   remanejadas: number;
   totalBikes: number;
+  solicitacoesRecebidas: number;
+  solicitacoesAtendidas: number;
   percOcorrencia: number;
 }
 
@@ -58,7 +60,8 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
 
   const totalRecolhidas = data.reduce((acc, curr) => acc + curr.recolhidas, 0);
   const totalRemanejadas = data.reduce((acc, curr) => acc + curr.remanejadas, 0);
-  const totalGeral = totalRecolhidas + totalRemanejadas;
+  const totalSolicitacoes = data.reduce((acc, curr) => acc + curr.solicitacoesRecebidas, 0);
+  const totalAtendidas = data.reduce((acc, curr) => acc + curr.solicitacoesAtendidas, 0);
 
   return (
     <div className="fixed inset-0 bg-gray-50 z-50 flex flex-col overflow-hidden">
@@ -125,7 +128,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
         ) : (
           <div className="max-w-7xl mx-auto space-y-6">
             {/* Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <SummaryCard 
                 title="Bikes Recolhidas" 
                 value={totalRecolhidas} 
@@ -139,10 +142,16 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                 color="cyan"
               />
               <SummaryCard 
-                title="Total de Bikes" 
-                value={totalGeral} 
-                icon={<Bike className="w-6 h-6 text-indigo-600" />}
-                color="indigo"
+                title="Solicitações Recebidas" 
+                value={totalSolicitacoes} 
+                icon={<AlertCircle className="w-6 h-6 text-amber-600" />}
+                color="amber"
+              />
+              <SummaryCard 
+                title="Solicitações Atendidas" 
+                value={totalAtendidas} 
+                icon={<AlertCircle className="w-6 h-6 text-green-600" />}
+                color="green"
               />
             </div>
 
@@ -181,8 +190,18 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                       <th className="px-6 py-3 font-semibold">Motorista</th>
                       <th className="px-6 py-3 font-semibold text-center">Recolhidas</th>
                       <th className="px-6 py-3 font-semibold text-center">Remanejadas</th>
-                      <th className="px-6 py-3 font-semibold text-center">Total</th>
-                      <th className="px-6 py-3 font-semibold text-center">% Ocorrência</th>
+                      <th className="px-6 py-3 font-semibold text-center">Solicitações</th>
+                      <th className="px-6 py-3 font-semibold text-center">Atendidas</th>
+                      <th className="px-6 py-3 font-semibold text-center flex items-center justify-center gap-1">
+                        % Sucesso
+                        <div className="group relative">
+                          <AlertCircle className="w-3 h-3 text-gray-400 cursor-help" />
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-gray-800 text-white text-[10px] rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
+                            Calculado como: (Solicitações Atendidas / Solicitações Recebidas) * 100. 
+                            Considera apenas as bikes enviadas via "Solicitar Recolha".
+                          </div>
+                        </div>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -191,7 +210,8 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                         <td className="px-6 py-4 font-medium text-gray-900">{row.driver}</td>
                         <td className="px-6 py-4 text-center text-gray-600">{row.recolhidas}</td>
                         <td className="px-6 py-4 text-center text-gray-600">{row.remanejadas}</td>
-                        <td className="px-6 py-4 text-center font-bold text-gray-900">{row.totalBikes}</td>
+                        <td className="px-6 py-4 text-center text-gray-600 font-bold">{row.solicitacoesRecebidas}</td>
+                        <td className="px-6 py-4 text-center text-green-600 font-bold">{row.solicitacoesAtendidas}</td>
                         <td className="px-6 py-4 text-center">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             row.percOcorrencia > 80 ? 'bg-green-100 text-green-700' : 
