@@ -22,7 +22,7 @@ const READ_ACTIONS = new Set([
 // =================================================================
 const CACHEABLE_ACTIONS = new Set([
   'getStations', 'getBikeStatuses', 'getMotoristas',
-  'getVehiclePlates', 'getMechanicsList',
+  'getVehiclePlates', 'getMechanicsList', 'search', 'getDirections',
 ]);
 
 const CACHE_TTL_MS = 30_000; // 30 segundos

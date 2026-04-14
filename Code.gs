@@ -1773,7 +1773,7 @@ function finalizeCollectedBike(request) {
     }
 
     updateDriverState(driverName, routeBikes, collectedBikes);
-    return reportResult;
+    return { ...reportResult, bikeDetails };
   } catch (e) {
     return { success: false, error: e.message };
   }

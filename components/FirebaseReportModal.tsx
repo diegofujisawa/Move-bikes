@@ -98,11 +98,20 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
       return;
     }
 
+    setIsLoading(true);
     try {
+      // Fetch current bike info from Sheets to populate missing fields
+      const bikeRes = await apiCall({ action: 'searchBike', bikeNumber: newReport.patrimonio });
+      const bikeData = bikeRes.success ? bikeRes.data : {};
+
       const deterministicId = `${newReport.patrimonio}_${localDateStr()}`;
       
       await setDoc(doc(db, 'reports', deterministicId), {
         ...newReport,
+        statusSistema: newReport.statusSistema || bikeData['Status'] || '',
+        bateria: bikeData['Bateria'] || '',
+        trava: bikeData['Trava'] || '',
+        localidade: newReport.localidade || bikeData['Localidade'] || '',
         timestamp: serverTimestamp(),
         type: newReport.type || 'Manual'
       }, { merge: true });
@@ -116,10 +125,10 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
           newReport.status,
           newReport.observacao || '',
           newReport.motorista,
-          '', // Status Sistema (optional)
-          '', // Bateria (optional)
-          '', // Trava (optional)
-          newReport.localidade || ''
+          newReport.statusSistema || bikeData['Status'] || '',
+          bikeData['Bateria'] || '',
+          bikeData['Trava'] || '',
+          newReport.localidade || bikeData['Localidade'] || ''
         ]
       }, 1, true).catch(err => console.warn('[Sheets] Manual report sync failed:', err));
 
@@ -134,6 +143,8 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     } catch (error) {
       console.error("Error adding report:", error);
       alert("Erro ao adicionar registro.");
+    } finally {
+      setIsLoading(false);
     }
   };
 
