@@ -339,6 +339,71 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [pendingActions, setPendingActions] = useState<any[]>([]);
   const [isPendingActionsLoading, setIsPendingActionsLoading] = useState(false);
 
+  // --- Real-time Summary from Firebase (Today only) ---
+  const [realtimeSummary, setRealtimeSummary] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    // Escuta apenas relatórios de HOJE para manter o dashboard/resumo em tempo real
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const q = query(
+      collection(db, 'reports'),
+      where('timestamp', '>=', today)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const summary: Record<string, any> = {};
+      snapshot.docs.forEach(doc => {
+        const data = doc.data();
+        const driver = data.motorista;
+        const status = data.status;
+        
+        if (!driver) return;
+        if (!summary[driver]) {
+          summary[driver] = { recolhidas: 0, estacao: 0, filial: 0, vandalizada: 0 };
+        }
+        
+        if (status === 'Recolhida') summary[driver].recolhidas++;
+        else if (status === 'Estação') summary[driver].estacao++;
+        else if (status === 'Filial') summary[driver].filial++;
+        else if (status === 'Vandalizada') summary[driver].vandalizada++;
+      });
+      setRealtimeSummary(summary);
+    }, (error) => {
+      console.warn('[RealtimeSummary] listener failed:', error);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const augmentedDriversSummary = useMemo(() => {
+    if (Object.keys(realtimeSummary).length === 0) return driversSummary;
+    
+    // Se estivermos vendo o resumo de HOJE, usamos os dados do Firebase que são real-time
+    // Para outros períodos, mantemos os dados do Sheets.
+    if (summaryTimeRange !== 'day') return driversSummary;
+
+    return driversSummary.map(d => {
+      const rt = realtimeSummary[d.name];
+      if (!rt) return d;
+      
+      return {
+        ...d,
+        recolhidas: rt.recolhidas,
+        remanejadas: rt.estacao + rt.filial,
+        vandalizadas: rt.vandalizada,
+        stats: {
+          ...d.stats,
+          recolhidas: rt.recolhidas,
+          remanejada: rt.estacao + rt.filial,
+          vandalizada: rt.vandalizada,
+        }
+        // Mantemos totalBikes e solicitacoes do Sheets pois Firebase não tem o estado completo do roteiro
+      };
+    });
+  }, [driversSummary, realtimeSummary, summaryTimeRange]);
+
   // --- Route Generation ---
   const [isRouteConfigOpen, setIsRouteConfigOpen] = useState(false);
   const [routeConfig, setRouteConfig] = useState({
@@ -1209,9 +1274,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
           isOccurrence: !!routeBikesDetails[bikeNumber]?.ocorrencia || !!searchedBike?.ocorrencia
         }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
 
-        await persistDriverState(newRoute, newCollected);
-        setSuccessMessage(`Bicicleta ${bikeNumber} recolhida!`);
+        persistDriverState(newRoute, newCollected)
+          .catch(e => console.warn('[Sheets] persistDriverState:', e))
+          .finally(() => {
+            isUpdatingStateRef.current = false;
+            processingBikesRef.current.delete(bikeNumber);
+            setProcessingBikes(new Set(processingBikesRef.current));
+          });
 
+        setSuccessMessage(`Bicicleta ${bikeNumber} recolhida!`);
+        setIsLoading(false); // Libera UI imediatamente
       } else if (status === 'Não encontrada') {
         newRoute = newRoute.filter(b => String(b) !== bikeNumber);
 
@@ -1246,28 +1318,55 @@ const MainScreen: React.FC<MainScreenProps> = ({
           }, { merge: true }).catch(e => console.warn('[Firebase] reports write failed:', e));
         }).catch(e => console.warn('[BackgroundReport] failed:', e));
 
-        await Promise.all([
-          persistDriverState(newRoute, newCollected),
-          addDoc(collection(db, 'timeline_events'), {
-            driverName, bikeNumber, type: 'nao_encontrada',
+        // 3. Firebase + Sheets — fire-and-forget (não bloqueiam a UI)
+        setDoc(doc(db, 'bikes', bikeNumber), {
+          status: 'Não encontrada', responsavel: null, ultimaAtualizacao: serverTimestamp()
+        }, { merge: true }).catch(err => console.warn('[Firebase] bikes write:', err.code));
+
+        // Fetch details and log in background to avoid blocking UI
+        fetchBikeDetailsForReport(bikeNumber).then(bikeDetails => {
+          const deterministicId = `${bikeNumber}_${localDateStr()}`;
+          setDoc(doc(db, 'reports', deterministicId), {
+            patrimonio: bikeNumber,
+            motorista: driverName,
+            status: 'Não encontrada',
+            observacao: 'Bicicleta não encontrada no local',
             timestamp: serverTimestamp(),
-            date: localDateStr(),
-            isOccurrence: !!routeBikesDetails[bikeNumber]?.ocorrencia || !!searchedBike?.ocorrencia,
-            observacao: 'Bicicleta não encontrada no local'
-          }),
-          apiCall({
-            action: 'finalizeCollectedBike', driverName, bikeNumber,
-            finalStatus: 'Não encontrada', finalObservation: 'Bicicleta não encontrada no local'
-          }, 1, true)
-        ]).catch(e => console.warn('[Sheets] finalizeCollectedBike (Não encontrada):', e));
+            type: 'Finalização',
+            statusSistema: bikeDetails?.statusSistema || '',
+            bateria: bikeDetails?.bateria || '',
+            trava: bikeDetails?.trava || '',
+            localidade: bikeDetails?.localidade || ''
+          }, { merge: true }).catch(e => console.warn('[Firebase] reports write failed:', e));
+        }).catch(e => console.warn('[BackgroundReport] failed:', e));
+
+        addDoc(collection(db, 'timeline_events'), {
+          driverName, bikeNumber, type: 'nao_encontrada',
+          timestamp: serverTimestamp(),
+          date: localDateStr(),
+          isOccurrence: !!routeBikesDetails[bikeNumber]?.ocorrencia || !!searchedBike?.ocorrencia,
+          observacao: 'Bicicleta não encontrada no local'
+        }).catch(() => {});
+
+        // Sheets em background — removemos persistDriverState pois finalizeCollectedBike já o faz
+        apiCall({
+          action: 'finalizeCollectedBike', driverName, bikeNumber,
+          finalStatus: 'Não encontrada', finalObservation: 'Bicicleta não encontrada no local'
+        }, 1, true)
+          .catch(e => console.warn('[Sheets] finalizeCollectedBike (Não encontrada):', e))
+          .finally(() => {
+            isUpdatingStateRef.current = false;
+            processingBikesRef.current.delete(bikeNumber);
+            setProcessingBikes(new Set(processingBikesRef.current));
+          });
 
         setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não encontrada.`);
+        setIsLoading(false); // Libera UI imediatamente
       }
 
     } catch (err: any) {
       console.error('Erro ao atualizar status:', err);
       setError('Erro ao atualizar status: ' + err.message);
-    } finally {
       isUpdatingStateRef.current = false;
       setIsLoading(false);
       processingBikesRef.current.delete(bikeNumber);
@@ -1300,14 +1399,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
         status: 'Pendente', responsavel: null, ultimaAtualizacao: serverTimestamp()
       }, { merge: true }).catch(e => console.warn('[Firebase] bikes write:', e.code));
 
-      await persistDriverState(newRoute, newCollected);
-      if (!silent) setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não atendida.`);
+      persistDriverState(newRoute, newCollected)
+        .catch(e => console.warn('[Sheets] persistDriverState:', e))
+        .finally(() => {
+          isUpdatingStateRef.current = false;
+          if (!silent) setIsLoading(false);
+        });
+
+      if (!silent) {
+        setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não atendida.`);
+        setIsLoading(false);
+      }
     } catch (err: any) {
       console.error('Erro não atendida:', err);
-      if (!silent) setError(`Erro ao processar bike ${bikeNumber}: ${err.message}`);
-    } finally {
+      if (!silent) {
+        setError(`Erro ao processar bike ${bikeNumber}: ${err.message}`);
+        setIsLoading(false);
+      }
       isUpdatingStateRef.current = false;
-      if (!silent) setIsLoading(false);
     }
   };
 
@@ -1339,9 +1448,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     collectedBikesRef.current = newCollected;
     routeBikesRef.current = newRoute;
 
-    const finalStatus = status === 'Enviada para Estação' ? 'Estação'
-      : status === 'Enviada para Filial' ? 'Filial'
-      : status;
+    try {
+      const finalStatus = status === 'Enviada para Estação' ? 'Estação'
+        : status === 'Enviada para Filial' ? 'Filial'
+        : status;
 
     // 3. Registra ação ANTES das chamadas ao Sheets — protege contra sync que devolveria a bike
     markDriverAction();
@@ -1353,72 +1463,72 @@ const MainScreen: React.FC<MainScreenProps> = ({
       finalObservation = `Solicitado Recolha - ${finalObservation}`;
     }
 
-    try {
-      // 4. Firebase — não-bloqueante (resposta imediata ao motorista)
-      try {
-        await setDoc(doc(db, 'bikes', bikeNumber), {
-          status: finalStatus, responsavel: null,
-          observacao: finalObservation, ultimaAtualizacao: serverTimestamp()
-        }, { merge: true });
-      } catch (e) {
-        handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeNumber}`);
+    // 4. Firebase — não-bloqueante (resposta imediata ao motorista)
+    setDoc(doc(db, 'bikes', bikeNumber), {
+      status: finalStatus, responsavel: null,
+      observacao: finalObservation, ultimaAtualizacao: serverTimestamp()
+    }, { merge: true }).catch(e => console.warn('[Firebase] bikes write failed:', e));
+
+    // Firebase reports — backgrounded
+    fetchBikeDetailsForReport(bikeNumber).then(bikeDetails => {
+      const deterministicId = `${bikeNumber}_${localDateStr()}`;
+      setDoc(doc(db, 'reports', deterministicId), {
+        patrimonio: bikeNumber,
+        motorista: driverName,
+        status: finalStatus,
+        observacao: finalObservation,
+        timestamp: serverTimestamp(),
+        type: 'Finalização',
+        statusSistema: bikeDetails?.statusSistema || '',
+        bateria: bikeDetails?.bateria || '',
+        trava: bikeDetails?.trava || '',
+        localidade: bikeDetails?.localidade || ''
+      }, { merge: true }).catch(e => console.warn('[Firebase] reports write failed:', e));
+    }).catch(e => console.warn('[BackgroundReport] failed:', e));
+
+    // 5. Sheets — fire-and-forget para resposta imediata
+    // Não aguardamos o Sheets para liberar o UI, mas mantemos isUpdatingStateRef=true
+    // para evitar que o sync traga a bike de volta antes do Sheets processar.
+    
+    // Timeline event é importante registrar logo
+    addDoc(collection(db, 'timeline_events'), {
+      driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
+      timestamp: serverTimestamp(),
+      date: localDateStr(),
+      isOccurrence: (finalStatus === 'Estação' || finalStatus === 'Filial') ? false : isOccurrence,
+      observacao: finalObservation
+    }).catch(() => {});
+
+    // Chamada ao Sheets em background — removemos persistDriverState pois finalizeCollectedBike já o faz
+    apiCall({
+      action: 'finalizeCollectedBike', driverName, bikeNumber,
+      finalStatus, finalObservation: finalObservation
+    }, 1, true).then(() => {
+      if (finalStatus === 'Mecânica') {
+        clearCache('getMechanicsList');
+        clearCache('sync');
       }
-
-      try {
-        const bikeDetails = await fetchBikeDetailsForReport(bikeNumber);
-        // Gera um ID determinístico para evitar duplicidade no Firebase (mesma bike no mesmo dia)
-        const deterministicId = `${bikeNumber}_${localDateStr()}`;
-        
-        await setDoc(doc(db, 'reports', deterministicId), {
-          patrimonio: bikeNumber,
-          motorista: driverName,
-          status: finalStatus,
-          observacao: finalObservation,
-          timestamp: serverTimestamp(),
-          type: 'Finalização',
-          statusSistema: bikeDetails?.statusSistema || '',
-          bateria: bikeDetails?.bateria || '',
-          trava: bikeDetails?.trava || '',
-          localidade: bikeDetails?.localidade || ''
-        }, { merge: true });
-      } catch (e) {
-        console.warn('[Firebase] reports write failed:', e);
-      }
-
-      // 5. Sheets — fire-and-forget para resposta imediata
-      await Promise.all([
-        persistDriverState(newRoute, newCollected),
-        addDoc(collection(db, 'timeline_events'), {
-          driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
-          timestamp: serverTimestamp(),
-          date: localDateStr(),
-          isOccurrence: (finalStatus === 'Estação' || finalStatus === 'Filial') ? false : isOccurrence,
-          observacao: finalObservation
-        }),
-        apiCall({
-          action: 'finalizeCollectedBike', driverName, bikeNumber,
-          finalStatus, finalObservation: finalObservation
-        }, 1, true).then(() => {
-          if (finalStatus === 'Mecânica') {
-            clearCache('getMechanicsList');
-            clearCache('sync');
-          }
-        })
-      ]).catch(e => console.warn('[Sheets] finalizeCollectedBike:', e));
-
-      setSuccessMessage(`Bicicleta ${bikeNumber} finalizada!`);
-    } catch (err: any) {
-      console.error(`Erro bike ${bikeNumber}:`, err);
-      setError(`Erro ao processar bike ${bikeNumber}: ${err.message}`);
-      // Reverte atualização otimista em caso de erro síncrono
-      setCollectedBikes(prev => [...new Set([...prev, bikeNumber])]);
-    } finally {
+    }).catch(e => console.warn('[Sheets] finalizeCollectedBike:', e))
+    .finally(() => {
+      // Só libera o sync após o Sheets confirmar (ou falhar definitivamente)
       isUpdatingStateRef.current = false;
-      setIsLoading(false);
       processingBikesRef.current.delete(bikeNumber);
       setProcessingBikes(new Set(processingBikesRef.current));
-    }
-  };
+    });
+
+    setSuccessMessage(`Bicicleta ${bikeNumber} finalizada!`);
+    setIsLoading(false); // Libera o UI IMEDIATAMENTE
+  } catch (err: any) {
+    console.error(`Erro bike ${bikeNumber}:`, err);
+    setError(`Erro ao processar bike ${bikeNumber}: ${err.message}`);
+    // Reverte atualização otimista em caso de erro síncrono
+    setCollectedBikes(prev => [...new Set([...prev, bikeNumber])]);
+    isUpdatingStateRef.current = false;
+    setIsLoading(false);
+    processingBikesRef.current.delete(bikeNumber);
+    setProcessingBikes(new Set(processingBikesRef.current));
+  }
+};
 
   // =================================================================
   // SOLICITAÇÕES
@@ -1534,17 +1644,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
         });
       }
 
-      await Promise.all([
-        persistDriverState(newRoute, newCollected),
-        apiCall({ action: 'acceptRequest', requestId, driverName }, 1, true)
-      ]).catch(e => console.warn('[Sheets] acceptRequest:', e));
+      // Sheets — fire-and-forget em background
+      // Removemos persistDriverState pois acceptRequest já o faz no backend
+      apiCall({ action: 'acceptRequest', requestId, driverName }, 1, true)
+        .catch(e => console.warn('[Sheets] acceptRequest:', e))
+        .finally(() => {
+          isUpdatingStateRef.current = false;
+        });
 
       markDriverAction();
       setSuccessMessage('Pedido aceito!');
+      setIsLoading(false); // Libera UI imediatamente
     } catch (err: any) {
       console.error('Erro aceitar pedido:', err);
       setError('Erro ao aceitar pedido: ' + err.message);
-    } finally {
       isUpdatingStateRef.current = false;
       setIsLoading(false);
     }
@@ -4887,10 +5000,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       <main>
         {/* RESUMO MOTORISTA */}
-        {!isAdm && !isMecanica && !isTecnica && driversSummary.length > 0 && (
+        {!isAdm && !isMecanica && !isTecnica && augmentedDriversSummary.length > 0 && (
           <div className="mb-4 p-3 border rounded-lg bg-gray-50 shadow-sm">
             <div className="flex justify-between items-center mb-2">
-              <h2 className="text-sm font-bold text-gray-700 uppercase flex items-center gap-2"><SheetIcon className="w-4 h-4 text-blue-600"/>Resumo</h2>
+              <h2 className="text-sm font-bold text-gray-700 uppercase flex items-center gap-2"><SheetIcon className="w-4 h-4 text-blue-600"/>Resumo {summaryTimeRange === 'day' && <span className="text-[9px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full animate-pulse">REAL-TIME</span>}</h2>
               <div className="flex bg-white border rounded-md p-0.5 shadow-sm">
                 {(['-1','-7','day','week','month'] as const).map((r, i) => (
                   <button key={`period-driver-${r}-${i}`} onClick={() => setSummaryTimeRange(r)}
@@ -4900,7 +5013,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 ))}
               </div>
             </div>
-            {driversSummary.filter(d => d.name.toLowerCase() === driverName.toLowerCase()).map((driver, i) => (
+            {augmentedDriversSummary.filter(d => d.name.toLowerCase() === driverName.toLowerCase()).map((driver, i) => (
               <div key={`driver-resume-${driver.name}-${i}`} className="grid grid-cols-5 gap-1.5">
                 {[
                   { label: 'Notif.', value: driver.pendingRequests, c: 'blue' },
@@ -5918,9 +6031,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       </button>
                     )}
                   </div>
-                  {driversSummary.length > 0 ? (
+                  {augmentedDriversSummary.length > 0 ? (
                     <div className="grid grid-cols-1 gap-3">
-                      {driversSummary.map((driver, i) => (
+                      {augmentedDriversSummary.map((driver, i) => (
                         <div key={`driver-card-${driver.name}-${i}`} className="bg-white p-3 rounded-lg border shadow-sm">
                           <div className="flex justify-between items-center mb-2 border-b pb-1">
                             <h3 className="font-black text-gray-900 text-sm uppercase">{driver.name}</h3>
@@ -7327,7 +7440,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
         type={destinationModal.type} bikeNumber={destinationModal.bikeNumber} stationName={destinationModal.stationName} isLoading={isLoading} onRecalculate={recalculateStation}/>
       <HistoryModal isOpen={isHistoryModalOpen} onClose={() => setIsHistoryModalOpen(false)} history={requestsHistory} isLoading={isHistoryLoading} driverName={driverName}/>
       {isFirebaseReportOpen && <FirebaseReportModal isOpen={isFirebaseReportOpen} onClose={() => setIsFirebaseReportOpen(false)} />}
-      {showAnalyticalDashboard && <AnalyticalDashboard onClose={() => setShowAnalyticalDashboard(false)} apiCall={apiCall} />}
+      {showAnalyticalDashboard && (
+        <AnalyticalDashboard 
+          onClose={() => setShowAnalyticalDashboard(false)} 
+          apiCall={apiCall} 
+          realtimeSummary={realtimeSummary}
+        />
+      )}
       
       {/* Modal de Seleção de Mecânico para Inserção Manual */}
       {manualMechanicModal.isOpen && (

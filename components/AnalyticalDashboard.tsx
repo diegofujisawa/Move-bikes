@@ -20,9 +20,10 @@ interface DashboardData {
 interface AnalyticalDashboardProps {
   onClose: () => void;
   apiCall: (action: string, data?: any) => Promise<any>;
+  realtimeSummary?: Record<string, any>;
 }
 
-export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClose, apiCall }) => {
+export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClose, apiCall, realtimeSummary }) => {
   const [timeRange, setTimeRange] = useState<string>('day');
   const [data, setData] = useState<DashboardData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -58,10 +59,26 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
     fetchData();
   }, [fetchData]);
 
-  const totalRecolhidas = data.reduce((acc, curr) => acc + curr.recolhidas, 0);
-  const totalRemanejadas = data.reduce((acc, curr) => acc + curr.remanejadas, 0);
-  const totalSolicitacoes = data.reduce((acc, curr) => acc + curr.solicitacoesRecebidas, 0);
-  const totalAtendidas = data.reduce((acc, curr) => acc + curr.solicitacoesAtendidas, 0);
+  const augmentedData = React.useMemo(() => {
+    if (!realtimeSummary || timeRange !== 'day') return data;
+    
+    return data.map(d => {
+      const rt = realtimeSummary[d.driver];
+      if (!rt) return d;
+      
+      return {
+        ...d,
+        recolhidas: rt.recolhidas,
+        remanejadas: rt.estacao + rt.filial,
+        // Mantemos totalBikes e solicitacoes do Sheets
+      };
+    });
+  }, [data, realtimeSummary, timeRange]);
+
+  const totalRecolhidas = augmentedData.reduce((acc, curr) => acc + curr.recolhidas, 0);
+  const totalRemanejadas = augmentedData.reduce((acc, curr) => acc + curr.remanejadas, 0);
+  const totalSolicitacoes = augmentedData.reduce((acc, curr) => acc + curr.solicitacoesRecebidas, 0);
+  const totalAtendidas = augmentedData.reduce((acc, curr) => acc + curr.solicitacoesAtendidas, 0);
 
   return (
     <div className="fixed inset-0 bg-gray-50 z-50 flex flex-col overflow-hidden">
@@ -160,7 +177,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
               {/* Bikes per Driver */}
               <ChartContainer title="Bikes por Motorista (Recolhidas vs Remanejadas)">
                 <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={data}>
+                  <BarChart data={augmentedData}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="driver" tick={{fontSize: 12}} />
                     <YAxis />
@@ -205,7 +222,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {data.map((row, idx) => (
+                    {augmentedData.map((row, idx) => (
                       <tr key={idx} className="hover:bg-gray-50 transition-colors">
                         <td className="px-6 py-4 font-medium text-gray-900">{row.driver}</td>
                         <td className="px-6 py-4 text-center text-gray-600">{row.recolhidas}</td>
