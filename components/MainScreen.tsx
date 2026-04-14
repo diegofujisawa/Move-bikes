@@ -1392,7 +1392,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
           timestamp: serverTimestamp(),
           date: localDateStr(),
-          isOccurrence: isOccurrence,
+          isOccurrence: (finalStatus === 'Estação' || finalStatus === 'Filial') ? false : isOccurrence,
           observacao: finalObservation
         }),
         apiCall({
@@ -1423,7 +1423,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // =================================================================
   // SOLICITAÇÕES
   // =================================================================
-  const handleAcceptRequest = async (requestId: string, bikeNumbers: string, reason: string = '', title: string = '') => {
+  const handleAcceptRequest = async (requestId: string, bikeNumbers: string, reason: string = '', title: string = '', isOccurrence?: boolean) => {
     if (isLoading) return;
     const bikesToAdd = String(bikeNumbers || '').split(',').map(s => s.trim()).filter(Boolean);
     const alreadyInPosse = bikesToAdd.filter(b => collectedBikes.includes(b));
@@ -1465,7 +1465,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setCollectedBikesDetails(prev => {
           const next = { ...prev };
           bikesToAdd.forEach(id => {
-            next[id] = { ...next[id], ocorrencia: true };
+            next[id] = { ...next[id], ocorrencia: !!isOccurrence };
           });
           return next;
         });
@@ -1521,7 +1521,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setRouteBikesDetails(prev => {
           const next = { ...prev };
           bikesToAdd.forEach(id => {
-            next[id] = { ...next[id], ocorrencia: true };
+            next[id] = { ...next[id], ocorrencia: !!isOccurrence };
           });
           return next;
         });
@@ -5202,7 +5202,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     {renderLocationWithMap(req.location)}
                   </div>
                   <div className="flex flex-col gap-4 items-end pt-1">
-                    <button onClick={() => handleAcceptRequest(req.id, req.bikeNumber, req.reason, req.title)} disabled={isLoading} className="text-green-600 hover:text-green-700 text-sm font-bold disabled:text-gray-400">Aceitar</button>
+                    <button onClick={() => handleAcceptRequest(req.id, req.bikeNumber, req.reason, req.title, req.isOccurrence)} disabled={isLoading} className="text-green-600 hover:text-green-700 text-sm font-bold disabled:text-gray-400">Aceitar</button>
                     <button onClick={() => handleDeclineRequest(req.id)} disabled={isLoading} className="text-red-600 hover:text-red-700 text-sm font-bold disabled:text-gray-400">Recusar</button>
                   </div>
                 </li>
