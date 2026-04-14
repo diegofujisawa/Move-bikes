@@ -6990,7 +6990,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       <div className="flex justify-between items-start">
                         <div className="flex flex-col">
                           <div className="flex items-center gap-2">
-                            <p className="font-mono text-gray-800 font-bold text-lg">{bike}</p>
+                            <div className={`flex items-center justify-center ${details?.ocorrencia ? 'w-10 h-10 rounded-full bg-black shadow-lg' : ''}`}>
+                              <p className={`font-mono font-bold text-lg ${details?.ocorrencia ? 'text-white' : 'text-gray-800'}`}>{bike}</p>
+                            </div>
                             {details?.battery !== undefined && (
                               <div className="flex items-center justify-center w-8 h-8 rounded-full border-2 border-blue-500 text-[9px] font-bold text-blue-600 bg-white shadow-sm">{formatBattery(details.battery)}%</div>
                             )}
@@ -7033,7 +7035,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 {sortedCollectedBikes.map((bike, i) => (
                   <li key={`route-${bike}-${i}`} className="p-3 bg-white border rounded-md flex flex-col sm:flex-row justify-between items-center gap-2">
                     <div className="flex items-center gap-3">
-                      <p className="font-mono text-gray-800 font-bold text-lg">{bike}</p>
+                      <div className={`flex items-center justify-center ${collectedBikesDetails[bike]?.ocorrencia ? 'w-10 h-10 rounded-full bg-black shadow-lg' : ''}`}>
+                        <p className={`font-mono font-bold text-lg ${collectedBikesDetails[bike]?.ocorrencia ? 'text-white' : 'text-gray-800'}`}>{bike}</p>
+                      </div>
                       {collectedBikesDetails[bike]?.battery !== undefined && (
                         <div className="flex items-center justify-center w-10 h-10 rounded-full border-2 border-blue-500 text-[10px] font-bold text-blue-600 bg-white shadow-sm">{formatBattery(collectedBikesDetails[bike].battery)}%</div>
                       )}
