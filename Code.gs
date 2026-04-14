@@ -2805,6 +2805,7 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
 }
 
 function getAnalyticalDashboardData(timeRange) {
+  const ss = getSpreadsheet();
   try {
     const now = new Date();
     let filterDate = new Date(now);
@@ -2842,8 +2843,8 @@ function getAnalyticalDashboardData(timeRange) {
       rowsToRead = 20000;
     }
 
-    const reportSheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
-    const accessSheet = getSpreadsheet().getSheetByName(ACCESS_SHEET_NAME);
+    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
+    const accessSheet = ss.getSheetByName(ACCESS_SHEET_NAME);
     
     if (!reportSheet) return { success: false, error: 'Planilha de relatórios não encontrada.' };
 
@@ -2864,7 +2865,8 @@ function getAnalyticalDashboardData(timeRange) {
     let reportData = [];
     if (lastRowR > 1) {
       const numRows = Math.min(lastRowR - 1, rowsToRead);
-      reportData = reportSheet.getRange(lastRowR - numRows + 1, 1, numRows, reportSheet.getLastColumn()).getValues();
+      const numCols = Math.max(reportSheet.getLastColumn(), 10);
+      reportData = reportSheet.getRange(lastRowR - numRows + 1, 1, numRows, numCols).getValues();
     }
 
     const stats = {}; 
@@ -2896,18 +2898,24 @@ function getAnalyticalDashboardData(timeRange) {
       if (status.includes('filial') || status.includes('recolhida') || status === 'vandalizada') {
         stats[driver].recolhidas++;
         // Check the new OCORRENCIA column (index 10) or fallback to observation for old records
-        const isOccurrence = (row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').toString().trim() === 'Ocorrência' || 
-                            obs.includes('solicitado recolha');
+        const occVal = String(row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').trim().toLowerCase();
+        const isOccurrence = occVal.includes('ocorr') || obs.includes('solicitado recolha');
         if (isOccurrence) {
           stats[driver].ocorrencias++;
         }
       } else if (status.includes('estação') || status.includes('estacao')) {
         stats[driver].remanejadas++;
+        // Also check for occurrences delivered to stations
+        const occVal = String(row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').trim().toLowerCase();
+        const isOccurrence = occVal.includes('ocorr') || obs.includes('solicitado recolha');
+        if (isOccurrence) {
+          stats[driver].ocorrencias++;
+        }
       } else if (status.includes('não encontrada') || status.includes('nao encontrada')) {
         stats[driver].naoEncontradas++;
         // Check the new OCORRENCIA column or fallback to observation
-        const isOccurrence = (row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').toString().trim() === 'Ocorrência' || 
-                            obs.includes('solicitado recolha');
+        const occVal = String(row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').trim().toLowerCase();
+        const isOccurrence = occVal.includes('ocorr') || obs.includes('solicitado recolha');
         if (isOccurrence) {
           // We don't increment ocorrencias here because ocorrencias represents "found" in the current formula
         }
