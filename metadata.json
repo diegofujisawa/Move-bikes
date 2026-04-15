@@ -1,6 +1,6 @@
 {
   "name": "Move Bikes",
-  "description": "Um aplicativo para motoristas registrarem o status de recolha de bicicletas, consultando e atualizando uma planilha do Google Sheets.",
+  "description": "Aplicativo de logística para rastreamento em tempo real de motoristas e gestão de recolha de bicicletas usando Firebase.",
   "requestFramePermissions": [
     "geolocation",
     "camera"

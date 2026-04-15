@@ -51,7 +51,6 @@ export interface PickupRequest {
   status: string; 
   location: string; 
   reason: string; 
-  isOccurrence?: boolean;
   acceptedBy?: string; 
   recipient?: string; 
   bikeData?: BicycleData; 

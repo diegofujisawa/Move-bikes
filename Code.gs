@@ -1117,10 +1117,7 @@ function searchBike(bikeNumber) {
           const situacao = String(reqData[i][COLUMN_INDICES.REQUESTS.SITUACAO - 1]).trim().toLowerCase();
           const pats = patRaw.split(',').map(s => String(parseFloat(s.trim()) || s.trim()));
           if (pats.includes(normalizedSearch) && (situacao === 'aceita' || situacao === 'pendente')) {
-            const loc = String(reqData[i][COLUMN_INDICES.REQUESTS.LOCAL - 1] || '');
-            const occ = String(reqData[i][COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '');
-            const isOcc = !loc.startsWith('Criado via Roteiro') && !occ.startsWith('[CARRETINHA]');
-            bikeObject.ocorrencia = isOcc;
+            bikeObject.ocorrencia = true;
             break;
           }
         }
@@ -1266,18 +1263,15 @@ function getRequests(driverName, category, providedSheet) {
       const isForMe = recipient === userNameLower;
       const isForAllDrivers = recipient === 'todos' && isMotorista;
       if (patrimonio && isPending && !declinedBy.includes(userNameLower) && (isForMe || isForAllDrivers)) {
-        const loc = String(row[COLUMN_INDICES.REQUESTS.LOCAL - 1] || '');
-        const occ = String(row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '');
         return {
           id: index + 2,
           timestamp: row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1],
           bikeNumber: patrimonio,
-          reason: occ,
-          location: loc,
+          reason: row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1],
+          location: row[COLUMN_INDICES.REQUESTS.LOCAL - 1],
           acceptedBy: row[COLUMN_INDICES.REQUESTS.ACEITA_POR - 1],
           status: row[COLUMN_INDICES.REQUESTS.SITUACAO - 1],
           recipient: row[COLUMN_INDICES.REQUESTS.DESTINATARIO - 1],
-          isOccurrence: !loc.startsWith('Criado via Roteiro') && !occ.startsWith('[CARRETINHA]')
         };
       }
       return null;
@@ -2392,11 +2386,11 @@ function getDailyReportData(driverName, timeRange = 'day') {
       const acceptedBy   = (row[COLUMN_INDICES.REQUESTS.ACEITA_POR - 1] || '').toString().trim();
       const acceptedDate = row[COLUMN_INDICES.REQUESTS.ACEITA_DATA - 1];
       const local        = (row[COLUMN_INDICES.REQUESTS.LOCAL - 1] || '').toString().trim();
-      const ocorrencia   = (row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '').toString().trim();
       if (acceptedBy.toLowerCase() === driverName.toLowerCase() && acceptedDate) {
         const ts = parseTimestamp(acceptedDate);
-        if (ts && ts >= filterDate && ts <= todayEnd && !local.toLowerCase().includes('roteiro') && !ocorrencia.startsWith('[CARRETINHA]')) {
+        if (ts && ts >= filterDate && ts <= todayEnd && !local.toLowerCase().includes('roteiro')) {
           const patrimonio = (row[COLUMN_INDICES.REQUESTS.PATRIMONIO - 1] || '').toString().trim();
+          const ocorrencia = (row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '').toString().trim();
           report.ocorrencias.push(`${patrimonio}: ${ocorrencia}`);
         }
       }
@@ -3030,10 +3024,7 @@ function getRouteDetails(driverName, bikeNumbers, providedBikesSheet, providedRe
           // Find the original bike number key in result
           const originalKey = bikeNumbers.find(n => String(parseFloat(n) || String(n).trim()) === patrimonio);
           if (originalKey && result[originalKey]) {
-            const loc = String(requestsData[i][COLUMN_INDICES.REQUESTS.LOCAL - 1] || '');
-            const occ = String(requestsData[i][COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '');
-            const isOcc = !loc.startsWith('Criado via Roteiro') && !occ.startsWith('[CARRETINHA]');
-            result[originalKey].ocorrencia = isOcc;
+            result[originalKey].ocorrencia = true;
             if (result[originalKey].initialLat === null) {
               const local = String(requestsData[i][COLUMN_INDICES.REQUESTS.LOCAL - 1]);
               const m = local.match(/(-?\d+[.,]\d+)\s*[,;]\s*(-?\d+[.,]\d+)/);
