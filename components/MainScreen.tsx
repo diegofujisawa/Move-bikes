@@ -692,7 +692,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     });
   }, [driverName]);
 
-  const fetchBikeDetailsForReport = async (bikeNumber: string) => {
+  const fetchBikeDetailsForReport = async (bikeNumber: string, timeoutMs = 5000) => {
     // Tenta usar dados locais se disponíveis (evita API call extra se já pesquisou)
     const localDetails = collectedBikesDetails[bikeNumber] || routeBikesDetails[bikeNumber] || (searchedBike && String(searchedBike['Patrimônio']) === String(bikeNumber) ? searchedBike : null);
     
@@ -705,20 +705,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
       };
     }
 
-    try {
-      const res = await apiCall({ action: 'search', bikeNumber });
-      if (res.success && res.data) {
-        return {
-          statusSistema: res.data['Status'] || '',
-          bateria: res.data['Bateria'] ? `${res.data['Bateria']}%` : '',
-          trava: res.data['Trava'] || '',
-          localidade: res.data['Localidade'] || ''
-        };
+    // Se não tem local, tenta buscar com timeout para não travar o relatório
+    const networkFetch = (async () => {
+      try {
+        const res = await apiCall({ action: 'search', bikeNumber }, 0, true); // 0 retries para ser rápido
+        if (res.success && res.data) {
+          return {
+            statusSistema: res.data['Status'] || '',
+            bateria: res.data['Bateria'] ? `${res.data['Bateria']}%` : '',
+            trava: res.data['Trava'] || '',
+            localidade: res.data['Localidade'] || ''
+          };
+        }
+      } catch (e) {
+        console.warn(`[Report] Network fetch failed for bike ${bikeNumber}:`, e);
       }
-    } catch (e) {
-      console.warn(`[Report] Failed to fetch details for bike ${bikeNumber}:`, e);
-    }
-    return { statusSistema: '', bateria: '', trava: '', localidade: '' };
+      return { statusSistema: '', bateria: '', trava: '', localidade: '' };
+    })();
+
+    return await Promise.race([
+      networkFetch,
+      new Promise(resolve => setTimeout(() => resolve({ statusSistema: '', bateria: '', trava: '', localidade: '' }), timeoutMs))
+    ]) as any;
   };
 
   // Remove bikes do roteiro se elas atingirem o limite de boletim
@@ -1274,7 +1282,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // Processamento em background
         (async () => {
           try {
-            const bikeDetailsPromise = fetchBikeDetailsForReport(bikeNumber);
+            const bikeDetailsPromise = fetchBikeDetailsForReport(bikeNumber, 3000);
             
             const timelinePromise = addDoc(collection(db, 'timeline_events'), {
               driverName, bikeNumber, type: 'nao_encontrada',
@@ -1416,66 +1424,63 @@ const MainScreen: React.FC<MainScreenProps> = ({
       finalObservation = `Solicitado Recolha - ${finalObservation}`;
     }
 
-    // 4. Execução em paralelo e não-bloqueante para agilidade total
-    //    O motorista recebe o feedback de sucesso IMEDIATAMENTE após o estado local ser atualizado.
-    setSuccessMessage(`Bicicleta ${bikeNumber} finalizada!`);
-    setIsLoading(false);
+        // 4. Execução em paralelo e não-bloqueante para agilidade total
+        //    O motorista recebe o feedback de sucesso IMEDIATAMENTE após o estado local ser atualizado.
+        setSuccessMessage(`Bicicleta ${bikeNumber} finalizada!`);
+        setIsLoading(false);
 
-    // Processamento em background
-    (async () => {
-      try {
-        const bikeDetailsPromise = fetchBikeDetailsForReport(bikeNumber);
-        
-        const firebaseBikesPromise = setDoc(doc(db, 'bikes', bikeNumber), {
-          status: finalStatus, responsavel: null,
-          observacao: finalObservation, ultimaAtualizacao: serverTimestamp()
-        }, { merge: true }).catch(e => console.warn('[Firebase] bikes write failed:', e));
+        // Processamento em background
+        (async () => {
+          try {
+            // Inicia a busca de detalhes mas NÃO aguarda para registrar no Firebase se demorar
+            const bikeDetailsPromise = fetchBikeDetailsForReport(bikeNumber, 3000); // Timeout agressivo de 3s
+            
+            const firebaseBikesPromise = setDoc(doc(db, 'bikes', bikeNumber), {
+              status: finalStatus, responsavel: null,
+              observacao: finalObservation, ultimaAtualizacao: serverTimestamp()
+            }, { merge: true }).catch(e => console.warn('[Firebase] bikes write failed:', e));
 
-        const sheetsPromise = apiCall({
-          action: 'finalizeCollectedBike', driverName, bikeNumber,
-          finalStatus, finalObservation: finalObservation
-        }, 1, true).then(() => {
-          if (finalStatus === 'Mecânica') {
-            clearCache('getMechanicsList');
-            clearCache('sync');
+            const sheetsPromise = apiCall({
+              action: 'finalizeCollectedBike', driverName, bikeNumber,
+              finalStatus, finalObservation: finalObservation
+            }, 1, true).catch(e => console.warn('[Sheets] finalizeCollectedBike failed:', e));
+
+            const timelinePromise = addDoc(collection(db, 'timeline_events'), {
+              driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
+              timestamp: serverTimestamp(),
+              date: localDateStr(),
+              isOccurrence: isOccurrence,
+              observacao: finalObservation
+            }).catch(e => console.warn('[Firebase] timeline write failed:', e));
+
+            const persistPromise = persistDriverState(newRoute, newCollected);
+
+            // Aguarda os detalhes (com timeout de 3s já embutido na função)
+            const bikeDetails = await bikeDetailsPromise;
+            
+            const reportPromise = addDoc(collection(db, 'reports'), {
+              patrimonio: bikeNumber,
+              motorista: driverName,
+              status: finalStatus,
+              observacao: finalObservation,
+              timestamp: serverTimestamp(),
+              date: localDateStr(),
+              type: 'Finalização',
+              statusSistema: bikeDetails?.statusSistema || '',
+              bateria: bikeDetails?.bateria || '',
+              trava: bikeDetails?.trava || '',
+              localidade: bikeDetails?.localidade || ''
+            }).catch(e => console.error('[Firebase] CRITICAL: reports write failed:', e));
+
+            await Promise.all([firebaseBikesPromise, sheetsPromise, timelinePromise, persistPromise, reportPromise]);
+          } catch (e) {
+            console.error(`[Background] Erro ao processar bike ${bikeNumber}:`, e);
+          } finally {
+            isUpdatingStateRef.current = false;
+            processingBikesRef.current.delete(bikeNumber);
+            setProcessingBikes(new Set(processingBikesRef.current));
           }
-        }).catch(e => console.warn('[Sheets] finalizeCollectedBike failed:', e));
-
-        const timelinePromise = addDoc(collection(db, 'timeline_events'), {
-          driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
-          timestamp: serverTimestamp(),
-          date: localDateStr(),
-          isOccurrence: isOccurrence,
-          observacao: finalObservation
-        }).catch(e => console.warn('[Firebase] timeline write failed:', e));
-
-        const persistPromise = persistDriverState(newRoute, newCollected);
-
-        // Aguarda os detalhes para o relatório
-        const bikeDetails = await bikeDetailsPromise;
-        const reportPromise = addDoc(collection(db, 'reports'), {
-          patrimonio: bikeNumber,
-          motorista: driverName,
-          status: finalStatus,
-          observacao: finalObservation,
-          timestamp: serverTimestamp(),
-          date: localDateStr(),
-          type: 'Finalização',
-          statusSistema: bikeDetails?.statusSistema || '',
-          bateria: bikeDetails?.bateria || '',
-          trava: bikeDetails?.trava || '',
-          localidade: bikeDetails?.localidade || ''
-        }).catch(e => console.warn('[Firebase] reports write failed:', e));
-
-        await Promise.all([firebaseBikesPromise, sheetsPromise, timelinePromise, persistPromise, reportPromise]);
-      } catch (e) {
-        console.error(`[Background] Erro ao processar bike ${bikeNumber}:`, e);
-      } finally {
-        isUpdatingStateRef.current = false;
-        processingBikesRef.current.delete(bikeNumber);
-        setProcessingBikes(new Set(processingBikesRef.current));
-      }
-    })();
+        })();
   };
 
   // =================================================================
@@ -2313,7 +2318,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         await setDoc(doc(db, 'mechanics_flow', bikeId), flowData);
         
         try {
-          const bikeDetails = await fetchBikeDetailsForReport(bikeId);
+          const bikeDetails = await fetchBikeDetailsForReport(bikeId, 3000);
           await addDoc(collection(db, 'reports'), {
             patrimonio: bikeId,
             status: 'Aguardando Manutenção',
@@ -2464,7 +2469,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       // 4. Relatório
       try {
-        const bikeDetails = await fetchBikeDetailsForReport(bikePat);
+        const bikeDetails = await fetchBikeDetailsForReport(bikePat, 3000);
         await addDoc(collection(db, 'reports'), {
           patrimonio: bikePat,
           status: 'Aguardando Técnica',
@@ -2523,7 +2528,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       // 3. Relatório
       try {
-        const bikeDetails = await fetchBikeDetailsForReport(bikeNumber);
+        const bikeDetails = await fetchBikeDetailsForReport(bikeNumber, 3000);
         await addDoc(collection(db, 'reports'), {
           patrimonio: bikeNumber,
           status: 'Em Técnica',
@@ -2614,7 +2619,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       // 4. Relatório
       try {
-        const bikeDetails = await fetchBikeDetailsForReport(bikeNumber);
+        const bikeDetails = await fetchBikeDetailsForReport(bikeNumber, 3000);
         await addDoc(collection(db, 'reports'), {
           patrimonio: bikeNumber,
           status: 'Devolvida da Técnica',
@@ -2669,7 +2674,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         // Adiciona ao relatório Firebase
         try {
-          const bikeDetails = await fetchBikeDetailsForReport(bikePat);
+          const bikeDetails = await fetchBikeDetailsForReport(bikePat, 3000);
           await addDoc(collection(db, 'reports'), {
             patrimonio: bikePat,
             status: 'Vandalizada',
@@ -2763,7 +2768,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
       
       try {
-        const bikeDetails = await fetchBikeDetailsForReport(bikeNumber);
+        const bikeDetails = await fetchBikeDetailsForReport(bikeNumber, 3000);
         await addDoc(collection(db, 'reports'), {
           patrimonio: bikeNumber,
           status: 'Em Manutenção',
@@ -2814,7 +2819,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
 
       try {
-        const bikeDetails = await fetchBikeDetailsForReport(bikeNumber);
+        const bikeDetails = await fetchBikeDetailsForReport(bikeNumber, 3000);
         await addDoc(collection(db, 'reports'), {
           patrimonio: bikeNumber,
           status: 'Reserva',
@@ -2898,7 +2903,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           }
           
           try {
-            const bikeDetails = await fetchBikeDetailsForReport(action.bikeNumber);
+            const bikeDetails = await fetchBikeDetailsForReport(action.bikeNumber, 3000);
             await addDoc(collection(db, 'reports'), {
               patrimonio: action.bikeNumber,
               status: 'Em Estação',
