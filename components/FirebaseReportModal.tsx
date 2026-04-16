@@ -27,7 +27,9 @@ import {
   TrashIcon, 
   SheetIcon,
   SearchIcon,
-  RefreshIcon
+  RefreshIcon,
+  EditIcon,
+  CheckIcon
 } from './icons';
 
 interface FirebaseReportModalProps {
@@ -40,6 +42,8 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
   const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [isAdding, setIsAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editData, setEditData] = useState<Partial<FirebaseReport>>({});
   
   // Filters state
   const [filterDriver, setFilterDriver] = useState('');
@@ -104,7 +108,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
       const bikeRes = await apiCall({ action: 'searchBike', bikeNumber: newReport.patrimonio });
       const bikeData = bikeRes.success ? bikeRes.data : {};
 
-      const deterministicId = `${newReport.patrimonio}_${localDateStr()}`;
+      const deterministicId = `${newReport.patrimonio}_${localDateStr()}_${Date.now()}`;
       
       await setDoc(doc(db, 'reports', deterministicId), {
         ...newReport,
@@ -143,6 +147,35 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     } catch (error) {
       console.error("Error adding report:", error);
       alert("Erro ao adicionar registro.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleStartEdit = (report: FirebaseReport) => {
+    setEditingId(report.id || null);
+    setEditData({ ...report });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setEditData({});
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingId) return;
+    setIsLoading(true);
+    try {
+      const docRef = doc(db, 'reports', editingId);
+      const updatePayload = { ...editData };
+      delete updatePayload.id; // Don't save ID back to doc fields
+      
+      await setDoc(docRef, updatePayload, { merge: true });
+      setEditingId(null);
+      setEditData({});
+    } catch (error) {
+      console.error("Error updating report:", error);
+      alert("Erro ao atualizar registro.");
     } finally {
       setIsLoading(false);
     }
@@ -405,6 +438,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
             <table className="w-full text-left border-collapse min-w-[1500px]">
               <thead className="sticky top-0 bg-gray-100 z-10 shadow-sm">
                 <tr>
+                  <th className="p-3 text-[10px] font-black text-gray-600 uppercase tracking-wider border-b sticky left-0 bg-gray-100 z-20 w-20 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">Ações</th>
                   <th className="p-3 text-[10px] font-black text-gray-600 uppercase tracking-wider border-b">Data/Hora</th>
                   <th className="p-3 text-[10px] font-black text-gray-600 uppercase tracking-wider border-b">Patrimônio</th>
                   <th className="p-3 text-[10px] font-black text-gray-600 uppercase tracking-wider border-b">Status</th>
@@ -416,65 +450,188 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
                   <th className="p-3 text-[10px] font-black text-gray-600 uppercase tracking-wider border-b">Trava</th>
                   <th className="p-3 text-[10px] font-black text-gray-600 uppercase tracking-wider border-b">Localidade</th>
                   <th className="p-3 text-[10px] font-black text-gray-600 uppercase tracking-wider border-b">Observação</th>
-                  <th className="p-3 text-[10px] font-black text-gray-600 uppercase tracking-wider border-b w-16">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filteredReports.map((report) => (
-                  <tr key={report.id} className="hover:bg-gray-50 transition-colors group">
-                    <td className="p-3 text-[11px] text-gray-500 whitespace-nowrap">
-                      {report.timestamp instanceof Date ? report.timestamp.toLocaleString('pt-BR') : '---'}
-                    </td>
-                    <td className="p-3 text-sm font-bold text-gray-900">
-                      {report.patrimonio || report.bikeNumber || '---'}
-                    </td>
-                    <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase whitespace-nowrap ${
-                        (report.status || '').toLowerCase().includes('recolhida') || (report.status || '').toLowerCase().includes('filial') ? 'bg-orange-100 text-orange-700' :
-                        (report.status || '').toLowerCase().includes('manutenção') || (report.status || '').toLowerCase().includes('manutencao') ? 'bg-blue-100 text-blue-700' :
-                        (report.status || '').toLowerCase().includes('vandalizada') ? 'bg-red-100 text-red-700' :
-                        (report.status || '').toLowerCase().includes('estação') || (report.status || '').toLowerCase().includes('estacao') ? 'bg-green-100 text-green-700' :
-                        (report.status || '').toLowerCase().includes('nao encontrada') ? 'bg-gray-200 text-gray-800' :
-                        'bg-gray-100 text-gray-600'
-                      }`}>
-                        {(report.status || '').toUpperCase() === 'FILIAL' ? 'RECOLHIDA' : (report.status || '---')}
-                      </span>
-                    </td>
-                    <td className="p-3 text-xs font-medium text-gray-700">
-                      {report.motorista || report.driverName || '---'}
-                    </td>
-                    <td className="p-3 text-[10px] text-gray-400 font-bold uppercase">
-                      {report.type || '---'}
-                    </td>
-                    <td className="p-3 text-xs text-blue-600 font-bold">
-                      {report.carretinha || '---'}
-                    </td>
-                    <td className="p-3 text-xs text-gray-500">
-                      {report.statusSistema || '---'}
-                    </td>
-                    <td className="p-3 text-xs text-gray-500">
-                      {report.bateria || '---'}
-                    </td>
-                    <td className="p-3 text-xs text-gray-500">
-                      {report.trava || '---'}
-                    </td>
-                    <td className="p-3 text-xs text-gray-500 max-w-[150px] truncate" title={report.localidade}>
-                      {report.localidade || '---'}
-                    </td>
-                    <td className="p-3 text-xs text-gray-500 max-w-[200px] truncate" title={report.observacao || report.observation}>
-                      {report.observacao || report.observation || '---'}
-                    </td>
-                    <td className="p-3 text-right">
-                      <button 
-                        onClick={() => report.id && handleDelete(report.id)}
-                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-                        title="Excluir"
-                      >
-                        <TrashIcon className="w-4 h-4" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {filteredReports.map((report) => {
+                  const isEditing = editingId === report.id;
+                  
+                  return (
+                    <tr key={report.id} className={`hover:bg-gray-50 transition-colors group ${isEditing ? 'bg-blue-50/50' : ''}`}>
+                      <td className={`p-3 sticky left-0 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${isEditing ? 'bg-blue-50' : 'bg-white group-hover:bg-gray-50'}`}>
+                        <div className="flex items-center gap-1">
+                          {isEditing ? (
+                            <>
+                              <button 
+                                onClick={handleSaveEdit}
+                                className="p-1.5 text-green-600 hover:bg-green-50 rounded-lg transition-all"
+                                title="Salvar"
+                              >
+                                <CheckIcon className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={handleCancelEdit}
+                                className="p-1.5 text-gray-400 hover:bg-gray-100 rounded-lg transition-all"
+                                title="Cancelar"
+                              >
+                                <XIcon className="w-4 h-4" />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button 
+                                onClick={() => handleStartEdit(report)}
+                                className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                                title="Editar"
+                              >
+                                <EditIcon className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => report.id && handleDelete(report.id)}
+                                className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                                title="Excluir"
+                              >
+                                <TrashIcon className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3 text-[11px] text-gray-500 whitespace-nowrap">
+                        {report.timestamp instanceof Date ? report.timestamp.toLocaleString('pt-BR') : '---'}
+                      </td>
+                      <td className="p-3 text-sm font-bold text-gray-900">
+                        {isEditing ? (
+                          <input 
+                            type="text" 
+                            value={editData.patrimonio || editData.bikeNumber || ''} 
+                            onChange={e => setEditData({...editData, patrimonio: e.target.value.toUpperCase(), bikeNumber: e.target.value.toUpperCase()})}
+                            className="w-full p-1 border rounded text-xs"
+                          />
+                        ) : (
+                          report.patrimonio || report.bikeNumber || '---'
+                        )}
+                      </td>
+                      <td className="p-3">
+                        {isEditing ? (
+                          <input 
+                            type="text" 
+                            value={editData.status || ''} 
+                            onChange={e => setEditData({...editData, status: e.target.value})}
+                            className="w-full p-1 border rounded text-xs"
+                          />
+                        ) : (
+                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase whitespace-nowrap ${
+                            (report.status || '').toLowerCase().includes('recolhida') || (report.status || '').toLowerCase().includes('filial') ? 'bg-orange-100 text-orange-700' :
+                            (report.status || '').toLowerCase().includes('manutenção') || (report.status || '').toLowerCase().includes('manutencao') ? 'bg-blue-100 text-blue-700' :
+                            (report.status || '').toLowerCase().includes('vandalizada') ? 'bg-red-100 text-red-700' :
+                            (report.status || '').toLowerCase().includes('estação') || (report.status || '').toLowerCase().includes('estacao') ? 'bg-green-100 text-green-700' :
+                            (report.status || '').toLowerCase().includes('nao encontrada') ? 'bg-gray-200 text-gray-800' :
+                            'bg-gray-100 text-gray-600'
+                          }`}>
+                            {(report.status || '').toUpperCase() === 'FILIAL' ? 'RECOLHIDA' : (report.status || '---')}
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3 text-xs font-medium text-gray-700">
+                        {isEditing ? (
+                          <input 
+                            type="text" 
+                            value={editData.motorista || editData.driverName || ''} 
+                            onChange={e => setEditData({...editData, motorista: e.target.value.toUpperCase(), driverName: e.target.value.toUpperCase()})}
+                            className="w-full p-1 border rounded text-xs"
+                          />
+                        ) : (
+                          report.motorista || report.driverName || '---'
+                        )}
+                      </td>
+                      <td className="p-3 text-[10px] text-gray-400 font-bold uppercase">
+                        {isEditing ? (
+                          <input 
+                            type="text" 
+                            value={editData.type || ''} 
+                            onChange={e => setEditData({...editData, type: e.target.value})}
+                            className="w-full p-1 border rounded text-xs"
+                          />
+                        ) : (
+                          report.type || '---'
+                        )}
+                      </td>
+                      <td className="p-3 text-xs text-blue-600 font-bold">
+                        {isEditing ? (
+                          <input 
+                            type="text" 
+                            value={editData.carretinha || ''} 
+                            onChange={e => setEditData({...editData, carretinha: e.target.value})}
+                            className="w-full p-1 border rounded text-xs"
+                          />
+                        ) : (
+                          report.carretinha || '---'
+                        )}
+                      </td>
+                      <td className="p-3 text-xs text-gray-500">
+                        {isEditing ? (
+                          <input 
+                            type="text" 
+                            value={editData.statusSistema || ''} 
+                            onChange={e => setEditData({...editData, statusSistema: e.target.value})}
+                            className="w-full p-1 border rounded text-xs"
+                          />
+                        ) : (
+                          report.statusSistema || '---'
+                        )}
+                      </td>
+                      <td className="p-3 text-xs text-gray-500">
+                        {isEditing ? (
+                          <input 
+                            type="text" 
+                            value={editData.bateria || ''} 
+                            onChange={e => setEditData({...editData, bateria: e.target.value})}
+                            className="w-full p-1 border rounded text-xs"
+                          />
+                        ) : (
+                          report.bateria || '---'
+                        )}
+                      </td>
+                      <td className="p-3 text-xs text-gray-500">
+                        {isEditing ? (
+                          <input 
+                            type="text" 
+                            value={editData.trava || ''} 
+                            onChange={e => setEditData({...editData, trava: e.target.value})}
+                            className="w-full p-1 border rounded text-xs"
+                          />
+                        ) : (
+                          report.trava || '---'
+                        )}
+                      </td>
+                      <td className="p-3 text-xs text-gray-500 max-w-[150px] truncate" title={report.localidade}>
+                        {isEditing ? (
+                          <input 
+                            type="text" 
+                            value={editData.localidade || ''} 
+                            onChange={e => setEditData({...editData, localidade: e.target.value})}
+                            className="w-full p-1 border rounded text-xs"
+                          />
+                        ) : (
+                          report.localidade || '---'
+                        )}
+                      </td>
+                      <td className="p-3 text-xs text-gray-500 max-w-[200px] truncate" title={report.observacao || report.observation}>
+                        {isEditing ? (
+                          <input 
+                            type="text" 
+                            value={editData.observacao || editData.observation || ''} 
+                            onChange={e => setEditData({...editData, observacao: e.target.value, observation: e.target.value})}
+                            className="w-full p-1 border rounded text-xs"
+                          />
+                        ) : (
+                          report.observacao || report.observation || '---'
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
