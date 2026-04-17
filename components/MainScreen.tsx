@@ -888,16 +888,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
             || (d.metadata.hasPendingWrites ? new Date() : null);
           if (!ts) return;
           if (!byDriver[driver]) byDriver[driver] = [];
-          
-          let eventType = (data.type || 'em_posse').toLowerCase();
-          if (eventType === 'filial' || eventType === 'enviada para filial') eventType = 'recolhida';
-
           byDriver[driver].push({
             tsMs: ts.getTime(),
-            type: eventType,
+            type: data.type || 'em_posse',
             bikeNumber: data.bikeNumber || '',
-            observacao: data.observacao || '',
-            isOccurrence: !!data.isOccurrence
+            observacao: data.observacao || ''
           });
         });
         // Preserva eventos anteriores — mescla com novos
@@ -996,9 +991,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
         if (!newStats[m]) newStats[m] = { recolhidas: 0, remanejada: 0, naoEncontrada: 0 };
         
         // Contabiliza apenas destinos finais para evitar duplicidade
-        // Recolhidas = Entregues na Filial (status 'Filial' ou 'Recolhida (Filial)')
+        // Recolhidas = Entregues na Filial (status 'Filial')
         // Remanejadas = Entregues na Estação (status 'Estação' ou 'Em Estação')
-        if (data.status === 'Filial' || data.status === 'Recolhida (Filial)') newStats[m].recolhidas++;
+        if (data.status === 'Filial') newStats[m].recolhidas++;
         else if (data.status === 'Estação' || data.status === 'Em Estação') newStats[m].remanejada++;
         else if (data.status === 'Não encontrada') newStats[m].naoEncontrada++;
       });
@@ -6232,11 +6227,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               em_posse:      { bg: 'bg-green-500',   label: 'Em Posse' },
                               recolhida:     { bg: 'bg-green-700',   label: 'Recolhida (Filial)' },
                               estacao:       { bg: 'bg-indigo-500',  label: 'Estação' },
+                              filial:        { bg: 'bg-blue-500',    label: 'Filial' },
                               nao_atendida:  { bg: 'bg-yellow-500',  label: 'Não atend.' },
                               nao_encontrada:{ bg: 'bg-red-500',     label: 'Não enc.' },
                               carretinha:    { bg: 'bg-purple-600',  label: 'Carretinha' },
                               removida_por_adm: { bg: 'bg-black',    label: 'Removida por ADM' },
-                              filial:        { bg: 'bg-green-700',   label: 'Recolhida (Filial)' }, // Falback alias
                             };
 
                             return (
@@ -6888,9 +6883,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         const isMecanicaRecord = record.origem === 'mecanica' || record.type === 'Mecânica' || record.type === 'Reparo';
                         const isTecnicaRecord  = record.type === 'Técnica';
                         const isCarretinha     = record.type === 'Carretinha';
-                        const isRecolhida   = statusLow.includes('recolhida') || statusLow.includes('filial');
-                        const isEstacao     = statusLow.includes('estação') || statusLow.includes('estacao') || statusLow.includes('em estação');
-                        const isVandalizada = statusLow.includes('vandalizada');
+                        const isRecolhida   = statusLow === 'recolhida' || statusLow === 'filial';
+                        const isEstacao     = statusLow === 'estação' || statusLow === 'estacao' || statusLow === 'em estação';
+                        const isVandalizada = statusLow === 'vandalizada';
                         const isNaoEnc      = statusLow.includes('não encontrada') || statusLow.includes('nao encontrada');
                         const isMec         = statusLow.includes('manutenção') || statusLow.includes('manutencao') || statusLow.includes('mecânica') || statusLow.includes('mecanica');
                         // Reserva = saiu da mecânica (type Reparo ou status reserva/remanejada)
@@ -7419,11 +7414,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
           em_posse:       { bg: 'bg-green-500',  label: 'Em Posse' },
           recolhida:      { bg: 'bg-green-700',  label: 'Recolhida (Filial)' },
           estacao:        { bg: 'bg-indigo-500', label: 'Estação' },
+          filial:         { bg: 'bg-blue-500',   label: 'Filial' },
           nao_atendida:   { bg: 'bg-yellow-500', label: 'Não atend.' },
           nao_encontrada: { bg: 'bg-red-500',    label: 'Não enc.' },
           carretinha:     { bg: 'bg-purple-600', label: 'Carretinha' },
           removida_por_adm: { bg: 'bg-black',    label: 'Removida por ADM' },
-          filial:         { bg: 'bg-green-700',  label: 'Recolhida (Filial)' }, // Fallback alias
         };
         // Marca de hora a cada 30min
         const hourMarks: Array<{ms: number, label: string}> = [];
@@ -7500,6 +7495,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 cl.type === 'em_posse' ? 'bg-green-50 border-green-200 text-green-700' :
                                 cl.type === 'recolhida' ? 'bg-green-100 border-green-300 text-green-800' :
                                 cl.type === 'estacao' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' :
+                                cl.type === 'filial' ? 'bg-blue-50 border-blue-200 text-blue-700' :
                                 cl.type === 'removida_por_adm' ? 'bg-red-50 border-red-200 text-red-700' :
                                 'bg-gray-100 border-gray-200 text-gray-600'
                               }`}>{b}</span>
