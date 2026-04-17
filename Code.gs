@@ -1744,7 +1744,7 @@ function finalizeCollectedBike(request) {
     routeBikes     = routeBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
     collectedBikes = collectedBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
     
-    const reportStatus = finalStatus === 'Filial' ? 'Recolhida' : finalStatus;
+    const reportStatus = finalStatus === 'Filial' || finalStatus === 'Recolhida (Filial)' ? 'Recolhida (Filial)' : finalStatus;
     
     // Create row with 10 columns to include the new OCORRENCIA column
     const rowData = new Array(10).fill('');
@@ -3889,12 +3889,14 @@ function clearAlterarStatus(bikes) {
       if (!pat) return;
 
       if (item.row && item.row > 1) {
-        // Bike tem linha na aba Mecânica — apenas muda status para Remanejada
+        // Bike tem linha na aba Mecânica — apenas muda status para Remanejada e atualiza TS para suprimir via getMechanicsList
         const rowData = data[item.row - 1];
         if (rowData) {
           const currentStatus = String(rowData[COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
           if (currentStatus !== 'Remanejada') {
             sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada');
+            // Atualiza Data Entrada para garantir que mechData.tsMs seja > entry.tsMs no getMechanicsList
+            sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(now); 
             cleared++;
           }
         }
@@ -3907,6 +3909,7 @@ function clearAlterarStatus(bikes) {
           const rowStatus = String(data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
           if (rowPat === pat && rowStatus !== 'Remanejada') {
             sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada');
+            sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(now);
             alreadyExists = true;
             cleared++;
             break;
