@@ -2764,9 +2764,8 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
         if (!driverKey) return;
         const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
         let type = null;
-        if (status === 'recolhida' || status === 'vandalizada') type = 'recolhida';
+        if (status === 'recolhida' || status === 'vandalizada' || status.includes('filial')) type = 'recolhida';
         else if (status === 'estação' || status === 'estacao') type = 'estacao';
-        else if (status.includes('filial')) type = 'filial';
         else if (status.includes('não encontrada') || status.includes('nao encontrada')) type = 'nao_encontrada';
         else if (status.includes('não atendida') || status.includes('nao atendida')) type = 'nao_atendida';
         if (type) {
