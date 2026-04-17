@@ -436,6 +436,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const scannerStartPromise = useRef<Promise<any> | null>(null);
   const trailerScannerStartPromise = useRef<Promise<any> | null>(null);
   const isScannerBusy = useRef(false);
+  const recentlyHandledBikesRef = useRef<Map<string, number>>(new Map()); // patrimonio -> timestamp
   const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
 
@@ -444,6 +445,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const searchCacheRef = useRef<Record<string, BicycleData>>({});
   const searchResultRef = useRef<HTMLDivElement>(null);
   const processingBikesRef = useRef<Set<string>>(new Set());
+
+  const markBikeHandled = useCallback((bikeNumber: string) => {
+    recentlyHandledBikesRef.current.set(String(bikeNumber), Date.now());
+  }, []);
+
   // Ref para refreshAll — evita dependência circular com persistDriverState
   const refreshAllRef = useRef<((force?: boolean) => Promise<void>) | null>(null);
   useEffect(() => {
@@ -1211,6 +1217,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
         collectedBikesRef.current = newCollected;
         routeBikesRef.current = newRoute;
         
+        // Protege contra sync do Sheets
+        markBikeHandled(bikeNumber);
+        
         setCollectedBikesDetails(prev => ({
           ...prev,
           [bikeNumber]: { 
@@ -1264,6 +1273,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // 1. Atualiza UI e Refs imediatamente
         setRouteBikes(newRoute);
         routeBikesRef.current = newRoute;
+        
+        // Protege contra sync do Sheets
+        markBikeHandled(bikeNumber);
+
         setSearchedBike(null);
         setSearchTerm('');
 
@@ -1354,6 +1367,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setRouteBikes(newRoute);
       routeBikesRef.current = newRoute;
 
+      // Protege contra sync do Sheets
+      markBikeHandled(bikeNumber);
+
       // 2. Registra ação antes das chamadas ao Sheets
       markDriverAction();
 
@@ -1409,6 +1425,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setCollectedBikes(newCollected);
     collectedBikesRef.current = newCollected;
     routeBikesRef.current = newRoute;
+    
+    // Marca como manipulada recentemente para o sync ignorá-la por 2 minutos
+    markBikeHandled(bikeNumber);
 
     const finalStatus = status === 'Enviada para Estação' ? 'Estação'
       : status === 'Enviada para Filial' ? 'Filial'
@@ -3724,7 +3743,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
           const reconciledRoute = sheetsRoute.filter(b => {
             const bikeId = String(b);
             // Se a bike está no nosso estado local de 'coletadas', ela não pode voltar para a 'rota'
-            return !collectedBikesRef.current.includes(bikeId);
+            if (collectedBikesRef.current.includes(bikeId)) return false;
+            
+            // Verifica se foi manipulada recentemente (janela de 2 minutos para sync do Sheets)
+            const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
+            if (lastHandledAt && (Date.now() - lastHandledAt < 120000)) return false;
+
+            return true;
           });
 
           applyStateFromSheets(reconciledRoute, sheetsCollected);
@@ -3732,7 +3757,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
           // Se estamos no período de carência, apenas aceitamos NOVAS atribuições do Sheets
           // (bikes que o Sheets enviou mas que não temos no Firebase nem no local)
           const currentAll = new Set([...routeBikesRef.current, ...collectedBikesRef.current]);
-          const newAssignments = sheetsRoute.filter(b => !currentAll.has(String(b)));
+          const newAssignments = sheetsRoute.filter(b => {
+            const bikeId = String(b);
+            // Ignore se já temos ou se processamos agora
+            if (currentAll.has(bikeId)) return false;
+            if (processingBikesRef.current.has(bikeId)) return false;
+
+            // Proteção extra: ignora se foi FINALIZADA ou REMOVIDA recentemente
+            const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
+            if (lastHandledAt && (Date.now() - lastHandledAt < 120000)) return false;
+
+            return true;
+          });
           
           if (newAssignments.length > 0) {
             console.log('[Sync] Novas atribuições detectadas no Sheets:', newAssignments);

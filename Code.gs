@@ -1707,10 +1707,11 @@ function finalizeRouteBike(request) {
     const bikeDetails = bikeResult.data;
 
     routeBikes = routeBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
+    collectedBikes = collectedBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
+
     if (finalStatus === 'Recolhida') {
-      if (!collectedBikes.map(String).includes(String(bikeNumber))) collectedBikes.push(bikeNumber);
-    } else {
-    }
+      collectedBikes.push(bikeNumber);
+    } 
 
     const statusLower = finalStatus.toLowerCase();
     if (statusLower.includes('recolhida') || statusLower.includes('vandalizada') || statusLower.includes('filial')) {
@@ -1740,7 +1741,9 @@ function finalizeCollectedBike(request) {
     if (!bikeResult.success) throw new Error(`Bicicleta ${bikeNumber} não encontrada.`);
     const bikeDetails  = bikeResult.data;
 
+    routeBikes     = routeBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
     collectedBikes = collectedBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
+    
     const reportStatus = finalStatus === 'Filial' ? 'Recolhida' : finalStatus;
     
     // Create row with 10 columns to include the new OCORRENCIA column

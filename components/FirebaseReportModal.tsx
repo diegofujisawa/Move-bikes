@@ -59,8 +59,6 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     status: '',
     observacao: '',
     motorista: '',
-    localidade: '',
-    statusSistema: '',
     type: 'Manual'
   });
 
@@ -109,7 +107,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     setIsLoading(true);
     try {
       // Fetch current bike info from Sheets to populate missing fields
-      const bikeRes = await apiCall({ action: 'search', bikeNumber: newReport.patrimonio });
+      const bikeRes = await apiCall({ action: 'searchBike', bikeNumber: newReport.patrimonio });
       const bikeData = bikeRes.success ? bikeRes.data : {};
 
       const deterministicId = `${newReport.patrimonio}_${localDateStr()}_${Date.now()}`;
@@ -145,8 +143,6 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
         status: '',
         observacao: '',
         motorista: '',
-        localidade: '',
-        statusSistema: '',
         type: 'Manual'
       });
       setIsAdding(false);
@@ -535,21 +531,21 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
             <input 
               type="text" 
               placeholder="Localidade" 
-              value={newReport.localidade || ''}
+              value={newReport.localidade}
               onChange={e => setNewReport({...newReport, localidade: e.target.value})}
               className="p-2 border border-green-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-green-500"
             />
             <input 
               type="text" 
               placeholder="Status Sistema" 
-              value={newReport.statusSistema || ''}
+              value={newReport.statusSistema}
               onChange={e => setNewReport({...newReport, statusSistema: e.target.value})}
               className="p-2 border border-green-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-green-500"
             />
             <input 
               type="text" 
               placeholder="Observação" 
-              value={newReport.observacao || ''}
+              value={newReport.observacao}
               onChange={e => setNewReport({...newReport, observacao: e.target.value})}
               className="p-2 border border-green-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-green-500"
             />
