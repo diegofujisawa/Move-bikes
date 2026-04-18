@@ -1548,8 +1548,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
 
     // Remove da lista IMEDIATAMENTE — antes de qualquer chamada async
-    processedRequestIds.current.add(String(requestId));
-    setPendingRequests(prev => prev.filter(r => String(r.id) !== String(requestId)));
+    const normalizedReqId = String(requestId).trim();
+    processedRequestIds.current.add(normalizedReqId);
+    setPendingRequests(prev => prev.filter(r => String(r.id).trim() !== normalizedReqId));
+    
+    // Marca as bikes como manipuladas recentemente para evitar que o sync as remova do roteiro
+    bikesToAdd.forEach(id => markBikeHandled(id));
 
     try {
       // IDs numéricos vêm do Sheets — não existem no Firestore.
@@ -1671,8 +1675,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsLoading(true);
 
     // Marca como processado imediatamente — nunca mais aparece na lista
-    processedRequestIds.current.add(String(requestId));
-    setPendingRequests(prev => prev.filter(r => String(r.id) !== String(requestId)));
+    const normalizedReqId = String(requestId).trim();
+    processedRequestIds.current.add(normalizedReqId);
+    setPendingRequests(prev => prev.filter(r => String(r.id).trim() !== normalizedReqId));
     try {
       // Feedback imediato
       setSuccessMessage('Pedido recusado.');
@@ -3765,17 +3770,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const applyData = (d: any) => {
       if (d.requests) {
         const sheetsRequests = d.requests.filter((r: any) => {
-          if (processedRequestIds.current.has(String(r.id))) return false;
+          if (processedRequestIds.current.has(String(r.id).trim())) return false;
           const status = (r.status || r.situacao || '').toString().toLowerCase().trim();
           return !status || status === 'pendente';
         });
         setPendingRequests(prev => {
           const firebaseOnly = prev.filter(r => {
-            const id = String(r.id);
+            const id = String(r.id).trim();
             const isFirestoreId = id.length > 10 && isNaN(Number(id));
             if (!isFirestoreId) return false;
             if (processedRequestIds.current.has(id)) return false;
-            return !sheetsRequests.find((sr: any) => String(sr.id) === id);
+            return !sheetsRequests.find((sr: any) => String(sr.id).trim() === id);
           });
           return [...firebaseOnly, ...sheetsRequests];
         });
@@ -3789,7 +3794,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
         if (canSheetsOverride()) {
           // Se passou o tempo de carência, ainda assim filtramos bikes que o Firebase diz estarem finalizadas
           // Isso garante que bikes não "retornem" se o Sheets estiver muito atrasado
-          const reconciledRoute = sheetsRoute.filter(b => {
+          // const reconciledRoute = sheetsRoute.filter(b => {
+          sheetsRoute.filter(b => {
             const bikeId = String(b);
             // Se a bike está no nosso estado local de 'coletadas', ela não pode voltar para a 'rota'
             if (collectedBikesRef.current.includes(bikeId)) return false;
@@ -3801,7 +3807,36 @@ const MainScreen: React.FC<MainScreenProps> = ({
             return true;
           });
 
-          applyStateFromSheets(reconciledRoute, sheetsCollected);
+          // Reconciliação: unimos o que o Sheet tem com o que acabamos de aceitar localmente
+          const fromSheets = sheetsRoute.filter(b => {
+            const bikeId = String(b).trim();
+            if (collectedBikesRef.current.includes(bikeId)) return false;
+            const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
+            if (lastHandledAt && (Date.now() - lastHandledAt < 120000)) return false;
+            return true;
+          });
+          const fromLocalGrace = routeBikesRef.current.filter(b => {
+            const bikeId = String(b).trim();
+            const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
+            return lastHandledAt && (Date.now() - lastHandledAt < 120000);
+          });
+          const reconciledRouteReal = [...new Set([...fromSheets, ...fromLocalGrace])];
+
+          // Mesma lógica para coletadas
+          const fromSheetsCollected = sheetsCollected.filter(b => {
+            const bikeId = String(b).trim();
+            const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
+            if (lastHandledAt && (Date.now() - lastHandledAt < 120000)) return false;
+            return true;
+          });
+          const fromLocalGraceCollected = collectedBikesRef.current.filter(b => {
+            const bikeId = String(b).trim();
+            const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
+            return lastHandledAt && (Date.now() - lastHandledAt < 120000);
+          });
+          const reconciledCollectedReal = [...new Set([...fromSheetsCollected, ...fromLocalGraceCollected])];
+
+          applyStateFromSheets(reconciledRouteReal, reconciledCollectedReal);
         } else {
           // Se estamos no período de carência, apenas aceitamos NOVAS atribuições do Sheets
           // (bikes que o Sheets enviou mas que não temos no Firebase nem no local)
