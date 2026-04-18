@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { DocumentTextIcon } from './icons';
 
 interface ReportModalProps {
@@ -19,7 +19,7 @@ const ReportModal: React.FC<ReportModalProps> = ({ isOpen, onClose, driverName, 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
 
-  const generateReportText = (data: any, finalKmStr: string) => {
+  const generateReportText = useCallback((data: any, finalKmStr: string) => {
     if (!data) return 'Gerando relatório...';
     
     const today = new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
@@ -79,9 +79,9 @@ ${Object.entries(data.estacoes || {}).map(([name, count]) => `• ${name}: ${cou
 💬 *OBSERVAÇÕES:*
 `;
     return report.trim();
-  };
+  }, [driverName, kmInicial]);
 
-  const fetchAndGenerateReport = async () => {
+  const fetchAndGenerateReport = useCallback(async () => {
     setReportText('Gerando relatório...');
     try {
       const result = await apiCall({ action: 'getDailyReportData', driverName });
@@ -94,20 +94,20 @@ ${Object.entries(data.estacoes || {}).map(([name, count]) => `• ${name}: ${cou
     } catch (err: any) {
       setReportText(`Erro de comunicação: ${err.message}`);
     }
-  };
+  }, [driverName, kmFinal, generateReportText]);
 
   useEffect(() => {
     if (isOpen) {
       fetchAndGenerateReport();
       setCopyButtonText('Copiar');
     }
-  }, [isOpen]);
+  }, [isOpen, fetchAndGenerateReport]);
 
   useEffect(() => {
     if (reportData) {
       setReportText(generateReportText(reportData, kmFinal));
     }
-  }, [kmFinal, reportData]);
+  }, [kmFinal, reportData, generateReportText]);
 
   if (!isOpen) return null;
 

@@ -331,10 +331,8 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     const matchesDriver = !filterDriver || m === filterDriver.toLowerCase();
     
     // Status filter
-    const displayStatus = (r.status || '').toUpperCase().includes('RECOLHIDA') || (r.status || '').toUpperCase().includes('FILIAL') 
-      ? 'RECOLHIDA (FILIAL)' 
-      : (r.status || '').toUpperCase();
-    const matchesStatus = !filterStatus || (displayStatus.includes(filterStatus.toUpperCase()));
+    const displayStatus = (r.status || '').toUpperCase() === 'FILIAL' ? 'RECOLHIDA' : (r.status || '').toUpperCase();
+    const matchesStatus = !filterStatus || displayStatus === filterStatus.toUpperCase();
     
     // Date filter
     let matchesDate = true;
@@ -369,8 +367,8 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     
     const isMecanica = motoristaLow.includes('mecanica') || typeLow.includes('mecanica');
     const isTrailerLogistics = statusLow.includes('carretinha') || typeLow === 'logistica';
-    const isIntermediate = (typeLow === 'recolhida' && !statusLow.includes('filial')) || typeLow === 'nao atendida';
-    
+    const isIntermediate = typeLow === 'recolhida' || typeLow === 'nao atendida';
+
     if (!isAllowedStatus || isMecanica || isTrailerLogistics || isIntermediate) return false;
 
     return matchesSearch && matchesDriver && matchesStatus && matchesDate;
@@ -390,16 +388,15 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     
     const isMecanica = motoristaLow.includes('mecanica') || typeLow.includes('mecanica');
     const isTrailerLogistics = statusLow.includes('carretinha') || typeLow === 'logistica';
-    const isIntermediate = (typeLow === 'recolhida' && !statusLow.includes('filial')) || typeLow === 'nao atendida';
+    const isIntermediate = typeLow === 'recolhida' || typeLow === 'nao atendida';
     
     return isAllowedStatus && !isMecanica && !isTrailerLogistics && !isIntermediate;
   });
 
   const uniqueDrivers = Array.from(new Set(allowedReports.map(r => r.motorista || r.driverName).filter(Boolean))).sort();
-  const uniqueStatuses = Array.from(new Set(allowedReports.map(r => {
-    const s = (r.status || '').toUpperCase();
-    return s.includes('RECOLHIDA') || s.includes('FILIAL') ? 'RECOLHIDA (FILIAL)' : s;
-  }).filter(Boolean))).sort();
+  const uniqueStatuses = Array.from(new Set(allowedReports.map(r => 
+    (r.status || '').toUpperCase() === 'FILIAL' ? 'RECOLHIDA' : (r.status || '').toUpperCase()
+  ).filter(Boolean))).sort();
 
   if (!isOpen) return null;
 
@@ -670,7 +667,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
                             (report.status || '').toLowerCase().includes('nao encontrada') ? 'bg-gray-200 text-gray-800' :
                             'bg-gray-100 text-gray-600'
                           }`}>
-                            {(report.status || '').toUpperCase().includes('FILIAL') || (report.status || '').toUpperCase().includes('RECOLHIDA') ? 'RECOLHIDA (FILIAL)' : (report.status || '---')}
+                            {(report.status || '').toUpperCase() === 'FILIAL' ? 'RECOLHIDA' : (report.status || '---')}
                           </span>
                         )}
                       </td>

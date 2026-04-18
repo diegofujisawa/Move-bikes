@@ -242,6 +242,12 @@ const AdminAlerts: React.FC<{adminName: string, isOpen: boolean, onClose: () => 
 const MainScreen: React.FC<MainScreenProps> = ({
   driverName, category, plate, kmInicial, onLogout, onShowMap, onUpdateUser
 }) => {
+  // Move as declarações de papel para o topo absoluto do componente
+  const normalizedCategory = useMemo(() => (category || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''), [category]);
+  const isAdm = useMemo(() => normalizedCategory.includes('ADM'), [normalizedCategory]);
+  const isMecanica = useMemo(() => normalizedCategory.includes('MECANICA') || normalizedCategory.includes('MECANICO'), [normalizedCategory]);
+  const isTecnica  = useMemo(() => normalizedCategory.includes('TECNICA') || normalizedCategory.includes('TECNICO'), [normalizedCategory]);
+
   // --- UI State ---
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -558,7 +564,29 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
     });
 
-    // 3. Aplica proteção otimista (ações recentes do usuário local)
+    // 3. Aplica proteção otimista e injeção de bikes ausentes que estão sob proteção
+    const finalPats = new Set(result.map(b => String(b.patrimonio)));
+    
+    // Injeção de bikes protegidas que sumiram do resultado (ex: finalizadas mas ainda não sincronizadas no Sheets ou movidas para Reserva)
+    Object.entries(mechanicOptimisticRef.current).forEach(([pat, prot]) => {
+      if (prot.expiresAt > now && !finalPats.has(pat)) {
+        const protFields = { ...prot };
+        delete (protFields as any).expiresAt;
+        
+        const statusToUse = protFields.status || (isTecnica ? 'Em Técnica' : 'Reserva');
+        if (validMechanicsStatuses.includes(statusToUse)) {
+          result.push({
+            patrimonio: pat,
+            status: statusToUse,
+            mecanico: driverName,
+            dataEntrada: new Date(),
+            ...protFields
+          } as any);
+          finalPats.add(pat);
+        }
+      }
+    });
+
     return result.map(bike => {
       const pat = String(bike.patrimonio);
       const protected_ = mechanicOptimisticRef.current[pat];
@@ -569,7 +597,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
       return bike;
     }).filter(b => validMechanicsStatuses.includes(b.status));
-  }, [mechanicsLiveDetails]);
+  }, [mechanicsLiveDetails, isTecnica, driverName]);
 
   useEffect(() => {
     setMechanicsList(mergeMechanicsList(sheetsMechanicsList, fbMechanicsFlow));
@@ -599,11 +627,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const lastDriverActionAt = useRef<number>(0);
   const lastFirebaseUpdateAt = useRef<number>(0);
   const lastLocationRef = useRef<{ lat: number, lng: number } | null>(null);
-
-  const normalizedCategory = category.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  const isAdm = normalizedCategory.includes('ADM');
-  const isMecanica = normalizedCategory.includes('MECANICA') || normalizedCategory.includes('MECANICO');
-  const isTecnica  = normalizedCategory.includes('TECNICA') || normalizedCategory.includes('TECNICO');
 
   // =================================================================
   // HELPERS DE ESTADO
@@ -1438,7 +1461,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     markBikeHandled(bikeNumber);
 
     const finalStatus = status === 'Enviada para Estação' ? 'Estação'
-      : status === 'Enviada para Filial' ? 'Recolhida (Filial)'
+      : status === 'Enviada para Filial' ? 'Filial'
       : status;
 
     // 3. Registra ação ANTES das chamadas ao Sheets — protege contra sync que devolveria a bike
@@ -1473,7 +1496,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             }, 1, true).catch(e => console.warn('[Sheets] finalizeCollectedBike failed:', e));
 
             const timelinePromise = addDoc(collection(db, 'timeline_events'), {
-              driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'recolhida',
+              driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
               timestamp: serverTimestamp(),
               date: localDateStr(),
               isOccurrence: isOccurrence,
@@ -2435,7 +2458,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const handleMarkAsNotFound = async (bikeId: string) => {
     setIsLoading(true);
     // Optimistic: remove from list immediately
-    protectMechanicBike(bikeId, { status: 'REMOVIDA' }); // Status fora de activeStatuses para esconder
     setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikeId));
     try {
       // 1. Remove do fluxo da mecânica no Firebase
@@ -3622,7 +3644,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } catch {} finally { setIsHistoryLoading(false); }
   };
 
-  const fetchAlerts = async (forceScan = false) => {
+  const fetchAlerts = useCallback(async (forceScan = false) => {
     if (!category.includes('ADM')) return;
     setIsAlertsLoading(true);
     try {
@@ -3644,7 +3666,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally {
       setIsAlertsLoading(false);
     }
-  };
+  }, [category]);
 
   const handleConfirmFound = async (alertId: number) => {
     if (!window.confirm('Confirmar que esta bicicleta foi encontrada?')) return;
@@ -3668,36 +3690,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     finally { setIsLoading(false); }
   };
 
-  const fetchDriversSummary = async () => {
-    const range = summaryTimeRange;
-    setIsSummaryLoading(true);
-    try {
-      const r = await apiCall({ action: 'getDriversSummary', timeRange: range, timelineDate }, 1, true);
-      if (r.success && summaryTimeRange === range) {
-        const filteredData = (r.data || []).filter((d: any) => d.name?.toUpperCase() !== 'MECANICA');
-        setDriversSummary(prev => {
-          // Preserva timeline e timelineWindow anteriores se o novo dado não tem eventos
-          // (garante que eventos passados não somem entre syncs)
-          return filteredData.map((newDriver: any) => {
-            const prevDriver = prev.find((p: any) => p.name === newDriver.name);
-            const hasNewTimeline = newDriver.timeline && newDriver.timeline.length > 0;
-            const hasPrevTimeline = prevDriver?.timeline && prevDriver.timeline.length > 0;
-            return {
-              ...newDriver,
-              timeline: hasNewTimeline ? newDriver.timeline : (hasPrevTimeline ? prevDriver.timeline : []),
-              timelineWindow: newDriver.timelineWindow || prevDriver?.timelineWindow || null,
-            };
-          });
-        });
-      }
-      else if (!r.success) await runDriversSummaryFallback();
-    } catch { await runDriversSummaryFallback(); }
-    finally { setIsSummaryLoading(false); }
-  };
-
-  useEffect(() => { fetchDriversSummary(); }, [summaryTimeRange, timelineDate]);
-
-  const runDriversSummaryFallback = async () => {
+  const runDriversSummaryFallback = useCallback(async () => {
     const range = summaryTimeRange;
     try {
       const drivers: string[] = category.includes('ADM')
@@ -3725,7 +3718,36 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }));
       if (summaryTimeRange === range) setDriversSummary(summary);
     } catch (err) { console.error('Fallback summary:', err); }
-  };
+  }, [summaryTimeRange, category, driverName]);
+
+  const fetchDriversSummary = useCallback(async () => {
+    const range = summaryTimeRange;
+    setIsSummaryLoading(true);
+    try {
+      const r = await apiCall({ action: 'getDriversSummary', timeRange: range, timelineDate }, 1, true);
+      if (r.success && summaryTimeRange === range) {
+        const filteredData = (r.data || []).filter((d: any) => d.name?.toUpperCase() !== 'MECANICA');
+        setDriversSummary(prev => {
+          // Preserva timeline e timelineWindow anteriores se o novo dado não tem eventos
+          // (garante que eventos passados não somem entre syncs)
+          return filteredData.map((newDriver: any) => {
+            const prevDriver = prev.find((p: any) => p.name === newDriver.name);
+            const hasNewTimeline = newDriver.timeline && newDriver.timeline.length > 0;
+            const hasPrevTimeline = prevDriver?.timeline && prevDriver.timeline.length > 0;
+            return {
+              ...newDriver,
+              timeline: hasNewTimeline ? newDriver.timeline : (hasPrevTimeline ? prevDriver.timeline : []),
+              timelineWindow: newDriver.timelineWindow || prevDriver?.timelineWindow || null,
+            };
+          });
+        });
+      }
+      else if (!r.success) await runDriversSummaryFallback();
+    } catch { await runDriversSummaryFallback(); }
+    finally { setIsSummaryLoading(false); }
+  }, [summaryTimeRange, timelineDate, runDriversSummaryFallback]);
+
+  useEffect(() => { fetchDriversSummary(); }, [fetchDriversSummary]);
 
   // =================================================================
   // REFRESH ALL
@@ -3767,22 +3789,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
         if (canSheetsOverride()) {
           // Se passou o tempo de carência, ainda assim filtramos bikes que o Firebase diz estarem finalizadas
           // Isso garante que bikes não "retornem" se o Sheets estiver muito atrasado
-          const filterHandled = (b: string) => {
-            const bikeId = String(b);
-            const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
-            if (lastHandledAt && (Date.now() - lastHandledAt < 120000)) return false;
-            return true;
-          };
-
           const reconciledRoute = sheetsRoute.filter(b => {
             const bikeId = String(b);
+            // Se a bike está no nosso estado local de 'coletadas', ela não pode voltar para a 'rota'
             if (collectedBikesRef.current.includes(bikeId)) return false;
-            return filterHandled(bikeId);
+            
+            // Verifica se foi manipulada recentemente (janela de 2 minutos para sync do Sheets)
+            const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
+            if (lastHandledAt && (Date.now() - lastHandledAt < 120000)) return false;
+
+            return true;
           });
 
-          const reconciledCollected = sheetsCollected.filter(filterHandled);
-
-          applyStateFromSheets(reconciledRoute, reconciledCollected);
+          applyStateFromSheets(reconciledRoute, sheetsCollected);
         } else {
           // Se estamos no período de carência, apenas aceitamos NOVAS atribuições do Sheets
           // (bikes que o Sheets enviou mas que não temos no Firebase nem no local)
@@ -4000,7 +4019,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsSyncing(false);
       if (isAdm) { setIsSummaryLoading(false); setIsAlertsLoading(false); setIsVandalizedLoading(false); }
     }
-  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm]);
+  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate]);
 
   useEffect(() => {
     if (isMecanica && activeMechanicCategory === 'Reserva') {
@@ -4099,7 +4118,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // changeStatusData is set but not used in UI
       }
     } catch {}
-  }, []);
+  }, [category, driverName]);
 
   // Sync periódico — 4s para reduzir delay percebido
   useEffect(() => {
@@ -4231,7 +4250,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       buildOptimizedRoute();
     }, 3000);
     return () => clearTimeout(timer);
-  }, [currentDriverLocation?.lat, currentDriverLocation?.lng, routeBikes.length, bikesHash]);
+  }, [currentDriverLocation, routeBikes.length, bikesHash, buildOptimizedRoute]);
 
   // Distâncias Haversine — mantido como display inicial antes do roteamento carregar
   useEffect(() => {
@@ -4251,14 +4270,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
     });
     if (Object.keys(dists).length > 0) setRouteDistances(prev => ({ ...prev, ...dists }));
-  }, [currentDriverLocation, routeBikes, routeBikesDetails]);
+  }, [currentDriverLocation, routeBikes, routeBikesDetails, routeDistances]);
 
   useEffect(() => {
     if (isAdm) {
       console.log('[Init] Admin logado, buscando alertas...');
       fetchAlerts();
     }
-  }, [isAdm]);
+  }, [isAdm, fetchAlerts]);
 
   useEffect(() => {
     if (category.toUpperCase() !== 'MOTORISTA') return;
@@ -4987,11 +5006,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       setIsLoading(true);
                       setError(null);
                       try {
-                        // Protege localmente as bikes para não voltarem no próximo sync
-                        bikesToClear.forEach(b => {
-                          protectMechanicBike(b.patrimonio, { status: 'Remanejada' });
-                        });
-
                         const r = await apiCall({
                           action: 'clearAlterarStatus',
                           bikes: bikesToClear.map(b => ({ patrimonio: b.patrimonio, row: b.row }))
@@ -5042,9 +5056,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
           {!isMecanica && !isTecnica && <>
             <button onClick={() => { setPrefilledBikeNumber(undefined); setRequestModalOpen(true); }} disabled={isLoading} title="Nova Solicitação" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             <button onClick={() => setRouteModalOpen(true)} disabled={isLoading} title="Criar Roteiro" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusPlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
-            {!isAdm && (
-              <button onClick={() => setTrailerModalOpen(true)} disabled={isLoading} title="Carretinha" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><TrailerIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
-            )}
             <button onClick={() => {
               setIsAdminAlertsOpen(true);
               setHasNewAlerts(false);

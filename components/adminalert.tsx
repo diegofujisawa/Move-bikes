@@ -18,7 +18,7 @@ const AdminAlerts: React.FC<AdminAlertsProps> = ({ adminName, isOpen, onClose })
     const [alerts, setAlerts] = useState<Alert[]>([]);
     const [isLoading, setIsLoading] = useState(false);
 
-    const fetchAlerts = async () => {
+    const fetchAlerts = useCallback(async () => {
         if (!adminName) return;
         setIsLoading(true);
         try {
@@ -32,7 +32,7 @@ const AdminAlerts: React.FC<AdminAlertsProps> = ({ adminName, isOpen, onClose })
         } finally {
             setIsLoading(false);
         }
-    };
+    }, [adminName]);
 
     const clearAlerts = async () => {
         if (!adminName) return;
@@ -58,7 +58,7 @@ const AdminAlerts: React.FC<AdminAlertsProps> = ({ adminName, isOpen, onClose })
             const interval = setInterval(fetchAlerts, 10000);
             return () => clearInterval(interval);
         }
-    }, [isOpen, adminName]);
+    }, [isOpen, fetchAlerts]);
 
     if (!isOpen) return null;
 
