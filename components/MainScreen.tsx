@@ -1523,7 +1523,46 @@ const MainScreen: React.FC<MainScreenProps> = ({
               });
             })().catch(e => console.error('[Firebase] CRITICAL: reports write failed:', e));
 
-            await Promise.all([firebaseBikesPromise, sheetsPromise, timelinePromise, persistPromise, reportPromise]);
+            const notificationsPromise = (async () => {
+              if (finalStatus !== 'Estação') return;
+              const bikeDetails = await bikeDetailsPromise;
+              if (!bikeDetails) return;
+
+              const st = String(bikeDetails.statusSistema || '').trim().toUpperCase();
+              const isNotActive = st !== 'ATIVO' && st !== '';
+              const isLowBattery = bikeDetails.bateria !== undefined && bikeDetails.bateria !== '' && Number(bikeDetails.bateria) < 50;
+
+              if (isNotActive || isLowBattery) {
+                const reasons = [];
+                if (isNotActive) reasons.push(`Status: ${bikeDetails.statusSistema}`);
+                if (isLowBattery) reasons.push(`Bateria: ${bikeDetails.bateria}%`);
+
+                const title = 'Entrega Irregular em Estação';
+                const message = `Bike ${bikeNumber} entregue na estação. Motivo: ${reasons.join(' | ')}`;
+                
+                // Notifica ADM
+                apiCall({
+                  action: 'sendNotification',
+                  recipient: 'ADM',
+                  type: 'alerta_estacao',
+                  title,
+                  message,
+                  bikes: [bikeNumber]
+                }, 1, true).catch(() => {});
+
+                // Notifica Motorista
+                apiCall({
+                  action: 'sendNotification',
+                  recipient: driverName,
+                  type: 'alerta_estacao',
+                  title: 'Atenção: Entrega Irregular',
+                  message,
+                  bikes: [bikeNumber]
+                }, 1, true).catch(() => {});
+              }
+            })().catch(e => console.warn('[Notifications] push failed:', e));
+
+            await Promise.all([firebaseBikesPromise, sheetsPromise, timelinePromise, persistPromise, reportPromise, notificationsPromise]);
           } catch (e) {
             console.error(`[Background] Erro ao processar bike ${bikeNumber}:`, e);
           } finally {
@@ -6219,11 +6258,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
                           {/* Linha do tempo de atividade */}
                           {(() => {
-                            const sheetsEvents = (driver.timeline || []) as Array<{tsMs: number, hour: number, min: number, type: string, bikeNumber?: string}>;
+                            const sheetsEvents = ((driver.timeline || []) as any[]).map(e => ({
+                              ...e,
+                              type: e.type === 'filial' ? 'recolhida' : e.type
+                            }));
                             // Eventos Firebase (em_posse) disponíveis para a data selecionada
                             const fbEvents = (firebaseTimelineEvents[driver.name] || []).map((e: any) => ({
                               tsMs: e.tsMs, hour: new Date(e.tsMs).getHours(),
-                              min: new Date(e.tsMs).getMinutes(), type: e.type, bikeNumber: e.bikeNumber,
+                              min: new Date(e.tsMs).getMinutes(), 
+                              type: e.type === 'filial' ? 'recolhida' : e.type, 
+                              bikeNumber: e.bikeNumber,
                               observacao: e.observacao,
                               isOccurrence: e.isOccurrence
                             }));
@@ -6274,7 +6318,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 last.count++;
                                 if (ev.bikeNumber && !last.bikes.includes(ev.bikeNumber)) last.bikes.push(ev.bikeNumber);
                                 if (ev.observacao && !last.observacoes.includes(ev.observacao)) last.observacoes.push(ev.observacao);
-                                if ((ev as any).isOccurrence) last.isOccurrence = true;
+                                if (!!(ev as any).isOccurrence && (ev.type === 'em_posse' || ev.type === 'nao_encontrada')) last.isOccurrence = true;
                                 last.tsMs = Math.round((last.tsMs * (last.count - 1) + ev.tsMs) / last.count);
                               } else {
                                 clusters.push({
@@ -6283,7 +6327,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                   bikes: ev.bikeNumber ? [ev.bikeNumber] : [],
                                   observacoes: ev.observacao ? [ev.observacao] : [],
                                   count: 1,
-                                  isOccurrence: !!(ev as any).isOccurrence
+                                  isOccurrence: !!(ev as any).isOccurrence && (ev.type === 'em_posse' || ev.type === 'nao_encontrada')
                                 });
                               }
                             });
@@ -6292,7 +6336,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               em_posse:      { bg: 'bg-green-500',   label: 'Em Posse' },
                               recolhida:     { bg: 'bg-green-700',   label: 'Recolhida (Filial)' },
                               estacao:       { bg: 'bg-indigo-500',  label: 'Estação' },
-                              filial:        { bg: 'bg-blue-500',    label: 'Filial' },
                               nao_atendida:  { bg: 'bg-yellow-500',  label: 'Não atend.' },
                               nao_encontrada:{ bg: 'bg-red-500',     label: 'Não enc.' },
                               carretinha:    { bg: 'bg-purple-600',  label: 'Carretinha' },
@@ -7479,7 +7522,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
           em_posse:       { bg: 'bg-green-500',  label: 'Em Posse' },
           recolhida:      { bg: 'bg-green-700',  label: 'Recolhida (Filial)' },
           estacao:        { bg: 'bg-indigo-500', label: 'Estação' },
-          filial:         { bg: 'bg-blue-500',   label: 'Filial' },
           nao_atendida:   { bg: 'bg-yellow-500', label: 'Não atend.' },
           nao_encontrada: { bg: 'bg-red-500',    label: 'Não enc.' },
           carretinha:     { bg: 'bg-purple-600', label: 'Carretinha' },
@@ -7560,7 +7602,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 cl.type === 'em_posse' ? 'bg-green-50 border-green-200 text-green-700' :
                                 cl.type === 'recolhida' ? 'bg-green-100 border-green-300 text-green-800' :
                                 cl.type === 'estacao' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' :
-                                cl.type === 'filial' ? 'bg-blue-50 border-blue-200 text-blue-700' :
                                 cl.type === 'removida_por_adm' ? 'bg-red-50 border-red-200 text-red-700' :
                                 'bg-gray-100 border-gray-200 text-gray-600'
                               }`}>{b}</span>

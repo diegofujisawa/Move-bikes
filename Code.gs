@@ -41,6 +41,7 @@ const MECHANICS_SHEET_NAME     = 'Mecanica';
 const QUEUE_SHEET_NAME         = 'FilaProcessamento';
 const ALERTS_SHEET_NAME        = 'Alertas';
 const CHASSI_SHEET_NAME        = 'CHASSI';
+const NOTIFICATIONS_SHEET_NAME = 'Notificacoes';
 
 // --- STATUS CONSTANTS ---
 const STATUS = {
@@ -73,7 +74,7 @@ const COLUMN_INDICES = {
     STATUS_SISTEMA: 6, BATERIA: 7, TRAVA: 8, LOCALIDADE: 9, OCORRENCIA: 10
   },
   STATE: { MOTORISTA: 1, ROTEIRO: 3, RECOLHIDAS: 4 },
-  NOTIFICATIONS: { USUARIO: 1, JSON: 2 },
+  NOTIFICATIONS: { DATA: 1, DESTINATARIO: 2, TIPO: 3, TITULO: 4, MENSAGEM: 5, BIKES: 6, STATUS: 7 },
   DAILY_SUMMARY: {
     DATA: 1, MOTORISTA: 2, PLACA: 3, KM_TOTAL: 4, BATERIA: 5, MANUT_BIKE: 6,
     MANUT_LOCKER: 7, REMANEJADAS: 8, OCORRENCIAS: 9, NAO_ENCONTRADAS: 10,
@@ -360,8 +361,8 @@ function doPost(e) {
       case 'generateDriverRoute':   response = { ...generateDriverRoute(request.driverName, request.location, request.filters, request.maxBikes, request.rangeKm), version: BACKEND_VERSION }; break;
       case 'exportAllData':         response = { ...handleExportAllData(request), version: BACKEND_VERSION }; break;
       case 'saveDailySummary':      response = { ...saveDailySummary(request.summaryData), version: BACKEND_VERSION }; break;
-      case 'getAdminAlerts':        response = { ...getAdminAlerts(request.adminName), version: BACKEND_VERSION }; break;
-      case 'clearAdminAlerts':      response = { ...clearAdminAlerts(request.adminName), version: BACKEND_VERSION }; break;
+      case 'getAdminAlerts':        response = { ...getAdminAlerts(request.adminName, request.category && request.category.includes('ADM')), version: BACKEND_VERSION }; break;
+      case 'clearAdminAlerts':      response = { ...clearAdminAlerts(request.adminName, request.category && request.category.includes('ADM')), version: BACKEND_VERSION }; break;
       case 'getDirections':        response = { ...getDirections(request.fromLat, request.fromLng, request.toLat, request.toLng), version: BACKEND_VERSION }; break;
       case 'getBikeMovement':      response = { ...getBikeMovement(request.bikeNumber, request.limit), version: BACKEND_VERSION }; break;
       case 'confirmMechanicsReceipt': response = { ...confirmMechanicsReceipt(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
@@ -379,6 +380,7 @@ function doPost(e) {
       case 'finalizeTechnicaRepair':response = { ...finalizeTechnicaRepair(request.bikeNumber, request.technicianName, request.treatment), version: BACKEND_VERSION }; break;
       case 'insertBikeMechanics':   response = { ...insertBikeMechanics(request.bikeNumber, request.driverName, request.targetStatus), version: BACKEND_VERSION }; break;
       case 'notifyAdmins':          response = { ...notifyAdmins(request.message, request.bikes, request.trailerName), version: BACKEND_VERSION }; break;
+      case 'sendNotification':      response = { ...sendNotification(request), version: BACKEND_VERSION }; break;
       case 'finalizeMechanicsRepair': response = { ...finalizeMechanicsRepair(request.bikeNumber, request.mechanicName, request.treatment), version: BACKEND_VERSION }; break;
       case 'markAsVandalizedNoRecovery': response = { ...markAsVandalizedNoRecovery(request.bikeNumber, request.mechanicName, request.room, request.observation || request.reasons), version: BACKEND_VERSION }; break;
       case 'organizeTrailer':       response = { ...organizeTrailer(request.bikeNumbers, request.trailerName), version: BACKEND_VERSION }; break;
@@ -636,7 +638,6 @@ function handleSync(request) {
       response.data.changeStatusData = getChangeStatusData(statusTimeRange, {
         report: getSheet(REPORT_SHEET_NAME), bikes: getSheet(BIKES_SHEET_NAME)
       }).data || { vandalizadas: [], filial: [] };
-      response.data.adminAlerts = getAdminAlerts(driverName).alerts || [];
     } else {
       response.data.driversSummary = getDriversSummary(summaryTimeRange, {
         access: getSheet(ACCESS_SHEET_NAME), report: getSheet(REPORT_SHEET_NAME),
@@ -644,6 +645,9 @@ function handleSync(request) {
         stations: getSheet(STATIONS_SHEET_NAME)
       }, driverName).data || [];
     }
+    
+    // Alertas e Notificações (disponível para ADM e Motoristas)
+    response.data.adminAlerts = getAdminAlerts(driverName, isAdm).alerts || [];
 
     if (isMecanica || isAdm) {
       response.data.mechanicsList = getMechanicsList().data || [];
@@ -2267,13 +2271,82 @@ function batchAddNotifications(notificationsMap) {
 }
 
 
-function getAdminAlerts(adminName) {
-  return { success: true, alerts: [] };
+function getAdminAlerts(userName, isAdm = false) {
+  try {
+    const ss = getSpreadsheet();
+    const sheet = ss.getSheetByName(NOTIFICATIONS_SHEET_NAME);
+    if (!sheet) return { success: true, alerts: [] };
+
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return { success: true, alerts: [] };
+
+    const alerts = [];
+    const nameLower = (userName || '').toLowerCase();
+    
+    // Itera de trás para frente para pegar os mais recentes primeiro
+    for (let i = data.length - 1; i >= 1; i--) {
+      const recipient = String(data[i][COLUMN_INDICES.NOTIFICATIONS.DESTINATARIO - 1] || '').toLowerCase();
+      const status = String(data[i][COLUMN_INDICES.NOTIFICATIONS.STATUS - 1] || '').toLowerCase();
+      
+      const isTarget = isAdm ? (recipient === 'adm' || recipient === nameLower) : (recipient === nameLower);
+
+      if (isTarget && status === 'pendente') {
+        const dateVal = data[i][COLUMN_INDICES.NOTIFICATIONS.DATA - 1];
+        const type = data[i][COLUMN_INDICES.NOTIFICATIONS.TIPO - 1];
+        const title = data[i][COLUMN_INDICES.NOTIFICATIONS.TITULO - 1];
+        const msg = data[i][COLUMN_INDICES.NOTIFICATIONS.MENSAGEM - 1];
+        const bikes = data[i][COLUMN_INDICES.NOTIFICATIONS.BIKES - 1];
+
+        alerts.push({
+          id: i + 1, // ID baseado na linha para facilitar o clear
+          type: type,
+          msg: `${title}: ${msg}${bikes ? ' (Bikes: ' + bikes + ')' : ''}`,
+          time: dateVal instanceof Date ? dateVal.toISOString() : new Date(dateVal).toISOString()
+        });
+      }
+    }
+
+    return { success: true, alerts };
+  } catch (e) {
+    console.error('Erro em getAdminAlerts:', e.message);
+    return { success: false, error: e.message, alerts: [] };
+  }
 }
 
+function clearAdminAlerts(userName, isAdm = false) {
+  try {
+    const ss = getSpreadsheet();
+    const sheet = ss.getSheetByName(NOTIFICATIONS_SHEET_NAME);
+    if (!sheet) return { success: true };
 
-function clearAdminAlerts(adminName) {
-  return { success: true };
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return { success: true };
+
+    const nameLower = (userName || '').toLowerCase();
+    const rowsToUpdate = [];
+
+    for (let i = 1; i < data.length; i++) {
+      const recipient = String(data[i][COLUMN_INDICES.NOTIFICATIONS.DESTINATARIO - 1] || '').toLowerCase();
+      const status = String(data[i][COLUMN_INDICES.NOTIFICATIONS.STATUS - 1] || '').toLowerCase();
+      
+      const isTarget = isAdm ? (recipient === 'adm' || recipient === nameLower) : (recipient === nameLower);
+      if (isTarget && status === 'pendente') {
+        rowsToUpdate.push(i + 1);
+      }
+    }
+
+    if (rowsToUpdate.length > 0) {
+      // Para performance, ideal seria batch but simple for now
+      rowsToUpdate.forEach(row => {
+        sheet.getRange(row, COLUMN_INDICES.NOTIFICATIONS.STATUS).setValue('visto');
+      });
+    }
+
+    return { success: true };
+  } catch (e) {
+    console.error('Erro em clearAdminAlerts:', e.message);
+    return { success: false, error: e.message };
+  }
 }
 
 // =================================================================
@@ -3511,10 +3584,26 @@ function getMechanicsList() {
 }
 
 function notifyAdmins(message, bikes, trailerName) {
+  return sendNotification({
+    recipient: 'ADM',
+    type: 'trailer_finalizado',
+    title: trailerName,
+    message: message,
+    bikes: bikes
+  });
+}
+
+function sendNotification(request) {
+  const { recipient, type, title, message, bikes } = request;
   try {
     const ss = getSpreadsheet();
-    const sheet = ss.getSheetByName(NOTIFICATIONS_SHEET_NAME) || ss.insertSheet(NOTIFICATIONS_SHEET_NAME);
-    sheet.appendRow([new Date(), 'ADM', 'trailer_finalizado', trailerName, message, (bikes || []).join(', '), 'pendente']);
+    let sheet = ss.getSheetByName(NOTIFICATIONS_SHEET_NAME);
+    if (!sheet) {
+      sheet = ss.insertSheet(NOTIFICATIONS_SHEET_NAME);
+      sheet.appendRow(['Data', 'Destinatário', 'Tipo', 'Título', 'Mensagem', 'Bikes', 'Status']);
+    }
+    const bikesStr = Array.isArray(bikes) ? bikes.join(', ') : (bikes || '');
+    sheet.appendRow([new Date(), recipient || 'ADM', type || 'alerta', title || '', message || '', bikesStr, 'pendente']);
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };

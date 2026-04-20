@@ -1,3 +1,4 @@
+import { User } from './types';
 import { SCRIPT_URL as RAW_SCRIPT_URL } from './components/constants';
 
 const SCRIPT_URL = RAW_SCRIPT_URL.trim();
@@ -63,7 +64,7 @@ export function clearCache(action?: string): void {
 // SESSÃO — sessionStorage (isolado por aba) para dados ativos.
 // localStorage apenas para preferências persistentes.
 // =================================================================
-function getSessionUser(): { name: string; sessionId?: string } | null {
+function getSessionUser(): User | null {
   try {
     const raw = sessionStorage.getItem('bike_app_user')
       || localStorage.getItem('bike_app_user');
@@ -160,6 +161,9 @@ function enrichPayload(payload: Record<string, any>): Record<string, any> {
   }
   if (user?.name && !enriched.login && !enriched.driverName && !enriched.userName) {
     enriched.userName = user.name;
+  }
+  if (user?.category && !enriched.category) {
+    enriched.category = user.category;
   }
 
   return enriched;
