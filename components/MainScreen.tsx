@@ -189,19 +189,19 @@ const localDateStr = () => {
 // =================================================================
 // --- ADMIN ALERTS COMPONENT (inline) ---
 // =================================================================
-const AdminAlerts: React.FC<{adminName: string, isOpen: boolean, onClose: () => void}> = ({ adminName, isOpen, onClose }) => {
+const AdminAlerts: React.FC<{adminName: string, category: string, isOpen: boolean, onClose: () => void}> = ({ adminName, category, isOpen, onClose }) => {
   const [admAlerts, setAdmAlerts] = React.useState<any[]>([]);
   const [admLoading, setAdmLoading] = React.useState(false);
   const fetchAdmAlerts = React.useCallback(async () => {
     if (!adminName) return;
     setAdmLoading(true);
-    try { const r = await apiCall({ action: 'getAdminAlerts', adminName }); if (r.success) setAdmAlerts(r.alerts || []); }
+    try { const r = await apiCall({ action: 'getAdminAlerts', adminName, category }); if (r.success) setAdmAlerts(r.alerts || []); }
     catch {} finally { setAdmLoading(false); }
-  }, [adminName]);
+  }, [adminName, category]);
   const clearAdmAlerts = async () => {
     if (!confirm('Confirmar leitura de todos os alertas?')) return;
     setAdmLoading(true);
-    try { const r = await apiCall({ action: 'clearAdminAlerts', adminName }); if (r.success) setAdmAlerts([]); }
+    try { const r = await apiCall({ action: 'clearAdminAlerts', adminName, category }); if (r.success) setAdmAlerts([]); }
     catch {} finally { setAdmLoading(false); }
   };
   React.useEffect(() => {
@@ -1529,7 +1529,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               if (!bikeDetails) return;
 
               const st = String(bikeDetails.statusSistema || '').trim().toUpperCase();
-              const isNotActive = st !== 'ATIVO' && st !== '';
+              const isNotActive = st !== 'ATIVO';
               const isLowBattery = bikeDetails.bateria !== undefined && bikeDetails.bateria !== '' && Number(bikeDetails.bateria) < 50;
 
               if (isNotActive || isLowBattery) {
@@ -4000,12 +4000,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
           // changeStatusData is set but not used in UI, keeping it in state if needed for future
           // but removing the unused state for now to satisfy lint
         }
-        if (d.adminAlerts) {
-          const n = d.adminAlerts.length;
-          setAlertCount(n);
-          if (n > lastViewedAlertCountRef.current) {
-            setHasNewAlerts(true);
-          }
+      }
+
+      if (d.adminAlerts) {
+        const n = d.adminAlerts.length;
+        setAlertCount(n);
+        if (n > lastViewedAlertCountRef.current) {
+          setHasNewAlerts(true);
         }
       }
     };
@@ -7955,7 +7956,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       <ScheduleModal isOpen={isScheduleModalOpen} onClose={() => setIsScheduleModalOpen(false)} schedule={userSchedule} driverName={driverName} isLoading={isScheduleLoading}/>
       <VehicleSwitchModal isOpen={isVehicleModalOpen} onClose={() => setIsVehicleModalOpen(false)} onSwitch={(p, km) => onUpdateUser({ plate: p, kmInicial: km })} driverName={driverName} currentPlate={plate}/>
-      <AdminAlerts isOpen={isAdminAlertsOpen} onClose={() => setIsAdminAlertsOpen(false)} adminName={driverName}/>
+      <AdminAlerts isOpen={isAdminAlertsOpen} onClose={() => setIsAdminAlertsOpen(false)} adminName={driverName} category={category}/>
       <ReporModal isOpen={isReporModalOpen} onClose={() => setIsReporModalOpen(false)} data={reporData} isLoading={isReporLoading}/>
       {/* Modal Histórico Técnica */}
       {isTechnicaHistoryOpen && (() => {
