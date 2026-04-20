@@ -190,6 +190,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                       <th className="px-6 py-3 font-semibold">Motorista</th>
                       <th className="px-6 py-3 font-semibold text-center">Recolhidas</th>
                       <th className="px-6 py-3 font-semibold text-center">Remanejadas</th>
+                      <th className="px-6 py-3 font-semibold text-center bg-gray-100 text-blue-800">SOMA</th>
                       <th className="px-6 py-3 font-semibold text-center">Solicitações</th>
                       <th className="px-6 py-3 font-semibold text-center">Atendidas</th>
                       <th className="px-6 py-3 font-semibold text-center flex items-center justify-center gap-1">
@@ -210,6 +211,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                         <td className="px-6 py-4 font-medium text-gray-900">{row.driver}</td>
                         <td className="px-6 py-4 text-center text-gray-600">{row.recolhidas}</td>
                         <td className="px-6 py-4 text-center text-gray-600">{row.remanejadas}</td>
+                        <td className="px-6 py-4 text-center font-black text-blue-700 bg-blue-50/50">{row.totalBikes}</td>
                         <td className="px-6 py-4 text-center text-gray-600 font-bold">{row.solicitacoesRecebidas}</td>
                         <td className="px-6 py-4 text-center text-green-600 font-bold">{row.solicitacoesAtendidas}</td>
                         <td className="px-6 py-4 text-center">
@@ -223,6 +225,25 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                       </tr>
                     ))}
                   </tbody>
+                  {/* Footer for totals */}
+                  <tfoot className="bg-gray-50 border-t-2 border-gray-200">
+                    <tr className="font-black text-gray-900 italic">
+                      <td className="px-6 py-4">TOTAL GERAL</td>
+                      <td className="px-6 py-4 text-center">{totalRecolhidas}</td>
+                      <td className="px-6 py-4 text-center">{totalRemanejadas}</td>
+                      <td className="px-6 py-4 text-center bg-blue-100 text-blue-900 border-x border-blue-200">{totalRecolhidas + totalRemanejadas}</td>
+                      <td className="px-6 py-4 text-center">{totalSolicitacoes}</td>
+                      <td className="px-6 py-4 text-center text-green-600">{totalAtendidas}</td>
+                      <td className="px-6 py-4 text-center">
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                          (totalAtendidas / (totalSolicitacoes || 1) * 100) > 80 ? 'bg-green-100 text-green-700' : 
+                          (totalAtendidas / (totalSolicitacoes || 1) * 100) > 50 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
+                        }`}>
+                          {(totalSolicitacoes > 0 ? (totalAtendidas / totalSolicitacoes * 100) : 0).toFixed(1)}%
+                        </span>
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
