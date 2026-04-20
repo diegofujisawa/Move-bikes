@@ -20,7 +20,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.4-resilience-fix';
+const BACKEND_VERSION = '85.5-mechanic-sync-fix';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -3534,7 +3534,7 @@ function getMechanicsList() {
     // A ÚLTIMA AÇÃO DEVE SER SOBERANA: Se o mecânico mexeu na bike recentemente, o status da aba Mecânica prevalece.
     const isMechActive = mechData && (mechData.status === 'Aguardando Manutenção' || mechData.status === 'Em Manutenção' || mechData.status === 'Reserva' || mechData.status === 'Aguardando Técnica' || mechData.status === 'Em Técnica');
     const statusLow = entry.status.toLowerCase();
-    const isReportInitial = statusLow.includes('recolhida') || statusLow.includes('vandalizada') || statusLow.includes('filial') || statusLow.includes('recolher') || statusLow.includes('vandalismo') || statusLow.includes('roubada');
+    const isReportInitial = /recolhida|vandalizad|filial|recolher|vandalismo|roubada|recuperada|manuten[çc]ão|oficina/.test(statusLow);
 
     // Se a bike está na mecânica e o registro é manual ou ativo, damos preferência a ele
     // a menos que haja um registro de saída (estação) posterior à última ação do mecânico.
@@ -4010,6 +4010,7 @@ function clearAlterarStatus(bikes) {
           const currentStatus = String(rowData[COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
           if (currentStatus !== 'Remanejada') {
             sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada');
+            sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(new Date());
             cleared++;
           }
         }
@@ -4160,6 +4161,7 @@ function finalizeTrailer(trailerName) {
       if (tsMs && tsMs < CUTOFF_MS) continue;
 
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada');
+      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(new Date());
       remanejadas.push(rowPat);
       processedBikes.add(rowPat);
       count++;
