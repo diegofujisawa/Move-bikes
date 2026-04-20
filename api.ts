@@ -8,12 +8,14 @@ const SCRIPT_URL = RAW_SCRIPT_URL.trim();
 // AÇÕES DE ESCRITA — retry apenas com idempotencyKey
 // =================================================================
 const READ_ACTIONS = new Set([
-  'health', 'search', 'getRequests', 'getRequestsHistory', 'getStations',
+  'health', 'search', 'debugSearch', 'getRequests', 'getRequestsHistory', 'getStations',
   'getMotoristas', 'getAllPatrimonioNumbers', 'getDriverLocations',
   'getDriverState', 'getBikeDetailsBatch', 'getDailyReportData',
   'getSchedule', 'getBikeStatuses', 'getReporData', 'getChangeStatusData',
   'getAlerts', 'getVandalized', 'getRouteDetails', 'getVehiclePlates',
   'getDriversSummary', 'getAdminAlerts', 'getMechanicsList', 'getChassiInfo',
+  'getTechnicaList', 'getBicycles', 'getAnalyticalDashboardData',
+  'getDirections', 'getBikeMovement',
   'exportAllData', 'sync',
 ]);
 

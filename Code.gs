@@ -284,7 +284,8 @@ function doPost(e) {
     const action = (request.action || '').toString().trim();
 
     // Verificação de idempotency key para write actions
-    if (request.idempotencyKey && isAlreadyProcessed(request.idempotencyKey)) {
+    // O login é excluído para garantir que retries tragam o objeto 'user' de volta.
+    if (request.idempotencyKey && action !== 'login' && isAlreadyProcessed(request.idempotencyKey)) {
       return ContentService.createTextOutput(JSON.stringify({
         success: true, deduplicated: true, version: BACKEND_VERSION
       })).setMimeType(ContentService.MimeType.JSON);

@@ -97,6 +97,11 @@ const normalizeCoord = (coord: number): number => {
   return val;
 };
 
+const normalizeForSearch = (name: string) => {
+  if (!name) return '';
+  return String(name).trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+};
+
 const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
   const R = 6371;
   const dLat = (normalizeCoord(lat2) - normalizeCoord(lat1)) * (Math.PI / 180);
@@ -397,6 +402,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [searchedBike, setSearchedBike] = useState<BicycleData | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [mechanicSearchTerm, setMechanicSearchTerm] = useState('');
   const [activeMechanicCategory, setActiveMechanicCategory] = useState<string | null>(null);
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
   const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
@@ -2017,6 +2023,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
+const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAFAEL"];
+
   const fetchMechanicHistory = async () => {
     setIsMechanicHistoryLoading(true);
     try {
@@ -2031,26 +2039,42 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const entradas: Record<string, any[]> = {};
       snapEntrada.docs.forEach(d => {
         const rec = d.data();
-        const pat = String(rec.bikeNumber);
+        const pat = String(rec.patrimonio || rec.bikeNumber || '');
+        if (!pat) return;
         if (!entradas[pat]) entradas[pat] = [];
         entradas[pat].push(rec);
       });
 
       const records = snapReparo.docs.map(d => {
-        const rec = { id: d.id, ...d.data() } as any;
-        const pat = String(rec.bikeNumber);
+        const data = d.data();
+        const rec = { id: d.id, ...data } as any;
+        const pat = String(rec.patrimonio || rec.bikeNumber || '');
         const tsOut = rec.timestamp?.toMillis?.() || 0;
         const entradasBike = (entradas[pat] || [])
           .filter(e => (e.dataEntrada?.toMillis?.() || e.timestamp?.toMillis?.() || 0) <= tsOut)
           .sort((a: any, b: any) => (b.dataEntrada?.toMillis?.() || b.timestamp?.toMillis?.() || 0) - (a.dataEntrada?.toMillis?.() || a.timestamp?.toMillis?.() || 0));
         const entrada = entradasBike[0];
+        
+        // Tratativa: se for um report de reparo, o campo tratamento pode estar em 'observacao' (Relatório normal) ou 'tratativa' (Mecânica)
+        const obs = rec.observacao || rec.tratativa || '—';
+        const treatment = obs.includes(' — ') ? obs.split(' — ')[1] : obs;
+
         return {
           ...rec,
-          mecanico: rec.mecanico || rec.driverName || '—',
+          bikeNumber: pat,
+          mecanico: rec.mecanico || rec.motorista || rec.driverName || '—',
+          treatment: treatment,
           dataEntrada: entrada?.dataEntrada || entrada?.timestamp || null,
           dataSaida: rec.timestamp,
         };
-      }).sort((a: any, b: any) => (b.dataSaida?.toMillis?.() || 0) - (a.dataSaida?.toMillis?.() || 0));
+      })
+      .filter(r => {
+        if (!r.bikeNumber) return false;
+        const nameClean = normalizeForSearch(r.mecanico || '');
+        // O mecânico deve ser um dos 5 autorizados
+        return AUTHORIZED_MECHANICS_NORMALIZED.some(auth => nameClean.includes(auth));
+      })
+      .sort((a: any, b: any) => (b.dataSaida?.toMillis?.() || 0) - (a.dataSaida?.toMillis?.() || 0));
 
       setMechanicHistory(records);
     } catch (e) {
@@ -5610,27 +5634,57 @@ const MainScreen: React.FC<MainScreenProps> = ({
           <div className="mt-6 space-y-6">
             {activeMechanicCategory === 'Alterar Status' && (
               <div id="section-alterar-status" className="p-4 border rounded-lg bg-purple-50 shadow-sm scroll-mt-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-lg font-bold text-purple-800 flex items-center gap-2"><PlusPlusIcon className="w-5 h-5"/>Alterar Status</h2>
-                  {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length > 0 && (
-                    <button
-                      onClick={() => setIsLimparListaConfirmOpen(true)}
-                      disabled={isLoading}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-purple-300 text-purple-700 text-[10px] font-bold rounded-lg hover:bg-purple-100 active:scale-95 transition-all disabled:opacity-50 shadow-sm"
-                    >
-                      <XIcon className="w-3.5 h-3.5" />
-                      Limpar Lista
-                    </button>
-                  )}
+                <div className="space-y-3 mb-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-lg font-bold text-purple-800 flex items-center gap-2"><PlusPlusIcon className="w-5 h-5"/>Alterar Status</h2>
+                    {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length > 0 && (
+                      <button
+                        onClick={() => setIsLimparListaConfirmOpen(true)}
+                        disabled={isLoading}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-purple-300 text-purple-700 text-[10px] font-bold rounded-lg hover:bg-purple-100 active:scale-95 transition-all disabled:opacity-50 shadow-sm"
+                      >
+                        <XIcon className="w-3.5 h-3.5" />
+                        Limpar Lista
+                      </button>
+                    )}
+                  </div>
+                  
+                  {/* Busca */}
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <SearchIcon className="h-4 w-4 text-purple-400" />
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Pesquisar bike pelo número..."
+                      value={mechanicSearchTerm}
+                      onChange={(e) => setMechanicSearchTerm(e.target.value)}
+                      className="block w-full pl-10 pr-3 py-2 border border-purple-200 rounded-xl leading-5 bg-white placeholder-purple-300 focus:outline-none focus:ring-1 focus:ring-purple-500 focus:border-purple-500 sm:text-xs text-sm font-bold shadow-sm"
+                    />
+                    {mechanicSearchTerm && (
+                      <button 
+                        onClick={() => setMechanicSearchTerm('')}
+                        className="absolute inset-y-0 right-0 pr-3 flex items-center text-purple-400 hover:text-purple-600"
+                      >
+                        <XIcon className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').length > 0 ? (
-                  <div className="space-y-2">
-                    {mechanicsList.filter(b => b.status === 'Alterar Status' || b.status === 'Não encontrada').map((bike, i) => {
-                      const isNotFound = bike.status === 'Não encontrada';
-                      return (
-                        <div key={`mec-alterar-${bike.patrimonio}-${i}`} 
-                          className={`flex justify-between items-center p-3 bg-white border rounded-md shadow-sm ${isNotFound ? 'border-red-400 ring-1 ring-red-400' : ''}`}
-                        >
+
+                {(() => {
+                  const items = mechanicsList.filter(b => 
+                    (b.status === 'Alterar Status' || b.status === 'Não encontrada') &&
+                    (!mechanicSearchTerm || String(b.patrimonio || '').includes(mechanicSearchTerm))
+                  );
+                  return items.length > 0 ? (
+                    <div className="space-y-2">
+                      {items.map((bike, i) => {
+                        const isNotFound = bike.status === 'Não encontrada';
+                        return (
+                          <div key={`mec-alterar-${bike.patrimonio}-${i}`} 
+                            className={`flex justify-between items-center p-3 bg-white border rounded-md shadow-sm ${isNotFound ? 'border-red-400 ring-1 ring-red-400' : ''}`}
+                          >
                           <div>
                             <div className="flex items-center gap-2">
                               <span className={`font-bold ${isNotFound ? 'text-red-600' : 'text-gray-700'}`}>Bike: {bike.patrimonio}</span>
@@ -5674,36 +5728,68 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       );
                     })}
                   </div>
-                ) : <p className="text-sm text-gray-500 italic">Nenhuma bike.</p>}
+                ) : <p className="text-sm text-gray-500 italic">Nenhuma bike.</p>;
+              })()}
               </div>
             )}
 
             {activeMechanicCategory === 'Aguardando Manutenção' && (
               <div id="section-aguardando-manutencao" className="p-4 border rounded-lg bg-blue-50 shadow-sm scroll-mt-4">
-                <h2 className="text-lg font-bold text-blue-800 mb-3 flex items-center gap-2"><CarIcon className="w-5 h-5"/>Aguardando Manutenção</h2>
-                {mechanicsList.filter(b => b.status === 'Aguardando Manutenção').length > 0 ? (
-                  <div className="space-y-2">
-                    {mechanicsList.filter(b => b.status === 'Aguardando Manutenção').map((bike, i) => (
-                      <div key={`mec-aguardando-${bike.patrimonio}-${i}`} className="flex justify-between items-center p-3 bg-white border rounded-md shadow-sm">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-gray-700">Bike: {bike.patrimonio}</span>
-                          </div>
-                          <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                            {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {formatBattery(bike.bateria)}%</p>}
-                          </div>
-                          {bike.motorista && <p className="text-[10px] text-blue-700 font-semibold">Motorista: {bike.motorista}</p>}
-                          {bike.observacao && <p className="text-[10px] text-orange-600">Motivo: {bike.observacao}</p>}
-                        </div>
-                        <div className="flex flex-col gap-2 min-w-[140px]">
-                          <div className="flex gap-2">
-                            <button onClick={() => handleConfirmMechanicsReceipt(bike.patrimonio)} className="flex-1 px-3 py-1.5 bg-orange-500 text-white text-xs font-bold rounded hover:bg-orange-600 active:scale-95">Manutenção</button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
+                <div className="space-y-3 mb-4">
+                  <h2 className="text-lg font-bold text-blue-800 flex items-center gap-2"><CarIcon className="w-5 h-5"/>Aguardando Manutenção</h2>
+                  
+                  {/* Busca */}
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <SearchIcon className="h-4 w-4 text-blue-400" />
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Pesquisar bike pelo número..."
+                      value={mechanicSearchTerm}
+                      onChange={(e) => setMechanicSearchTerm(e.target.value)}
+                      className="block w-full pl-10 pr-3 py-2 border border-blue-200 rounded-xl leading-5 bg-white placeholder-blue-300 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-xs text-sm font-bold shadow-sm"
+                    />
+                    {mechanicSearchTerm && (
+                      <button 
+                        onClick={() => setMechanicSearchTerm('')}
+                        className="absolute inset-y-0 right-0 pr-3 flex items-center text-blue-400 hover:text-blue-600"
+                      >
+                        <XIcon className="h-4 w-4" />
+                      </button>
+                    )}
                   </div>
-                ) : <p className="text-sm text-gray-500 italic">Nenhuma bike.</p>}
+                </div>
+
+                {(() => {
+                  const items = mechanicsList.filter(b => 
+                    b.status === 'Aguardando Manutenção' &&
+                    (!mechanicSearchTerm || String(b.patrimonio || '').includes(mechanicSearchTerm))
+                  );
+                  return items.length > 0 ? (
+                    <div className="space-y-2">
+                      {items.map((bike, i) => (
+                        <div key={`mec-aguardando-${bike.patrimonio}-${i}`} className="flex justify-between items-center p-3 bg-white border rounded-md shadow-sm">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-gray-700">Bike: {bike.patrimonio}</span>
+                            </div>
+                            <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+                              {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {formatBattery(bike.bateria)}%</p>}
+                            </div>
+                            {bike.motorista && <p className="text-[10px] text-blue-700 font-semibold">Motorista: {bike.motorista}</p>}
+                            {bike.observacao && <p className="text-[10px] text-orange-600">Motivo: {bike.observacao}</p>}
+                          </div>
+                          <div className="flex flex-col gap-2 min-w-[140px]">
+                            <div className="flex gap-2">
+                              <button onClick={() => handleConfirmMechanicsReceipt(bike.patrimonio)} className="flex-1 px-3 py-1.5 bg-orange-500 text-white text-xs font-bold rounded hover:bg-orange-600 active:scale-95">Manutenção</button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <p className="text-sm text-gray-500 italic">Nenhuma bike.</p>;
+                })()}
               </div>
             )}
 
@@ -5713,35 +5799,59 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   <h2 className="text-lg font-bold text-orange-800 flex items-center gap-2"><BicycleIcon className="w-5 h-5"/>Mecânica - Em Manutenção</h2>
                   
                   {/* Filtros */}
-                  <div className="flex flex-col gap-1.5">
-                    <div className="flex items-center gap-2">
-                      <label htmlFor="mechanic-filter" className="text-xs font-bold text-gray-600 w-12">Mecân.:</label>
-                      <select 
-                        id="mechanic-filter"
-                        value={selectedMechanicFilter}
-                        onChange={(e) => setSelectedMechanicFilter(e.target.value)}
-                        className="text-xs p-1 border rounded bg-white font-semibold text-gray-700 focus:ring-1 focus:ring-orange-500 outline-none"
-                      >
-                        <option value="Todos">Todos os Mecânicos</option>
-                        {Array.from(new Set(mechanicsList.filter(b => b.status === 'Em Manutenção' && b.mecanico).map(b => b.mecanico))).sort().map(name => (
-                          <option key={name} value={name}>{name}</option>
-                        ))}
-                      </select>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center">
+                      <div className="flex items-center gap-2">
+                        <label htmlFor="mechanic-filter" className="text-xs font-bold text-gray-600 w-12">Mecân.:</label>
+                        <select 
+                          id="mechanic-filter"
+                          value={selectedMechanicFilter}
+                          onChange={(e) => setSelectedMechanicFilter(e.target.value)}
+                          className="text-xs p-1 border rounded bg-white font-semibold text-gray-700 focus:ring-1 focus:ring-orange-500 outline-none"
+                        >
+                          <option value="Todos">Todos os Mecânicos</option>
+                          {Array.from(new Set(mechanicsList.filter(b => b.status === 'Em Manutenção' && b.mecanico).map(b => b.mecanico))).sort().map(name => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs font-bold text-gray-600 w-12">Bateria:</label>
+                        <button
+                          onClick={() => setSelectedBatteryFilter(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? 'Todos' : 'asc')}
+                          className={`text-xs px-2 py-1 rounded border font-bold transition-all ${
+                            selectedBatteryFilter === 'desc' ? 'bg-orange-500 text-white border-orange-500' :
+                            selectedBatteryFilter === 'asc'  ? 'bg-blue-500 text-white border-blue-500' :
+                            'bg-white text-gray-500 border-gray-300 hover:border-gray-400'
+                          }`}
+                        >
+                          {selectedBatteryFilter === 'desc' ? '🔋 Maior → Menor' :
+                           selectedBatteryFilter === 'asc'   ? '🔋 Menor → Maior' :
+                           '🔋 Ordenar'}
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs font-bold text-gray-600 w-12">Bateria:</label>
-                      <button
-                        onClick={() => setSelectedBatteryFilter(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? 'Todos' : 'asc')}
-                        className={`text-xs px-2 py-1 rounded border font-bold transition-all ${
-                          selectedBatteryFilter === 'desc' ? 'bg-orange-500 text-white border-orange-500' :
-                          selectedBatteryFilter === 'asc'  ? 'bg-blue-500 text-white border-blue-500' :
-                          'bg-white text-gray-500 border-gray-300 hover:border-gray-400'
-                        }`}
-                      >
-                        {selectedBatteryFilter === 'desc' ? '🔋 Maior → Menor' :
-                         selectedBatteryFilter === 'asc'  ? '🔋 Menor → Maior' :
-                         '🔋 Ordenar'}
-                      </button>
+
+                    {/* Busca */}
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <SearchIcon className="h-4 w-4 text-orange-400" />
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Pesquisar bike pelo número..."
+                        value={mechanicSearchTerm}
+                        onChange={(e) => setMechanicSearchTerm(e.target.value)}
+                        className="block w-full pl-10 pr-3 py-1.5 border border-orange-200 rounded-xl leading-5 bg-white placeholder-orange-300 focus:outline-none focus:ring-1 focus:ring-orange-500 focus:border-orange-500 sm:text-xs text-sm font-bold shadow-sm"
+                      />
+                      {mechanicSearchTerm && (
+                        <button 
+                          onClick={() => setMechanicSearchTerm('')}
+                          className="absolute inset-y-0 right-0 pr-3 flex items-center text-orange-400 hover:text-orange-600"
+                        >
+                          <XIcon className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -5754,7 +5864,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   const filteredBikes = mechanicsList
                     .filter(b =>
                       b.status === 'Em Manutenção' &&
-                      (selectedMechanicFilter === 'Todos' || b.mecanico === selectedMechanicFilter)
+                      (selectedMechanicFilter === 'Todos' || b.mecanico === selectedMechanicFilter) &&
+                      (!mechanicSearchTerm || String(b.patrimonio || '').includes(mechanicSearchTerm))
                     )
                     .sort((a, b) => {
                       if (selectedBatteryFilter === 'desc') return getBatPct(b) - getBatPct(a);
@@ -5795,11 +5906,43 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
             {activeMechanicCategory === 'Reserva' && (
               <div id="section-reserva" className="p-4 border rounded-lg bg-green-50 shadow-sm scroll-mt-4">
-                <div className="flex justify-between items-center mb-3">
-                  <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
+                <div className="space-y-3 mb-4">
+                  <div className="flex justify-between items-center">
+                    <h2 className="text-lg font-bold text-green-800 flex items-center gap-2"><TrailerIcon className="w-5 h-5"/>Reserva - Prontas para Remanejamento</h2>
+                  </div>
+                  
+                  {/* Busca */}
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <SearchIcon className="h-4 w-4 text-green-400" />
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Pesquisar bike pelo número..."
+                      value={mechanicSearchTerm}
+                      onChange={(e) => setMechanicSearchTerm(e.target.value)}
+                      className="block w-full pl-10 pr-3 py-2 border border-green-200 rounded-xl leading-5 bg-white placeholder-green-300 focus:outline-none focus:ring-1 focus:ring-green-500 focus:border-green-500 sm:text-xs text-sm font-bold shadow-sm"
+                    />
+                    {mechanicSearchTerm && (
+                      <button 
+                        onClick={() => setMechanicSearchTerm('')}
+                        className="absolute inset-y-0 right-0 pr-3 flex items-center text-green-400 hover:text-green-600"
+                      >
+                        <XIcon className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                {mechanicsList.filter(b => b.status === 'Reserva').length > 0 ? (() => {
-                  const grouped = mechanicsList.filter(b => b.status === 'Reserva').reduce((acc, bike) => {
+
+                {(() => {
+                  const filteredList = mechanicsList.filter(b => 
+                    b.status === 'Reserva' &&
+                    (!mechanicSearchTerm || String(b.patrimonio || '').includes(mechanicSearchTerm))
+                  );
+
+                  if (filteredList.length === 0) return <p className="text-sm text-gray-500 italic">Nenhuma bike.</p>;
+
+                  const grouped = filteredList.reduce((acc, bike) => {
                     const key = bike.carretinha || 'Sem Carretinha';
                     if (!acc[key]) acc[key] = [];
                     acc[key].push(bike);
@@ -6025,7 +6168,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
                     </div>
                   );
-                })() : <p className="text-sm text-gray-500 italic">Nenhuma bike na reserva.</p>}
+                })()}
               </div>
             )}
           </div>
