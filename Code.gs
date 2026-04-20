@@ -20,7 +20,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.3-resilience-fix';
+const BACKEND_VERSION = '85.4-resilience-fix';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -1117,8 +1117,11 @@ function searchBike(bikeNumber) {
           const situacao = String(reqData[i][COLUMN_INDICES.REQUESTS.SITUACAO - 1]).trim().toLowerCase();
           const pats = patRaw.split(',').map(s => String(parseFloat(s.trim()) || s.trim()));
           if (pats.includes(normalizedSearch) && (situacao === 'aceita' || situacao === 'pendente')) {
-            bikeObject.ocorrencia = true;
-            break;
+            const local = String(reqData[i][COLUMN_INDICES.REQUESTS.LOCAL - 1] || '');
+            if (!local.toLowerCase().includes('app')) {
+              bikeObject.ocorrencia = true;
+              break;
+            }
           }
         }
       }
@@ -2309,13 +2312,26 @@ function getDailyReportData(driverName, timeRange = 'day') {
 
   const filterDate = new Date();
   filterDate.setHours(0, 0, 0, 0);
+  const todayEnd = new Date();
+  todayEnd.setHours(23, 59, 59, 999);
+
   if (timeRange === 'week') {
     const day = filterDate.getDay();
-    filterDate.setDate(filterDate.getDate() - day + (day === 0 ? -6 : 1));
+    const diff = (day === 0 ? -6 : 1) - day;
+    filterDate.setDate(filterDate.getDate() + diff);
   } else if (timeRange === 'month') {
     filterDate.setDate(1);
+  } else if (timeRange === '-1') {
+    filterDate.setDate(filterDate.getDate() - 1);
+    todayEnd.setDate(todayEnd.getDate() - 1);
+  } else if (timeRange === '-7') {
+    // Semana anterior (Segunda a Domingo)
+    const day = filterDate.getDay();
+    const diffToMon = (day === 0 ? -6 : 1) - day;
+    filterDate.setDate(filterDate.getDate() + diffToMon - 7);
+    todayEnd.setDate(filterDate.getDate() + 6);
+    todayEnd.setHours(23, 59, 59, 999);
   }
-  const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
 
   const report = {
     recolhidas: [], remanejadas: [], estacoes: {}, ocorrencias: [],
@@ -2662,16 +2678,22 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
 
     if (timeRange === 'week') {
       const day = now.getDay();
-      filterDate.setDate(now.getDate() - day + (day === 0 ? -6 : 1));
-      rowsToRead = 5000;
+      const diffToMon = (day === 0 ? -6 : 1) - day;
+      filterDate.setDate(now.getDate() + diffToMon);
+      rowsToRead = 50000;
     } else if (timeRange === 'month') {
-      filterDate.setDate(1); rowsToRead = 15000;
+      filterDate.setDate(1); rowsToRead = 80000;
     } else if (timeRange === '-1') {
-      filterDate.setDate(now.getDate() - 1); endDate.setDate(now.getDate() - 1); rowsToRead = 2000;
+      filterDate.setDate(now.getDate() - 1); 
+      endDate.setDate(now.getDate() - 1); 
+      rowsToRead = 30000;
     } else if (timeRange === '-7') {
       const day = now.getDay();
-      const mondayThisWeek = now.getDate() - day + (day === 0 ? -6 : 1);
-      filterDate.setDate(mondayThisWeek - 7); endDate.setDate(mondayThisWeek - 1); rowsToRead = 10000;
+      const diffToMon = (day === 0 ? -6 : 1) - day;
+      filterDate.setDate(now.getDate() + diffToMon - 7);
+      endDate.setDate(filterDate.getDate() + 6);
+      endDate.setHours(23, 59, 59, 999);
+      rowsToRead = 80000;
     }
 
     const lastRowR = reportSheet.getLastRow();
@@ -2819,31 +2841,31 @@ function getAnalyticalDashboardData(timeRange) {
 
     if (timeRange === 'week') {
       const day = now.getDay();
-      const diff = now.getDate() - day + (day === 0 ? -6 : 1);
-      filterDate.setDate(diff);
-      rowsToRead = 10000;
+      const diffToMon = (day === 0 ? -6 : 1) - day;
+      filterDate.setDate(now.getDate() + diffToMon);
+      rowsToRead = 60000;
     } else if (timeRange === 'month') {
       filterDate.setDate(1);
-      rowsToRead = 20000;
+      rowsToRead = 100000;
     } else if (timeRange === '-1') {
       filterDate.setDate(now.getDate() - 1);
       endDate.setDate(now.getDate() - 1);
       endDate.setHours(23, 59, 59, 999);
-      rowsToRead = 5000;
+      rowsToRead = 30000;
     } else if (timeRange === '-7') {
-      // Previous Week (Monday to Sunday)
+      // Semana anterior (Segunda a Domingo)
       const day = now.getDay();
-      const mondayThisWeek = now.getDate() - day + (day === 0 ? -6 : 1);
-      filterDate.setDate(mondayThisWeek - 7);
-      endDate.setDate(mondayThisWeek - 1);
+      const diffToMon = (day === 0 ? -6 : 1) - day;
+      filterDate.setDate(now.getDate() + diffToMon - 7);
+      endDate.setDate(filterDate.getDate() + 6);
       endDate.setHours(23, 59, 59, 999);
-      rowsToRead = 10000;
+      rowsToRead = 60000;
     } else if (timeRange === '-30') {
-      // Previous Month
+      // Mes anterior
       filterDate.setMonth(now.getMonth() - 1);
       filterDate.setDate(1);
       endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
-      rowsToRead = 20000;
+      rowsToRead = 100000;
     }
 
     const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
@@ -3023,18 +3045,22 @@ function getRouteDetails(driverName, bikeNumbers, providedBikesSheet, providedRe
       
       patrimonioRaw.split(',').map(s => s.trim()).filter(Boolean).forEach(rawPat => {
         const patrimonio = String(parseFloat(rawPat) || rawPat);
-        if (bikeNumberSet.has(patrimonio) && acceptedBy === driverName.toLowerCase() && (situacao === 'aceita' || situacao === 'finalizada')) {
-          // Find the original bike number key in result
-          const originalKey = bikeNumbers.find(n => String(parseFloat(n) || String(n).trim()) === patrimonio);
-          if (originalKey && result[originalKey]) {
-            result[originalKey].ocorrencia = true;
-            if (result[originalKey].initialLat === null) {
-              const local = String(requestsData[i][COLUMN_INDICES.REQUESTS.LOCAL - 1]);
-              const m = local.match(/(-?\d+[.,]\d+)\s*[,;]\s*(-?\d+[.,]\d+)/);
-              if (m) { result[originalKey].initialLat = parseCoordinate(m[1]); result[originalKey].initialLng = parseCoordinate(m[2]); }
+          if (bikeNumberSet.has(patrimonio) && acceptedBy === driverName.toLowerCase() && (situacao === 'aceita' || situacao === 'finalizada')) {
+            // Find the original bike number key in result
+            const originalKey = bikeNumbers.find(n => String(parseFloat(n) || String(n).trim()) === patrimonio);
+            if (originalKey && result[originalKey]) {
+              const local = String(requestsData[i][COLUMN_INDICES.REQUESTS.LOCAL - 1] || '');
+              const isPickup = !local.toLowerCase().includes('app');
+              
+              if (isPickup) {
+                result[originalKey].ocorrencia = true;
+                if (result[originalKey].initialLat === null) {
+                  const m = local.match(/(-?\d+[.,]\d+)\s*[,;]\s*(-?\d+[.,]\d+)/);
+                  if (m) { result[originalKey].initialLat = parseCoordinate(m[1]); result[originalKey].initialLng = parseCoordinate(m[2]); }
+                }
+              }
             }
           }
-        }
       });
     }
 

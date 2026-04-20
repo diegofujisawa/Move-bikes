@@ -1182,8 +1182,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const allActiveBikes = useMemo(() => {
     const bikes = new Set<string>();
     driversSummary.forEach(d => {
-      (d.realTime.route || []).forEach((b: string) => bikes.add(String(b).trim()));
-      (d.realTime.collected || []).forEach((b: string) => bikes.add(String(b).trim()));
+      (d.realTime?.route || []).forEach((b: string) => bikes.add(String(b).trim()));
+      (d.realTime?.collected || []).forEach((b: string) => bikes.add(String(b).trim()));
     });
     return bikes;
   }, [driversSummary]);
@@ -1544,6 +1544,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (alreadyInPosse.length > 0) { alert(`Bikes já em sua posse: ${alreadyInPosse.join(', ')}`); return; }
 
     const isTrailer = (reason || '').toUpperCase().includes('CARRETINHA') || (title || '').toUpperCase().includes('CARRETINHA');
+    const isRoute = (title || '').toLowerCase().includes('roteiro app') || (reason || '').toLowerCase() === 'roteiro';
+    const isPickupRequest = !isTrailer && !isRoute && !(title || '').toLowerCase().includes('app');
+
     isUpdatingStateRef.current = true;
     setIsLoading(true);
 
@@ -1583,7 +1586,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setCollectedBikesDetails(prev => {
           const next = { ...prev };
           bikesToAdd.forEach(id => {
-            next[id] = { ...next[id], ocorrencia: true };
+            // Se já era ocorrência, mantém. Senão, define como false para carretinha (conforme pedido de apenas Solicitação de recolha)
+            next[id] = { ...next[id], ocorrencia: !!next[id]?.ocorrencia || isPickupRequest };
+            if (next[id].initialLat === null && title) {
+              const m = title.match(/(-?\d+[.,]\d+)\s*[,;]\s*(-?\d+[.,]\d+)/);
+              if (m) {
+                next[id].initialLat = parseFloat(m[1].replace(',', '.'));
+                next[id].initialLng = parseFloat(m[2].replace(',', '.'));
+              }
+            }
           });
           return next;
         });
@@ -1610,7 +1621,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setRouteBikesDetails(prev => {
           const next = { ...prev };
           bikesToAdd.forEach(id => {
-            next[id] = { ...next[id], ocorrencia: true };
+            // Define como ocorrência apenas se for uma Solicitação de recolha (não vindo de Roteiro/App)
+            next[id] = { ...next[id], ocorrencia: !!next[id]?.ocorrencia || isPickupRequest };
+            if (next[id].initialLat === null && title) {
+              const m = title.match(/(-?\d+[.,]\d+)\s*[,;]\s*(-?\d+[.,]\d+)/);
+              if (m) {
+                next[id].initialLat = parseFloat(m[1].replace(',', '.'));
+                next[id].initialLng = parseFloat(m[2].replace(',', '.'));
+              }
+            }
           });
           return next;
         });
@@ -5160,12 +5179,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
             </div>
             {driversSummary.filter(d => d.name.toLowerCase() === driverName.toLowerCase()).map((driver, i) => {
-              const isToday = timelineDate === localDateStr();
+              const isToday = timelineDate === localDateStr() && summaryTimeRange === 'day';
               const fbStats = isToday ? firebaseDriverStats[driver.name] : null;
               
-              const recolhidas = fbStats ? fbStats.recolhidas : (driver.stats.recolhidas || 0);
-              const remanejada = fbStats ? fbStats.remanejada : (driver.stats.remanejada || 0);
-              const naoEncontrada = fbStats ? fbStats.naoEncontrada : (driver.stats.naoEncontrada || 0);
+              const recolhidas = fbStats ? fbStats.recolhidas : (driver.stats?.recolhidas || 0);
+              const remanejada = fbStats ? fbStats.remanejada : (driver.stats?.remanejada || 0);
+              const naoEncontrada = fbStats ? fbStats.naoEncontrada : (driver.stats?.naoEncontrada || 0);
               const total = recolhidas + remanejada;
 
               return (
@@ -5471,7 +5490,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     {renderLocationWithMap(req.location)}
                   </div>
                   <div className="flex flex-col gap-4 items-end pt-1">
-                    <button onClick={() => handleAcceptRequest(req.id, req.bikeNumber, req.reason, req.title)} disabled={isLoading} className="text-green-600 hover:text-green-700 text-sm font-bold disabled:text-gray-400">Aceitar</button>
+                    <button onClick={() => handleAcceptRequest(req.id, req.bikeNumber, req.reason, req.location)} disabled={isLoading} className="text-green-600 hover:text-green-700 text-sm font-bold disabled:text-gray-400">Aceitar</button>
                     <button onClick={() => handleDeclineRequest(req.id)} disabled={isLoading} className="text-red-600 hover:text-red-700 text-sm font-bold disabled:text-gray-400">Recusar</button>
                   </div>
                 </li>
@@ -6339,12 +6358,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           })()}
                           <div className="grid grid-cols-5 gap-1.5 mb-3">
                             {(() => {
-                              const isToday = timelineDate === localDateStr();
+                              const isToday = timelineDate === localDateStr() && summaryTimeRange === 'day';
                               const fbStats = isToday ? firebaseDriverStats[driver.name] : null;
                               
-                              const recolhidas = fbStats ? fbStats.recolhidas : (driver.stats.recolhidas || 0);
-                              const remanejada = fbStats ? fbStats.remanejada : (driver.stats.remanejada || 0);
-                              const naoEncontrada = fbStats ? fbStats.naoEncontrada : (driver.stats.naoEncontrada || 0);
+                              const recolhidas = fbStats ? fbStats.recolhidas : (driver.stats?.recolhidas || 0);
+                              const remanejada = fbStats ? fbStats.remanejada : (driver.stats?.remanejada || 0);
+                              const naoEncontrada = fbStats ? fbStats.naoEncontrada : (driver.stats?.naoEncontrada || 0);
                               const total = recolhidas + remanejada;
 
                               return [
