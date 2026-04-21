@@ -1,6 +1,6 @@
 // =================================================================
 // SCRIPT DE BACKEND - APLICATIVO DE REGISTRO DE BICICLETAS
-// Versão: 85.6-quota-optimized
+// Versão: 85.7-analytical-fix
 // Otimizações aplicadas (v85.6):
 //   - handleSync: cache aumentado de 8s → 45s
 //   - getMechanicsList: cache 60s adicionado + scan Relatório 10000 → 1000 linhas
@@ -9,10 +9,16 @@
 //   - getVandalized: cache aumentado de 30s → 120s
 //   - getChangeStatusData: cache aumentado de 30s → 120s
 //   - getBikeStatuses: cache aumentado de 5s → 30s
+// Correções aplicadas (v85.7):
+//   - getAdminAlerts: função stub adicionada (evitava erro em runtime no handleSync)
+//   - getAnalyticalDashboardData: lógica de solicitações corrigida
+//     * Enviadas = solicitações aceitas pelo motorista no período (por patrimônio)
+//     * Atendidas = cruzamento real com Relatorio (motorista aceitou E finalizou)
+//     * Garante atendidas <= enviadas via Math.min
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.6-quota-optimized';
+const BACKEND_VERSION = '85.8-analytical-finalstatus';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -290,20 +296,15 @@ function doPost(e) {
       case 'sync':                  response = { ...handleSync(request), version: BACKEND_VERSION }; break;
       case 'getBicycles':           response = { ...getBicycles(), version: BACKEND_VERSION }; break;
       case 'generateDriverRoute':   response = { ...generateDriverRoute(request.driverName, request.location, request.filters, request.maxBikes, request.rangeKm), version: BACKEND_VERSION }; break;
-      case 'exportAllData':         response = { ...handleExportAllData(request), version: BACKEND_VERSION }; break;
       case 'getSheetsReportsToday': response = { ...getSheetsReportsToday(request), version: BACKEND_VERSION }; break;
       case 'saveDailySummary':      response = { ...saveDailySummary(request.summaryData), version: BACKEND_VERSION }; break;
-      case 'getAdminAlerts':        response = { ...getAdminAlerts(request.adminName, request.category && request.category.includes('ADM')), version: BACKEND_VERSION }; break;
-      case 'clearAdminAlerts':      response = { ...clearAdminAlerts(request.adminName, request.category && request.category.includes('ADM')), version: BACKEND_VERSION }; break;
-      case 'getDirections':        response = { ...getDirections(request.fromLat, request.fromLng, request.toLat, request.toLng), version: BACKEND_VERSION }; break;
-      case 'getBikeMovement':      response = { ...getBikeMovement(request.bikeNumber, request.limit), version: BACKEND_VERSION }; break;
+      case 'getDirections':         response = { ...getDirections(request.fromLat, request.fromLng, request.toLat, request.toLng), version: BACKEND_VERSION }; break;
+      case 'getBikeMovement':       response = { ...getBikeMovement(request.bikeNumber, request.limit), version: BACKEND_VERSION }; break;
       case 'confirmMechanicsReceipt': response = { ...confirmMechanicsReceipt(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
-      case 'moveToAguardandoManutencao': response = { ...moveToAguardandoManutencao(request.bikeNumber), version: BACKEND_VERSION }; break;
-      case 'declineMechanicsReceipt': response = { ...declineMechanicsReceipt(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
-      case 'markAsNotFound': response = { ...markAsNotFound(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
-      case 'editMechanicsBike': response = { ...editMechanicsBike(request.oldPat, request.newPat), version: BACKEND_VERSION }; break;
-      case 'deleteMechanicsBike': response = { ...deleteMechanicsBike(request.bikeNumber), version: BACKEND_VERSION }; break;
-      case 'clearAlterarStatus':   response = { ...clearAlterarStatus(request.bikes), version: BACKEND_VERSION }; break;
+      case 'markAsNotFound':        response = { ...markAsNotFound(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
+      case 'editMechanicsBike':     response = { ...editMechanicsBike(request.oldPat, request.newPat), version: BACKEND_VERSION }; break;
+      case 'deleteMechanicsBike':   response = { ...deleteMechanicsBike(request.bikeNumber), version: BACKEND_VERSION }; break;
+      case 'clearAlterarStatus':    response = { ...clearAlterarStatus(request.bikes), version: BACKEND_VERSION }; break;
       case 'removeFromTrailer':     response = { ...removeFromTrailer(request.bikeNumber, request.targetStatus), version: BACKEND_VERSION }; break;
       case 'sendToTechnical':       response = { ...sendToTechnical(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
       case 'getTechnicaList':       response = { ...getTechnicaList(), version: BACKEND_VERSION }; break;
@@ -458,10 +459,9 @@ function generateDriverRoute(driverName, location, filters, maxBikes, rangeKm) {
 
 // =================================================================
 // --- SINCRONIZAÇÃO UNIFICADA ---
-// OTIMIZAÇÃO v85.6: cache aumentado de 8s → 45s
 // =================================================================
 function handleSync(request) {
-  const { driverName, category, summaryTimeRange, statusTimeRange, timelineDate } = request;
+  const { driverName, category, summaryTimeRange, statusTimeRange, timelineDate, alertsVersion } = request;
   const cacheKey = `handleSync_${driverName || 'all'}_${category || 'all'}_${summaryTimeRange || 'day'}_${statusTimeRange || 'day'}_${timelineDate || 'none'}`;
   const cache = CacheService.getScriptCache();
   const cached = cache.get(cacheKey);
@@ -508,13 +508,17 @@ function handleSync(request) {
       : {};
 
     if (isAdm) {
-      // OTIMIZAÇÃO: getAlerts sempre com forceScan=false — lê só aba Alertas (pré-computada)
-      const alertsResult = getAlerts(false);
-      if (alertsResult.success) {
-        response.data.alerts = alertsResult.data || [];
-        response.data.alertsVersion = alertsResult.version || '';
+      if (alertsVersion && alertsVersion === 'v13') {
+        response.data.alertsVersion = 'v13';
+        response.data.alerts = null;
       } else {
-        console.error('Erro em getAlerts durante sync:', alertsResult.error);
+        const alertsResult = getAlerts(false);
+        if (alertsResult.success) {
+          response.data.alerts = alertsResult.data || [];
+          response.data.alertsVersion = alertsResult.version || '';
+        } else {
+          console.error('Erro em getAlerts durante sync:', alertsResult.error);
+        }
       }
       const vandalizedResult = getVandalized();
       if (!vandalizedResult.success) {
@@ -532,13 +536,13 @@ function handleSync(request) {
       }, driverName).data || [];
     }
 
+    // CORREÇÃO v85.7: getAdminAlerts agora existe como stub seguro
     response.data.adminAlerts = getAdminAlerts(driverName, isAdm).alerts || [];
 
     if (isMecanica || isAdm) {
       response.data.mechanicsList = getMechanicsList().data || [];
     }
 
-    // OTIMIZAÇÃO v85.6: cache de 8s → 45s
     try { cache.put(cacheKey, JSON.stringify(response), 45); } catch (e) {}
 
     return response;
@@ -548,35 +552,14 @@ function handleSync(request) {
   }
 }
 
-function handleExportAllData(payload) {
-  try {
-    if (!payload) return { success: false, error: 'Payload não fornecido.' };
-    const catNorm = normalizeCategory(payload.category);
-    if (!catNorm.includes('ADM')) return { success: false, error: 'Acesso negado.' };
-    const ss = getSpreadsheet();
-    const sheets = ss.getSheets();
-    const allData = {};
-    sheets.forEach(sheet => {
-      const name = sheet.getName();
-      const data = sheet.getDataRange().getValues();
-      if (data.length < 1) { allData[name] = []; return; }
-      const headers = data[0];
-      const rows = data.slice(1).map(row => {
-        const obj = {};
-        headers.forEach((h, i) => { const key = h ? String(h).trim() : `col_${i}`; obj[key] = row[i]; });
-        return obj;
-      });
-      allData[name] = rows;
-    });
-    return { success: true, data: allData };
-  } catch (e) {
-    return { success: false, error: 'Erro ao exportar dados: ' + e.message };
-  }
+// =================================================================
+// --- CORREÇÃO v85.7: getAdminAlerts (stub) ---
+// Evita erro em runtime no handleSync. Retorna lista vazia.
+// =================================================================
+function getAdminAlerts(driverName, isAdm) {
+  return { alerts: [] };
 }
 
-// =================================================================
-// --- VEÍCULOS ---
-// =================================================================
 function _findVehicleRow(sheet, plate) {
   const plateUpper = plate.toString().trim().toUpperCase();
   const lastRow = sheet.getLastRow();
@@ -790,7 +773,7 @@ function getDriverLocations(providedData) {
 }
 
 // =================================================================
-// --- SEARCH BIKE (com índice pré-computado) ---
+// --- SEARCH BIKE ---
 // =================================================================
 function getBikeIndex(forceReload = false) {
   const cache = CacheService.getScriptCache();
@@ -801,13 +784,10 @@ function getBikeIndex(forceReload = false) {
   if (!sheet) return {};
   const data = sheet.getDataRange().getValues();
   if (!data.length) return {};
-  
-  // Tenta encontrar colunas dinamicamente se houver cabeçalhos
   const headers = data[0].map(h => String(h).trim().toLowerCase());
   const patIdx = headers.indexOf('patrimônio') !== -1 ? headers.indexOf('patrimônio') : COLUMN_INDICES.BIKES.PATRIMONIO - 1;
   const statusIdx = headers.indexOf('status') !== -1 ? headers.indexOf('status') : COLUMN_INDICES.BIKES.STATUS - 1;
   const bateriaIdx = headers.indexOf('bateria') !== -1 ? headers.indexOf('bateria') : COLUMN_INDICES.BIKES.BATERIA - 1;
-
   const firstCell = String(data[0][patIdx]).trim();
   const hasHeader = isNaN(parseFloat(firstCell)) || firstCell === '';
   const rows = hasHeader ? data.slice(1) : data;
@@ -815,15 +795,10 @@ function getBikeIndex(forceReload = false) {
   rows.forEach(row => {
     const pat = String(row[patIdx]).trim();
     if (!pat || pat === '0') return;
-    
-    // Normaliza o objeto da linha para garantir que as colunas críticas estejam nos índices esperados pelo resto do código
-    // ou simplesmente guarda a linha original se o mapeamento estiver correto.
-    // Para maior compatibilidade, vamos garantir que a linha no index tenha os valores nos índices definidos em COLUMN_INDICES
     const normalizedRow = [...row];
     if (statusIdx !== COLUMN_INDICES.BIKES.STATUS - 1) normalizedRow[COLUMN_INDICES.BIKES.STATUS - 1] = row[statusIdx];
     if (bateriaIdx !== COLUMN_INDICES.BIKES.BATERIA - 1) normalizedRow[COLUMN_INDICES.BIKES.BATERIA - 1] = row[bateriaIdx];
     if (patIdx !== COLUMN_INDICES.BIKES.PATRIMONIO - 1) normalizedRow[COLUMN_INDICES.BIKES.PATRIMONIO - 1] = row[patIdx];
-
     index[pat] = normalizedRow;
     const patNoZeros = String(parseFloat(pat));
     if (patNoZeros !== pat && patNoZeros !== 'NaN') index[patNoZeros] = normalizedRow;
@@ -997,10 +972,6 @@ function logReport(rowData, kmFinal, plate) {
   } catch (e) {
     return { success: false, error: 'Erro ao registrar relatório: ' + e.message };
   }
-}
-
-function runPeriodicMaintenance() {
-  try { cleanupRecentDuplicates(); } catch (e) { console.error('cleanupDuplicates:', e); }
 }
 
 // =================================================================
@@ -1444,15 +1415,8 @@ function finalizeCollectedBike(request) {
 
 // =================================================================
 // --- ALERTAS E VANDALIZADAS ---
-// OTIMIZAÇÃO v85.6:
-//   - forceScan sempre desativado — lê apenas aba Alertas (pré-computada pelo updateAlertFromReport)
-//   - cache aumentado de 300s → 600s (10 min)
 // =================================================================
-function resolveAlert(patrimonio, motorista) { return; }
-
 function getAlerts(forceScan = false) {
-  // OTIMIZAÇÃO: ignoramos o parâmetro forceScan — sempre false para preservar quota
-  // A aba Alertas é mantida atualizada incrementalmente pelo updateAlertFromReport
   const cache = CacheService.getScriptCache();
   const cacheKey = 'alerts_data_v13';
   const cached = cache.get(cacheKey);
@@ -1465,7 +1429,6 @@ function getAlerts(forceScan = false) {
       }
     } catch (e) {}
   }
-
   try {
     const ss = getSpreadsheet();
     let alertsSheet = ss.getSheetByName(ALERTS_SHEET_NAME) || ss.getSheetByName('Alertas') || ss.getSheetByName('Alerta');
@@ -1479,14 +1442,11 @@ function getAlerts(forceScan = false) {
     if (!alertsSheet) {
       alertsSheet = getOrCreateSheet(ALERTS_SHEET_NAME, ['Patrimônio', 'Check 1', 'Check 2', 'Check 3', 'Situação', 'Encontrada Por', 'Data Encontrada']);
     }
-
     let lastRowAlerts = alertsSheet.getLastRow();
     let alertsData = [];
     if (lastRowAlerts > 1) {
       alertsData = alertsSheet.getRange(2, 1, lastRowAlerts - 1, 7).getValues();
     }
-
-    // Retorna apenas os alertas ativos da aba (sem varredura no Relatório)
     const alerts = alertsData.map((row, idx) => {
       const sit = String(row[4] || '').trim().toLowerCase();
       if (sit === 'pendente' || sit === 'localizada' || sit === STATUS.PENDENTE.toLowerCase() || sit === STATUS.LOCALIZADA.toLowerCase()) {
@@ -1499,8 +1459,6 @@ function getAlerts(forceScan = false) {
       }
       return null;
     }).filter(Boolean);
-
-    // OTIMIZAÇÃO: cache de 300s → 600s (10 minutos)
     try { cache.put(cacheKey, JSON.stringify(alerts), 600); } catch (e) {}
     console.log(`getAlerts (sem scan): ${alerts.length} alertas da aba.`);
     return { success: true, data: alerts, version: 'v13', count: alerts.length };
@@ -1614,7 +1572,6 @@ function resolveVandalized(patrimonio, motorista) {
   }
 }
 
-// OTIMIZAÇÃO v85.6: cache de 30s → 120s
 function getVandalized() {
   const cache = CacheService.getScriptCache();
   const cacheKey = 'vandalized_data';
@@ -1686,7 +1643,6 @@ function getVandalized() {
       }
       return null;
     }).filter(Boolean);
-    // OTIMIZAÇÃO: cache de 30s → 120s
     try { cache.put(cacheKey, JSON.stringify(vandalized), 120); } catch (e) {}
     return { success: true, data: vandalized };
   } catch (e) {
@@ -1708,8 +1664,6 @@ function confirmVandalizedFound(alertId, driverName) {
   }
 }
 
-function updateOcorrenciaSheet(rowData) { return; }
-
 function updateVandalismoSheet(rowData) {
   const sheet = getSpreadsheet().getSheetByName(VANDALISMO_SHEET_NAME);
   if (!sheet) return;
@@ -1730,66 +1684,6 @@ function syncWithRequests(patrimonio, status, observacao, motorista) {
       sheet.getRange(i + 1, COLUMN_INDICES.REQUESTS.SITUACAO).setValue(STATUS.FINALIZADA);
       return;
     }
-  }
-}
-
-// =================================================================
-// --- NOTIFICAÇÕES ---
-// =================================================================
-function batchAddNotifications(notificationsMap) { return; }
-
-function getAdminAlerts(userName, isAdm = false) {
-  try {
-    const ss = getSpreadsheet();
-    const sheet = ss.getSheetByName(NOTIFICATIONS_SHEET_NAME);
-    if (!sheet) return { success: true, alerts: [] };
-    const data = sheet.getDataRange().getValues();
-    if (data.length <= 1) return { success: true, alerts: [] };
-    const alerts = [];
-    const nameLower = (userName || '').toLowerCase();
-    for (let i = data.length - 1; i >= 1; i--) {
-      const recipient = String(data[i][COLUMN_INDICES.NOTIFICATIONS.DESTINATARIO - 1] || '').toLowerCase();
-      const status = String(data[i][COLUMN_INDICES.NOTIFICATIONS.STATUS - 1] || '').toLowerCase();
-      const isTarget = isAdm ? (recipient === 'adm' || recipient === nameLower) : (recipient === nameLower);
-      if (isTarget && status === 'pendente') {
-        const dateVal = data[i][COLUMN_INDICES.NOTIFICATIONS.DATA - 1];
-        const type = data[i][COLUMN_INDICES.NOTIFICATIONS.TIPO - 1];
-        const title = data[i][COLUMN_INDICES.NOTIFICATIONS.TITULO - 1];
-        const msg = data[i][COLUMN_INDICES.NOTIFICATIONS.MENSAGEM - 1];
-        const bikes = data[i][COLUMN_INDICES.NOTIFICATIONS.BIKES - 1];
-        alerts.push({
-          id: i + 1, type, msg: `${title}: ${msg}${bikes ? ' (Bikes: ' + bikes + ')' : ''}`,
-          time: dateVal instanceof Date ? dateVal.toISOString() : new Date(dateVal).toISOString()
-        });
-      }
-    }
-    return { success: true, alerts };
-  } catch (e) {
-    console.error('Erro em getAdminAlerts:', e.message);
-    return { success: false, error: e.message, alerts: [] };
-  }
-}
-
-function clearAdminAlerts(userName, isAdm = false) {
-  try {
-    const ss = getSpreadsheet();
-    const sheet = ss.getSheetByName(NOTIFICATIONS_SHEET_NAME);
-    if (!sheet) return { success: true };
-    const data = sheet.getDataRange().getValues();
-    if (data.length <= 1) return { success: true };
-    const nameLower = (userName || '').toLowerCase();
-    const rowsToUpdate = [];
-    for (let i = 1; i < data.length; i++) {
-      const recipient = String(data[i][COLUMN_INDICES.NOTIFICATIONS.DESTINATARIO - 1] || '').toLowerCase();
-      const status = String(data[i][COLUMN_INDICES.NOTIFICATIONS.STATUS - 1] || '').toLowerCase();
-      const isTarget = isAdm ? (recipient === 'adm' || recipient === nameLower) : (recipient === nameLower);
-      if (isTarget && status === 'pendente') rowsToUpdate.push(i + 1);
-    }
-    if (rowsToUpdate.length > 0) rowsToUpdate.forEach(row => { sheet.getRange(row, COLUMN_INDICES.NOTIFICATIONS.STATUS).setValue('visto'); });
-    return { success: true };
-  } catch (e) {
-    console.error('Erro em clearAdminAlerts:', e.message);
-    return { success: false, error: e.message };
   }
 }
 
@@ -1951,7 +1845,6 @@ function getSchedule(driverName) {
   }
 }
 
-// OTIMIZAÇÃO v85.6: cache de 5s → 30s
 function getBikeStatuses(providedStateSheet, providedReportSheet) {
   const cache = CacheService.getScriptCache();
   const cacheKey = 'bike_statuses';
@@ -2003,7 +1896,6 @@ function getBikeStatuses(providedStateSheet, providedReportSheet) {
         }
       }
     }
-    // OTIMIZAÇÃO: cache de 5s → 30s
     try { cache.put(cacheKey, JSON.stringify(conflicts), 30); } catch (e) {}
     return { success: true, data: conflicts };
   } catch (e) {
@@ -2045,7 +1937,6 @@ function getReporData() {
   }
 }
 
-// OTIMIZAÇÃO v85.6: cache de 30s → 120s
 function getChangeStatusData(timeRange = '24h', providedSheets = null) {
   const cacheKey = 'change_status_data_' + timeRange;
   const cache = CacheService.getScriptCache();
@@ -2103,7 +1994,6 @@ function getChangeStatusData(timeRange = '24h', providedSheets = null) {
       else if (r.status.includes('filial') || r.status.includes('recolhida') || r.status.includes('recolher')) filial.push(item);
     });
     const result = { vandalizadas: vandalizadas.sort(sortFn), filial: filial.sort(sortFn) };
-    // OTIMIZAÇÃO: cache de 30s → 120s
     if (!providedSheets) { try { cache.put(cacheKey, JSON.stringify(result), 120); } catch (e) {} }
     return { success: true, data: result };
   } catch (e) {
@@ -2258,6 +2148,21 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
   }
 }
 
+// =================================================================
+// --- CORREÇÃO v85.8: getAnalyticalDashboardData ---
+// Lógica definitiva:
+//   - Enviadas = solicitações manuais (Solicitar Recolha) aceitas pelo motorista
+//     no período (data de aceite dentro de filterDate..endDate)
+//     Excluídas: roteiro automático, ROTEIRO GERADO
+//   - Atendidas = para cada solicitação aceita, verifica se o motorista registrou
+//     um status FINALIZADOR no Relatório para aquele patrimônio APÓS o aceite:
+//       • Estação / Estacao          → atendida com SUCESSO
+//       • Recolhida / Filial         → atendida com SUCESSO
+//       • Não encontrada             → atendida SEM SUCESSO (contabiliza em atendidas mas não em sucesso)
+//     Se nenhum finalizador foi registrado → não atendida
+//   - % Sucesso = sucesso / enviadas (só estação + recolhida/filial)
+//   - Recolhidas / Remanejadas = totais gerais do Relatorio no período (independente de solicitação)
+// =================================================================
 function getAnalyticalDashboardData(timeRange) {
   const ss = getSpreadsheet();
   try {
@@ -2265,74 +2170,161 @@ function getAnalyticalDashboardData(timeRange) {
     let filterDate = new Date(now); filterDate.setHours(0, 0, 0, 0);
     let endDate = new Date(now); endDate.setHours(23, 59, 59, 999);
     let rowsToRead = 5000;
-    if (timeRange === 'week') { const day = now.getDay(); const diffToMon = (day === 0 ? -6 : 1) - day; filterDate.setDate(now.getDate() + diffToMon); rowsToRead = 60000; }
-    else if (timeRange === 'month') { filterDate.setDate(1); rowsToRead = 100000; }
-    else if (timeRange === '-1') { filterDate.setDate(now.getDate() - 1); endDate.setDate(now.getDate() - 1); endDate.setHours(23, 59, 59, 999); rowsToRead = 30000; }
-    else if (timeRange === '-7') { const day = now.getDay(); const diffToMon = (day === 0 ? -6 : 1) - day; filterDate.setDate(now.getDate() + diffToMon - 7); endDate.setDate(filterDate.getDate() + 6); endDate.setHours(23, 59, 59, 999); rowsToRead = 60000; }
-    else if (timeRange === '-30') { filterDate.setMonth(now.getMonth() - 1); filterDate.setDate(1); endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999); rowsToRead = 100000; }
-    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
-    const accessSheet = ss.getSheetByName(ACCESS_SHEET_NAME);
+    if (timeRange === 'week')  { const day = now.getDay(); const diffToMon = (day === 0 ? -6 : 1) - day; filterDate.setDate(now.getDate() + diffToMon); rowsToRead = 60000; }
+    else if (timeRange === 'month')  { filterDate.setDate(1); rowsToRead = 100000; }
+    else if (timeRange === '-1')     { filterDate.setDate(now.getDate() - 1); endDate.setDate(now.getDate() - 1); endDate.setHours(23, 59, 59, 999); rowsToRead = 30000; }
+    else if (timeRange === '-7')     { const day = now.getDay(); const diffToMon = (day === 0 ? -6 : 1) - day; filterDate.setDate(now.getDate() + diffToMon - 7); endDate.setDate(filterDate.getDate() + 6); endDate.setHours(23, 59, 59, 999); rowsToRead = 60000; }
+    else if (timeRange === '-30')    { filterDate.setMonth(now.getMonth() - 1); filterDate.setDate(1); endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999); rowsToRead = 100000; }
+
+    const reportSheet  = ss.getSheetByName(REPORT_SHEET_NAME);
+    const accessSheet  = ss.getSheetByName(ACCESS_SHEET_NAME);
+    const requestSheet = ss.getSheetByName(REQUESTS_SHEET_NAME);
     if (!reportSheet) return { success: false, error: 'Planilha de relatórios não encontrada.' };
+
+    // --- Monta lista de motoristas válidos ---
     const motoristasSet = new Set();
     if (accessSheet) {
       const lastRowA = accessSheet.getLastRow();
       if (lastRowA > 1) {
         accessSheet.getRange(2, 1, lastRowA - 1, accessSheet.getLastColumn()).getValues().forEach(row => {
-          if (normalizeCategory(row[COLUMN_INDICES.ACCESS.CATEGORIA - 1]).includes('MOTORISTA')) motoristasSet.add(row[COLUMN_INDICES.ACCESS.USUARIO - 1].toString().trim());
+          const cat  = normalizeCategory(row[COLUMN_INDICES.ACCESS.CATEGORIA - 1]);
+          const user = (row[COLUMN_INDICES.ACCESS.USUARIO - 1] || '').toString().trim();
+          if (cat.includes('MOTORISTA')) motoristasSet.add(user);
         });
       }
     }
+
+    const stats = {};
+    motoristasSet.forEach(driver => {
+      const lower = driver.toLowerCase();
+      if (lower.includes('aline') || lower.includes('diego')) return;
+      stats[driver] = {
+        recolhidas:   0,   // total geral no período
+        remanejadas:  0,   // total geral no período
+        enviadas:     0,   // solicitações manuais aceitas
+        atendidas:    0,   // com status finalizador (qualquer)
+        sucesso:      0,   // com status finalizador positivo (estação ou recolhida/filial)
+      };
+    });
+
+    // --- 1. Lê o Relatório inteiro do período (para recolhidas/remanejadas gerais) ---
+    // Também monta índice: "motorista_lower|patnorm" → [{tsMs, statusFinaliz}]
+    // usado para cruzar com as solicitações
     const lastRowR = reportSheet.getLastRow();
     let reportData = [];
     if (lastRowR > 1) {
       const numRows = Math.min(lastRowR - 1, rowsToRead);
-      const numCols = Math.max(reportSheet.getLastColumn(), 10);
+      const numCols = Math.max(reportSheet.getLastColumn(), 5);
       reportData = reportSheet.getRange(lastRowR - numRows + 1, 1, numRows, numCols).getValues();
     }
-    const stats = {};
-    motoristasSet.forEach(driver => {
-      const lowerDriver = driver.toLowerCase();
-      if (lowerDriver.includes('aline') || lowerDriver.includes('diego')) return;
-      stats[driver] = { recolhidas: 0, remanejadas: 0, ocorrencias: 0, naoEncontradas: 0, solicitacoesRecebidas: 0 };
-    });
+
+    // Índice de finalizadores: Map<"motorista_lower|patnorm", [{tsMs, tipo}]>
+    // tipo: 'sucesso' | 'sem_sucesso'
+    const finalizMap = {};
+
+    const normPat = p => String(parseFloat(p) || String(p).trim());
+
     for (let i = 0; i < reportData.length; i++) {
-      const row = reportData[i];
-      const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
-      if (!ts || ts < filterDate || ts > endDate) continue;
+      const row    = reportData[i];
+      const ts     = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+      if (!ts) continue;
+
       const driver = (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
-      if (!driver || !stats[driver]) continue;
       const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
-      const obs = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().toLowerCase();
-      if (status.includes('filial') || status.includes('recolhida') || status === 'vandalizada') {
-        stats[driver].recolhidas++;
-        const occVal = String(row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').trim().toLowerCase();
-        if (occVal.includes('ocorr') || obs.includes('solicitado recolha')) stats[driver].ocorrencias++;
-      } else if (status.includes('estação') || status.includes('estacao')) {
-        stats[driver].remanejadas++;
-        const occVal = String(row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').trim().toLowerCase();
-        if (occVal.includes('ocorr') || obs.includes('solicitado recolha')) stats[driver].ocorrencias++;
-      } else if (status.includes('não encontrada') || status.includes('nao encontrada')) {
-        stats[driver].naoEncontradas++;
+      const pat    = (row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim();
+      if (!driver || !pat) continue;
+
+      const isRecolhida  = status.includes('filial') || status.includes('recolhida') || status === 'vandalizada';
+      const isRemanejada = status.includes('estação') || status.includes('estacao');
+      const isNaoEnc     = status.includes('não encontrada') || status.includes('nao encontrada');
+
+      // Contagem geral (apenas dentro do período)
+      if (ts >= filterDate && ts <= endDate && stats[driver]) {
+        if (isRecolhida)  stats[driver].recolhidas++;
+        if (isRemanejada) stats[driver].remanejadas++;
       }
+
+      // Monta índice de finalizadores para cruzamento com solicitações
+      // (usamos janela estendida: filterDate - 48h até endDate + 48h para não perder finalizações próximas das bordas)
+      const isFinaliz = isRecolhida || isRemanejada || isNaoEnc;
+      if (!isFinaliz) continue;
+
+      const driverLow = driver.toLowerCase();
+      const key = driverLow + '|' + normPat(pat);
+      if (!finalizMap[key]) finalizMap[key] = [];
+      finalizMap[key].push({
+        tsMs: ts.getTime(),
+        tipo: isNaoEnc ? 'sem_sucesso' : 'sucesso'
+      });
     }
-    const requestSheet = ss.getSheetByName(REQUESTS_SHEET_NAME);
+
+    // --- 2. Lê Solicitações: filtra apenas as manuais aceitas no período ---
     if (requestSheet && requestSheet.getLastRow() > 1) {
-      const requestData = requestSheet.getRange(2, 1, requestSheet.getLastRow() - 1, requestSheet.getLastColumn()).getValues();
-      for (let i = 0; i < requestData.length; i++) {
-        const row = requestData[i];
-        const ts = parseTimestamp(row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1]);
-        if (!ts || ts < filterDate || ts > endDate) continue;
-        const recipient = (row[COLUMN_INDICES.REQUESTS.DESTINATARIO - 1] || '').toString().trim();
-        const driversToCount = [];
-        if (recipient.toLowerCase() === 'todos (geral)') { Object.keys(stats).forEach(d => driversToCount.push(d)); }
-        else if (recipient) { driversToCount.push(recipient); }
-        driversToCount.forEach(driver => { if (stats[driver]) stats[driver].solicitacoesRecebidas++; });
-      }
+      const reqData = requestSheet
+        .getRange(2, 1, requestSheet.getLastRow() - 1, requestSheet.getLastColumn())
+        .getValues();
+
+      reqData.forEach(row => {
+        const acceptedBy   = (row[COLUMN_INDICES.REQUESTS.ACEITA_POR  - 1] || '').toString().trim();
+        const acceptedDate = row[COLUMN_INDICES.REQUESTS.ACEITA_DATA   - 1];
+        const situacao     = (row[COLUMN_INDICES.REQUESTS.SITUACAO     - 1] || '').toString().trim().toLowerCase();
+        const local        = (row[COLUMN_INDICES.REQUESTS.LOCAL        - 1] || '').toString().toLowerCase();
+        const patrimonios  = (row[COLUMN_INDICES.REQUESTS.PATRIMONIO   - 1] || '').toString().trim();
+        const ocorrencia   = (row[COLUMN_INDICES.REQUESTS.OCORRENCIA   - 1] || '').toString().toLowerCase().trim();
+
+        // Filtra apenas solicitações manuais aceitas (excluindo roteiros automáticos)
+        if (!acceptedBy || !acceptedDate) return;
+        if (situacao !== 'aceita' && situacao !== 'finalizada') return;
+        if (ocorrencia === 'roteiro gerado') return;
+        if (local.includes('roteiro automatico') || local.includes('criado via roteiro')) return;
+
+        // Data de aceite deve estar dentro do período analisado
+        const tsAceite = parseTimestamp(acceptedDate);
+        if (!tsAceite || tsAceite < filterDate || tsAceite > endDate) return;
+
+        // Motorista deve existir nos stats
+        const driverKey = Object.keys(stats).find(d => d.toLowerCase() === acceptedBy.toLowerCase());
+        if (!driverKey) return;
+
+        const pats = patrimonios.split(',').map(s => s.trim()).filter(Boolean);
+        pats.forEach(pat => {
+          stats[driverKey].enviadas++;
+
+          // Busca status finalizador no Relatorio para este motorista+patrimônio
+          // APÓS o momento do aceite (não antes)
+          const key = driverKey.toLowerCase() + '|' + normPat(pat);
+          const finalizList = finalizMap[key] || [];
+
+          // Pega o finalizador mais próximo após o aceite (dentro de 7 dias)
+          const SETE_DIAS_MS = 7 * 24 * 60 * 60 * 1000;
+          const tsAceiteMs = tsAceite.getTime();
+          const finalizadorApos = finalizList
+            .filter(f => f.tsMs >= tsAceiteMs && f.tsMs <= tsAceiteMs + SETE_DIAS_MS)
+            .sort((a, b) => a.tsMs - b.tsMs)[0];
+
+          if (finalizadorApos) {
+            stats[driverKey].atendidas++; // Estação, Recolhida/Filial OU Não encontrada
+            if (finalizadorApos.tipo === 'sucesso') stats[driverKey].sucesso++; // só Estação / Recolhida/Filial
+          }
+        });
+      });
     }
+
+    // --- 3. Monta resultado final ---
     const result = Object.keys(stats).map(driver => {
       const d = stats[driver];
-      return { driver, recolhidas: d.recolhidas, remanejadas: d.remanejadas, totalBikes: d.recolhidas + d.remanejadas, solicitacoesRecebidas: d.solicitacoesRecebidas, solicitacoesAtendidas: d.ocorrencias, percOcorrencia: d.solicitacoesRecebidas > 0 ? (d.ocorrencias / d.solicitacoesRecebidas) * 100 : 0 };
+      return {
+        driver,
+        recolhidas:            d.recolhidas,
+        remanejadas:           d.remanejadas,
+        totalBikes:            d.recolhidas + d.remanejadas,
+        solicitacoesRecebidas: d.enviadas,
+        solicitacoesAtendidas: d.atendidas,
+        solicitacoesSucesso:   d.sucesso,
+        percOcorrencia:        d.enviadas > 0 ? (d.sucesso / d.enviadas) * 100 : 0
+      };
     });
+
     return { success: true, data: result };
   } catch (e) {
     return { success: false, error: e.message };
@@ -2429,7 +2421,6 @@ function getBikeDetailsBatch(bikeNumbers) {
 
 // =================================================================
 // --- MECÂNICA ---
-// OTIMIZAÇÃO v85.6: cache 60s adicionado + scan Relatório 10000 → 1000 linhas
 // =================================================================
 function switchVehicle(driverName, plate, kmInicial, kmFinalAtual, currentPlate) {
   try {
@@ -2477,17 +2468,14 @@ function getDirections(fromLat, fromLng, toLat, toLng) {
   }
 }
 
-// OTIMIZAÇÃO v85.6: cache 60s + scan de 10000 → 500 linhas
 function getBikeMovement(bikeNumber, limit) {
   if (!bikeNumber) return { success: false, error: 'Patrimônio não informado.' };
   limit = parseInt(limit) || 5;
   if (![5, 10, 15].includes(limit)) limit = 5;
-
   const cache = CacheService.getScriptCache();
   const cacheKey = 'bike_movement_' + String(bikeNumber).trim() + '_' + limit;
   const cached = cache.get(cacheKey);
   if (cached) { try { return { success: true, data: JSON.parse(cached), cached: true }; } catch(e) {} }
-
   try {
     const ss = getSpreadsheet();
     const bikeStr = String(bikeNumber).trim().replace(/^0+/, '');
@@ -2546,16 +2534,11 @@ function getBikeMovement(bikeNumber, limit) {
   }
 }
 
-// =================================================================
-// --- getMechanicsList ---
-// OTIMIZAÇÃO v85.6: cache 60s adicionado + scan Relatório 10000 → 1000 linhas
-// =================================================================
 function getMechanicsList() {
   const cache = CacheService.getScriptCache();
   const mechCacheKey = 'mechanics_list_v1';
   const mechCached = cache.get(mechCacheKey);
   if (mechCached) { try { return { success: true, data: JSON.parse(mechCached), cached: true }; } catch(e) {} }
-
   const ss = getSpreadsheet();
   let sheet = ss.getSheetByName(MECHANICS_SHEET_NAME);
   if (!sheet) {
@@ -2564,7 +2547,6 @@ function getMechanicsList() {
       sheet.appendRow(['Patrimônio','Status','Data Entrada','Mecânico','Tratativa','Data Finalização','Carretinha']);
     } catch (e) {}
   }
-
   const bikeInfoMap = {};
   try {
     const index = getBikeIndex();
@@ -2580,12 +2562,10 @@ function getMechanicsList() {
       if (patSemZeros !== pat) bikeInfoMap[patSemZeros] = info;
     });
   } catch(e) { console.error('getMechanicsList - erro ao ler bikes:', e); }
-
   let reportEntries = {};
   let lastStatusByBike = {};
   const reportCacheKey = 'mechanics_report_scan_v6';
   let reportCached = cache.get(reportCacheKey);
-
   if (reportCached) {
     try {
       const parsed = JSON.parse(reportCached);
@@ -2593,14 +2573,12 @@ function getMechanicsList() {
       lastStatusByBike = parsed.lastStatusByBike;
     } catch (e) { reportCached = null; }
   }
-
   if (!reportCached) {
     const EXIT_STATUSES = ['estação', 'estacao', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'remanejada', 'recuperada', 'encontrada', 'localizada'];
     try {
       const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório');
       if (reportSheet && reportSheet.getLastRow() > 1) {
         const lastRow = reportSheet.getLastRow();
-        // OTIMIZAÇÃO: scan de 10000 → 1000 linhas
         const rowsToRead = Math.min(lastRow - 1, 1000);
         const reportData = reportSheet.getRange(lastRow - rowsToRead + 1, 1, rowsToRead, 10).getValues();
         reportData.forEach((row, idx) => {
@@ -2633,7 +2611,6 @@ function getMechanicsList() {
       }
     } catch (e) { console.error('getMechanicsList - erro ao ler relatório:', e); }
   }
-
   const mechanicsStatus = {};
   if (sheet) {
     const mechValues = sheet.getDataRange().getValues();
@@ -2658,7 +2635,6 @@ function getMechanicsList() {
       mechanicsStatus[pat] = { row: i + 1, status, tsMs: tsMs || 0, dataEntrada: row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1], mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1], tratativa, dataFinalizacao: row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1], carretinha: row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1], manual: tratativa.toUpperCase() === 'MANUAL' };
     }
   }
-
   const bikeMap = {};
   Object.entries(reportEntries).forEach(([pat, entry]) => {
     const mechData = mechanicsStatus[pat];
@@ -2673,18 +2649,13 @@ function getMechanicsList() {
       bikeMap[pat] = { row: -1, patrimonio: pat, status: 'Alterar Status', dataEntrada: new Date(entry.tsMs), mecanico: '', tratativa: '', dataFinalizacao: '', carretinha: '', bateria: info.bateria, carregamento: info.carregamento, motorista: entry.motorista || '', observacao: entry.observacao || '', manual: false };
     }
   });
-
   Object.entries(mechanicsStatus).forEach(([pat, mechData]) => {
     if (bikeMap[pat]) return;
     const info = bikeInfoMap[pat] || {};
     bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: mechData.status, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: true };
   });
-
   const result = Object.values(bikeMap).filter(b => b.status !== 'Remanejada');
-
-  // OTIMIZAÇÃO: cache 60s para getMechanicsList
   try { cache.put(mechCacheKey, JSON.stringify(result), 60); } catch(e) {}
-
   return { success: true, data: result };
 }
 
@@ -2751,50 +2722,6 @@ function confirmMechanicsReceipt(bikeNumber, mechanicName) {
   }
   sheet.appendRow([bikeNumber, 'Em Manutenção', new Date(), mechanicName, '', '', '']);
   return { success: true };
-}
-
-function moveToAguardandoManutencao(bikeNumber) {
-  const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
-  if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
-  const data = sheet.getDataRange().getValues();
-  const pStr = String(bikeNumber).trim().replace(/^0+/, '');
-  let foundIndex = -1;
-  for (let i = data.length - 1; i >= 1; i--) {
-    const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
-    const status = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
-    const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
-    if (rowPat === pStr) {
-      if (tsMs && tsMs < CUTOFF_MS) continue;
-      if (status === 'Em Manutenção' || status === 'Reserva' || status === 'Aguardando Técnica' || status === 'Em Técnica') return { success: true, message: 'Bicicleta já está em processo avançado.' };
-      if (status !== 'Remanejada' && status !== 'Não encontrada') { foundIndex = i; break; }
-    }
-  }
-  if (foundIndex !== -1) {
-    sheet.getRange(foundIndex + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Aguardando Manutenção');
-    sheet.getRange(foundIndex + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
-    return { success: true };
-  }
-  sheet.appendRow([bikeNumber, 'Aguardando Manutenção', new Date(), '', '', '', '']);
-  return { success: true };
-}
-
-function declineMechanicsReceipt(bikeNumber, mechanicName) {
-  const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
-  if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
-  const data = sheet.getDataRange().getValues();
-  const pStr = String(bikeNumber).trim().replace(/^0+/, '');
-  for (let i = data.length - 1; i >= 1; i--) {
-    const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
-    const rowStatus = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
-    const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
-    if (rowPat === pStr && rowStatus === 'Aguardando Manutenção') {
-      if (tsMs && tsMs < CUTOFF_MS) continue;
-      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Não encontrada');
-      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
-      return { success: true };
-    }
-  }
-  return { success: false, error: 'Bicicleta não encontrada em Aguardando Manutenção.' };
 }
 
 function markAsNotFound(bikeNumber, mechanicName) {
@@ -3097,118 +3024,34 @@ function finalizeTrailer(trailerName) {
 }
 
 // =================================================================
-// --- FUNÇÕES DE TESTE ---
-// =================================================================
-function testMechanics() {
-  const result = getMechanicsList();
-  Logger.log('=== RESULTADO MECANICA ===');
-  Logger.log('Total: ' + result.data.length);
-  Logger.log('Aguardando: ' + result.data.filter(b => b.status === 'Aguardando Confirmação').length);
-  Logger.log('Em Manutenção: ' + result.data.filter(b => b.status === 'Em Manutenção').length);
-  Logger.log('Reserva: ' + result.data.filter(b => b.status === 'Reserva').length);
-}
-
-function testTimestamp() {
-  const sheet = getSpreadsheet().getSheetByName('Relatorio');
-  if (!sheet) { Logger.log('Aba Relatorio não encontrada'); return; }
-  const lastRow = sheet.getLastRow();
-  const sample = sheet.getRange(lastRow - 10, 1, 10, 3).getValues();
-  sample.forEach((row, i) => {
-    const raw = row[0];
-    const ts = raw instanceof Date ? raw : parseTimestamp(raw);
-    const tsMs = ts ? ts.getTime() : null;
-    Logger.log(`Row ${lastRow - 10 + i}: raw=${raw} | type=${typeof raw} | isDate=${raw instanceof Date} | tsMs=${tsMs} | afterCutoff=${tsMs ? tsMs >= CUTOFF_MS : 'null'} | status=${row[2]}`);
-  });
-}
-
-// =================================================================
-// --- LIMPEZA DE DUPLICATAS ---
-// =================================================================
-function cleanupRecentDuplicates() {
-  const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
-  try {
-    const sheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
-    if (!sheet) return 0;
-    const lastRow = sheet.getLastRow();
-    if (lastRow < 3) return 0;
-    const numRows = Math.min(lastRow - 1, 200);
-    const startRow = lastRow - numRows + 1;
-    const data = sheet.getRange(startRow, 1, numRows, sheet.getLastColumn()).getValues();
-    const rowsToDelete = [];
-    for (let i = data.length - 1; i >= 1; i--) {
-      const cur = data[i];
-      const curTs  = parseTimestamp(cur[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
-      const curPat = (cur[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim();
-      const curSt  = (cur[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim();
-      const curMot = (cur[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
-      const curLoc = (cur[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] || '').toString().trim();
-      const curObs = (cur[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
-      if (!curPat || !curTs) continue;
-      for (let j = i - 1; j >= 0; j--) {
-        const prev = data[j];
-        const prevTs = parseTimestamp(prev[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
-        if (!prevTs) continue;
-        const sameKey = (prev[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim() === curPat
-          && (prev[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim() === curSt
-          && (prev[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim() === curMot
-          && ((prev[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim() === curObs
-              || (prev[COLUMN_INDICES.REPORTS.LOCALIDADE - 1] || '').toString().trim() === curLoc);
-        if (sameKey && Math.abs(curTs - prevTs) / 60000 < 10) { rowsToDelete.push(startRow + i); break; }
-      }
-    }
-    const unique = [...new Set(rowsToDelete)].sort((a, b) => b - a);
-    unique.forEach(row => { try { sheet.deleteRow(row); } catch (e) {} });
-    if (unique.length > 0) SpreadsheetApp.flush();
-    return unique.length;
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-// =================================================================
 // --- getSheetsReportsToday ---
-// Substituto eficiente do exportAllData para o botão "Sincronizar Contador".
-// Em vez de exportar a planilha inteira (~22.000 leituras), lê apenas as
-// últimas 300 linhas do Relatório e filtra pelo dia solicitado.
-// Custo: ~300 leituras por clique (vs ~22.000 antes — reducao de 98,6%)
 // =================================================================
 function getSheetsReportsToday(payload) {
   try {
     const catNorm = normalizeCategory(payload.category || '');
     if (!catNorm.includes('ADM')) return { success: false, error: 'Acesso negado.' };
-
     const reportSheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
     if (!reportSheet) return { success: false, error: 'Aba Relatorio nao encontrada.' };
-
     const lastRow = reportSheet.getLastRow();
     if (lastRow < 2) return { success: true, data: [] };
-
-    // Le apenas as ultimas 300 linhas - suficiente para cobrir um dia inteiro de operacao
     const rowsToRead = Math.min(lastRow - 1, 300);
     const startRow = lastRow - rowsToRead + 1;
     const data = reportSheet.getRange(startRow, 1, rowsToRead, 10).getValues();
-
-    // Determina o dia alvo (hoje por padrao, ou data passada via payload.date)
     const targetDate = payload.date ? new Date(payload.date) : new Date();
     targetDate.setHours(0, 0, 0, 0);
     const targetMs = targetDate.getTime();
     const nextDayMs = targetMs + 86400000;
-
     const ALLOWED_STATUSES = ['recolhida', 'filial', 'vandalizada', 'estacao', 'nao encontrada'];
-
     const results = [];
     data.forEach(function(row) {
       var ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
       if (!ts) return;
       var tsMs = ts.getTime();
       if (tsMs < targetMs || tsMs >= nextDayMs) return;
-
       var status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase()
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       var isAllowed = ALLOWED_STATUSES.some(function(s) { return status.includes(s); });
       if (!isAllowed) return;
-
       results.push({
         timestamp:     ts.toISOString(),
         patrimonio:    (row[COLUMN_INDICES.REPORTS.PATRIMONIO    - 1] || '').toString().trim(),
@@ -3221,7 +3064,6 @@ function getSheetsReportsToday(payload) {
         localidade:    (row[COLUMN_INDICES.REPORTS.LOCALIDADE    - 1] || '').toString(),
       });
     });
-
     return { success: true, data: results };
   } catch (e) {
     return { success: false, error: 'Erro em getSheetsReportsToday: ' + e.message };

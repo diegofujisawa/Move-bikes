@@ -589,6 +589,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const lastDriverActionAt = useRef<number>(0);
   const lastFirebaseUpdateAt = useRef<number>(0);
   const lastLocationRef = useRef<{ lat: number, lng: number } | null>(null);
+  const syncCountRef = useRef<number>(0);
 
   // =================================================================
   // HELPERS DE ESTADO
@@ -3014,7 +3015,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
               ultimaAtualizacao: serverTimestamp()
             });
           } catch (e) {
-            console.warn(`[Firebase] moveToAguardandoManutencao failed for ${bikeId}:`, e);
+            console.warn(`[Firebase] update status to Aguardando Manutenção failed for ${bikeId}:`, e);
           }
         }));
       } else if (action.type === 'status_change') {
@@ -3920,30 +3921,15 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         const filteredMotoristas = d.motoristas.filter((m: string) => m.toUpperCase() !== 'MECANICA');
         setMotoristas(filteredMotoristas);
       }
+      // Otimização: driverLocations e mechanicsList agora são gerenciados pelos listeners Firebase
+      /*
       if (d.driverLocations) {
-        setDriverLocations(prev => {
-          const fbLocations = prev.filter((l:any) => l.source === 'firebase');
-          if (fbLocations.length === 0) {
-            return d.driverLocations;
-          }
-          const fbNames = new Set(fbLocations.map((l:any) => l.driverName));
-          const sheetsOnly = (d.driverLocations as any[]).filter((l:any) => !fbNames.has(l.driverName));
-          return [...fbLocations, ...sheetsOnly.map((l:any) => ({ ...l, stale: true }))];
-        });
+        // ... (removido para economizar quota)
       }
       if (d.mechanicsList) {
-        setSheetsMechanicsList(d.mechanicsList || []);
-        
-        // Busca baterias em tempo real para bikes na mecânica
-        const bikeNumbers = (d.mechanicsList as any[]).map(b => String(b.patrimonio));
-        if (bikeNumbers.length > 0) {
-          apiCall({ action: 'getBikeDetailsBatch', bikeNumbers }, 1, true).then(res => {
-            if (res.success && res.data) {
-              setMechanicsLiveDetails(prev => ({ ...prev, ...res.data }));
-            }
-          }).catch(() => {});
-        }
+        // ... (removido para economizar quota)
       }
+      */
       if (d.driversSummary) {
         const filteredSummary = d.driversSummary.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
         setDriversSummary(prev => filteredSummary.map((newD: any) => {
@@ -4003,10 +3989,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     try {
       setSyncError(null);
       syncFailCountRef.current = 0; // reset contador de falhas ao iniciar sync com sucesso
+      syncCountRef.current++;
 
       if (isAdm) {
         // ADM: divide em 2 chamadas paralelas para evitar timeout do Apps Script (90s)
-        const [baseResult, summaryResult] = await Promise.allSettled([
+        const calls: any[] = [
           apiCall({
             action: 'sync',
             driverName,
@@ -4014,13 +4001,20 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             summaryTimeRange,
             statusTimeRange,
             timelineDate,
-          }, 3, true),
-          apiCall({
+            alertsVersion, // ✅ Passa versão atual para o backend pular getAlerts se nada mudou
+          }, 3, true)
+        ];
+
+        // Otimização: Chama Drivers Summary apenas a cada 3 ciclos (~36s) para economizar quota
+        if (syncCountRef.current % 3 === 0) {
+          calls.push(apiCall({
             action: 'getDriversSummary',
             timeRange: summaryTimeRange,
             timelineDate,
-          }, 3, true),
-        ]);
+          }, 3, true));
+        }
+
+        const [baseResult, summaryResult] = await Promise.allSettled(calls);
 
         let hasAnySuccess = false;
 
@@ -4032,7 +4026,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
           hasAnySuccess = true;
         }
 
-        if (summaryResult.status === 'fulfilled' && summaryResult.value?.success) {
+        if (summaryResult && summaryResult.status === 'fulfilled' && summaryResult.value?.success) {
           const filteredData = summaryResult.value.data.filter((newD: any) => newD.name?.toUpperCase() !== 'MECANICA');
           setDriversSummary(prev => filteredData.map((newD: any) => {
             const prevD = prev.find((p: any) => p.name === newD.name);
@@ -4070,6 +4064,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
           summaryTimeRange,
           statusTimeRange,
           timelineDate,
+          alertsVersion,
         }, 3, true);
 
         if (result.success && result.data) {
@@ -4099,7 +4094,19 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       setIsSyncing(false);
       if (isAdm) { setIsSummaryLoading(false); setIsAlertsLoading(false); setIsVandalizedLoading(false); }
     }
-  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate]);
+  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate, alertsVersion]);
+
+  // Busca baterias em tempo real para bikes na mecânica conforme o Firebase atualiza a lista
+  useEffect(() => {
+    if (fbMechanicsFlow.length > 0) {
+      const bikeNumbers = fbMechanicsFlow.map(b => String(b.patrimonio));
+      apiCall({ action: 'getBikeDetailsBatch', bikeNumbers }, 1, true).then(res => {
+        if (res.success && res.data) {
+          setMechanicsLiveDetails(prev => ({ ...prev, ...res.data }));
+        }
+      }).catch(() => {});
+    }
+  }, [fbMechanicsFlow]);
 
   useEffect(() => {
     if (isMecanica && activeMechanicCategory === 'Reserva') {

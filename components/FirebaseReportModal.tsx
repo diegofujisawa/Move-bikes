@@ -4,7 +4,6 @@ import {
   query, 
   orderBy, 
   limit,
-  where,          // ✅ ADICIONADO — necessário para filtro por data
   onSnapshot, 
   deleteDoc, 
   doc, 
@@ -77,15 +76,10 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
 
     setIsLoading(true);
 
-    // Início do dia atual (meia-noite local)
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    
     const q = query(
       collection(db, 'reports'), 
-      where('timestamp', '>=', Timestamp.fromDate(startOfDay)),  // ✅ filtra só hoje
       orderBy('timestamp', 'desc'), 
-      limit(200)  // ✅ reduzido de 500 → 200 (suficiente para um dia de operação)
+      limit(300) 
     );
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -208,7 +202,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
   // Custo: ~300 leituras/clique (antes: ~22.000 leituras/clique)
   // =================================================================
   const handleSyncWithSheets = async () => {
-    if (!window.confirm('Deseja comparar os dados do Firebase com a Planilha e sincronizar registros faltantes de HOJE?')) return;
+    if (!window.confirm('Deseja comparar os dados do Firebase com a Planilha e sincronizar registros faltantes recentes?')) return;
     
     setIsSyncing(true);
     try {
@@ -766,7 +760,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
 
         {/* Footer */}
         <div className="p-3 bg-gray-50 border-t flex justify-between items-center text-[10px] text-gray-400 font-medium">
-          <p>Exibindo {filteredReports.length} registros (Filtrado: Recolhidas, Vandalizadas e Estação)</p>
+          <p>Exibindo {filteredReports.length} registros recentes (Filtrado: Recolhidas, Vandalizadas e Estação)</p>
           <div className="flex items-center gap-3">
             <p>Fonte: Firebase Firestore (Coleção: reports)</p>
             <span className="flex items-center gap-1">
