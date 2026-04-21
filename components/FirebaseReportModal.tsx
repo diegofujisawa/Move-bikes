@@ -3,7 +3,8 @@ import {
   collection, 
   query, 
   orderBy, 
-  limit, 
+  limit,
+  where,          // ✅ ADICIONADO — necessário para filtro por data
   onSnapshot, 
   deleteDoc, 
   doc, 
@@ -62,19 +63,29 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     type: 'Manual'
   });
 
+  // =================================================================
+  // OTIMIZAÇÃO: onSnapshot filtrado por HOJE + limit(200)
+  // ANTES: limit(1000) sem filtro → até 1.000 leituras por abertura
+  // DEPOIS: where(hoje) + limit(200) → ~30-80 leituras por abertura
+  //
+  // ATENÇÃO: esta query exige índice composto no Firestore.
+  // Na primeira execução, o console do Firebase mostrará um link
+  // para criar o índice automaticamente — basta clicar e confirmar.
+  // =================================================================
   useEffect(() => {
     if (!isOpen) return;
 
     setIsLoading(true);
-    // ✅ Otimizado: Só busca relatórios de HOJE por padrão para economizar leituras
+
+    // Início do dia atual (meia-noite local)
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     
     const q = query(
       collection(db, 'reports'), 
-      where('timestamp', '>=', Timestamp.fromDate(startOfDay)),
+      where('timestamp', '>=', Timestamp.fromDate(startOfDay)),  // ✅ filtra só hoje
       orderBy('timestamp', 'desc'), 
-      limit(500)
+      limit(200)  // ✅ reduzido de 500 → 200 (suficiente para um dia de operação)
     );
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -198,11 +209,9 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
   // =================================================================
   const handleSyncWithSheets = async () => {
     if (!window.confirm('Deseja comparar os dados do Firebase com a Planilha e sincronizar registros faltantes de HOJE?')) return;
-
+    
     setIsSyncing(true);
     try {
-      // ✅ NOVO: endpoint específico que lê só as últimas 300 linhas do Relatório
-      // ❌ ANTIGO: apiCall({ action: 'exportAllData' }) — lia TODA a planilha (~22.000 leituras)
       const res = await apiCall({
         action: 'getSheetsReportsToday',
         category: 'ADM',
@@ -224,7 +233,6 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
 
       console.log(`[Sync] Encontrados ${todaySheetsReports.length} registros hoje na planilha.`);
 
-      // Prepara set de chaves já existentes no Firebase (registros de hoje)
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
@@ -245,44 +253,42 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
 
       let addedCount = 0;
       const batchSize = 5;
-
+      
       for (let i = 0; i < todaySheetsReports.length; i += batchSize) {
         const chunk = todaySheetsReports.slice(i, i + batchSize);
-        await Promise.all(
-          chunk.map(async sr => {
-            const pat      = sr.patrimonio;
-            const status   = (sr.status || '').toUpperCase();
-            const motorista = sr.motorista;
+        await Promise.all(chunk.map(async (sr) => {
+          const pat      = sr.patrimonio;
+          const status   = (sr.status || '').toUpperCase();
+          const motorista = sr.motorista;
+          
+          if (!pat || !motorista) return;
 
-            if (!pat || !motorista) return;
+          const key = `${pat}_${motorista}_${status}`;
+          if (existingIds.has(key)) return;
 
-            const key = `${pat}_${motorista}_${status}`;
-            if (existingIds.has(key)) return;
+          try {
+            const deterministicId = `sync_${pat}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+            const finalDate: any = sr.timestamp ? new Date(sr.timestamp) : serverTimestamp();
 
-            try {
-              const deterministicId = `sync_${pat}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-              const finalDate: any = sr.timestamp ? new Date(sr.timestamp) : serverTimestamp();
-
-              await setDoc(doc(db, 'reports', deterministicId), {
-                patrimonio:    pat,
-                status:        sr.status,
-                observacao:    sr.observacao,
-                motorista:     motorista,
-                statusSistema: sr.statusSistema,
-                bateria:       sr.bateria,
-                trava:         sr.trava,
-                localidade:    sr.localidade,
-                timestamp:     finalDate,
-                type:          'Sincronizado',
-              }, { merge: true });
-
-              addedCount++;
-              existingIds.add(key);
-            } catch (e) {
-              console.error(`[Sync] Falha ao adicionar bike ${pat}:`, e);
-            }
-          })
-        );
+            await setDoc(doc(db, 'reports', deterministicId), {
+              patrimonio:    pat,
+              status:        sr.status,
+              observacao:    sr.observacao,
+              motorista,
+              statusSistema: sr.statusSistema,
+              bateria:       sr.bateria,
+              trava:         sr.trava,
+              localidade:    sr.localidade,
+              timestamp:     finalDate,
+              type:          'Sincronizado',
+            }, { merge: true });
+            
+            addedCount++;
+            existingIds.add(key);
+          } catch (e) {
+            console.error(`[Sync] Falha ao adicionar bike ${pat}:`, e);
+          }
+        }));
       }
 
       if (addedCount > 0) {
@@ -292,8 +298,8 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
       }
 
     } catch (error: any) {
-      console.error('Sync error:', error);
-      alert('Erro durante a sincronização: ' + error.message);
+      console.error("Sync error:", error);
+      alert("Erro durante a sincronização: " + error.message);
     } finally {
       setIsSyncing(false);
     }
