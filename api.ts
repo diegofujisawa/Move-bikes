@@ -3,6 +3,10 @@ import { SCRIPT_URL as RAW_SCRIPT_URL } from './components/constants';
 
 const SCRIPT_URL = RAW_SCRIPT_URL.trim();
 
+if (!SCRIPT_URL || !SCRIPT_URL.startsWith('https://script.google.com')) {
+  console.error('[API] SCRIPT_URL inválida ou ausente em constants.ts:', SCRIPT_URL);
+}
+
 // =================================================================
 // AÇÕES DE LEITURA — retry seguro (nunca duplicam dados)
 // AÇÕES DE ESCRITA — retry apenas com idempotencyKey

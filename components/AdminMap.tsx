@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { LogoutIcon, MapIcon, XIcon, MovingIcon } from './icons';
 import { DriverLocation } from '../types';
 import { db } from '../firebase';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, Timestamp } from 'firebase/firestore';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -245,13 +245,20 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   }, []);
 
   useEffect(() => {
-    const THIRTY_MIN = 30 * 60 * 1000;
+    // ✅ Otimizado: Só busca posições dos últimos 120 minutos para economizar leituras
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+    const q = query(
+      collection(db, 'locations'),
+      where('timestamp', '>=', Timestamp.fromDate(twoHoursAgo))
+    );
 
     const unsubscribe = onSnapshot(
-      collection(db, 'locations'),
+      q,
       (snapshot) => {
         const locs: any[] = [];
         const now = Date.now();
+        const THIRTY_MIN = 30 * 60 * 1000;
 
         snapshot.forEach((docSnap) => {
           const data = docSnap.data();

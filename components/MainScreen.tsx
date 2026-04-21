@@ -18,7 +18,7 @@ import { signInWithPopup, GoogleAuthProvider, signInAnonymously } from 'firebase
 import {
   collection, onSnapshot, doc, updateDoc, addDoc, getDocs, deleteDoc,
   serverTimestamp, setDoc, query, where, getDocFromServer, getDoc,
-  Timestamp
+  Timestamp, limit
 } from 'firebase/firestore';
 import ScheduleModal from './ScheduleModal';
 import ReporModal from './ReporModal';
@@ -192,57 +192,8 @@ const localDateStr = () => {
 };
 
 // =================================================================
-// --- ADMIN ALERTS COMPONENT (inline) ---
+// COMPONENTE PRINCIPAL
 // =================================================================
-const AdminAlerts: React.FC<{adminName: string, category: string, isOpen: boolean, onClose: () => void}> = ({ adminName, category, isOpen, onClose }) => {
-  const [admAlerts, setAdmAlerts] = React.useState<any[]>([]);
-  const [admLoading, setAdmLoading] = React.useState(false);
-  const fetchAdmAlerts = React.useCallback(async () => {
-    if (!adminName) return;
-    setAdmLoading(true);
-    try { const r = await apiCall({ action: 'getAdminAlerts', adminName, category }); if (r.success) setAdmAlerts(r.alerts || []); }
-    catch {} finally { setAdmLoading(false); }
-  }, [adminName, category]);
-  const clearAdmAlerts = async () => {
-    if (!confirm('Confirmar leitura de todos os alertas?')) return;
-    setAdmLoading(true);
-    try { const r = await apiCall({ action: 'clearAdminAlerts', adminName, category }); if (r.success) setAdmAlerts([]); }
-    catch {} finally { setAdmLoading(false); }
-  };
-  React.useEffect(() => {
-    if (isOpen) { fetchAdmAlerts(); const t = setInterval(fetchAdmAlerts, 10000); return () => clearInterval(t); }
-  }, [isOpen, adminName, fetchAdmAlerts]);
-  if (!isOpen) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[80vh]">
-        <div className="p-4 border-b flex items-center justify-between bg-red-50">
-          <div className="flex items-center gap-2 text-red-700">
-            <AlertTriangleIcon className="w-6 h-6"/>
-            <h2 className="text-lg font-bold">Alertas e Notificações</h2>
-          </div>
-          <div className="flex gap-2">
-            {admAlerts.length > 0 && <button onClick={clearAdmAlerts} disabled={admLoading} className="p-2 text-gray-500 hover:text-red-600" title="Limpar alertas"><svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>}
-            <button onClick={onClose} className="p-2 text-gray-500 hover:text-gray-700"><XIcon className="w-6 h-6"/></button>
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {admLoading && admAlerts.length === 0 ? <div className="text-center py-8 text-gray-400">Carregando...</div>
-          : admAlerts.length === 0 ? <div className="text-center py-12 text-gray-500 italic">Nenhum alerta no momento.</div>
-          : admAlerts.map((a: any) => (
-            <div key={a.id} className="p-3 bg-red-50 border-l-4 border-red-500 rounded-r-lg">
-              <p className="text-red-900 font-medium text-xs">{a.msg}</p>
-              <p className="text-[10px] text-red-400 mt-1">{new Date(a.time).toLocaleString('pt-BR', {hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</p>
-            </div>
-          ))}
-        </div>
-        <div className="p-4 border-t bg-gray-50 flex justify-end">
-          <button onClick={onClose} className="px-6 py-2 bg-white border border-gray-300 rounded-xl text-gray-700 hover:bg-gray-100">Fechar</button>
-        </div>
-      </div>
-    </div>
-  );
-};
 
 const MainScreen: React.FC<MainScreenProps> = ({
   driverName, category, plate, kmInicial, onLogout, onShowMap, onUpdateUser
@@ -252,6 +203,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const isAdm = useMemo(() => normalizedCategory.includes('ADM'), [normalizedCategory]);
   const isMecanica = useMemo(() => normalizedCategory.includes('MECANICA') || normalizedCategory.includes('MECANICO'), [normalizedCategory]);
   const isTecnica  = useMemo(() => normalizedCategory.includes('TECNICA') || normalizedCategory.includes('TECNICO'), [normalizedCategory]);
+
+  // Helper para calculo de data de inicio do dia (usado em listeners)
+  const getStartOfDayTs = useCallback(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return Timestamp.fromDate(d);
+  }, []);
 
   // --- UI State ---
   const [isLoading, setIsLoading] = useState(false);
@@ -298,7 +256,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isReportModalOpen, setReportModalOpen] = useState(false);
   const [isVehicleModalOpen, setIsVehicleModalOpen] = useState(false);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
-  const [isAdminAlertsOpen, setIsAdminAlertsOpen] = useState(false);
   const [isForceReloading, setIsForceReloading] = useState(false);
   const [isReporModalOpen, setIsReporModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
@@ -348,8 +305,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
   const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
   const [statusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
-  const [alertCount, setAlertCount] = useState(0);
-  const [hasNewAlerts, setHasNewAlerts] = useState(false);
   const [pendingActions, setPendingActions] = useState<any[]>([]);
   const [isPendingActionsLoading, setIsPendingActionsLoading] = useState(false);
 
@@ -375,13 +330,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     central: { lat: -23.5433, lng: -46.6333, label: 'ZONA CENTRAL' }
   }), []);
 
-  const lastViewedAlertCountRef = useRef<number>(0);
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('lastViewedAlertCount');
-      if (saved) lastViewedAlertCountRef.current = parseInt(saved, 10);
-    } catch {}
-  }, []);
   const [editingDriver, setEditingDriver] = useState<any>(null);
 
   // --- Dados auxiliares ---
@@ -465,8 +413,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // Ref para refreshAll — evita dependência circular com persistDriverState
   const refreshAllRef = useRef<((force?: boolean) => Promise<void>) | null>(null);
   useEffect(() => {
-    if (!db) return;
-    const q = query(collection(db, 'mechanics_flow'));
+    if (!db || (activeQuadrant !== 'mechanics' && !isTecnica && !isMecanica)) return;
+    
+    // Filtramos apenas por status ativos para reduzir leituras
+    const activeStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
+    const q = query(collection(db, 'mechanics_flow'), where('status', 'in', activeStatuses));
+    
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const flow = snapshot.docs.map(doc => ({
         ...doc.data(),
@@ -477,12 +429,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
       console.error('Error listening to mechanics_flow:', error);
     });
     return () => unsubscribe();
-  }, []);
+  }, [activeQuadrant, isTecnica, isMecanica]);
 
   useEffect(() => {
-    if (!db) return;
+    if (!db || (activeQuadrant !== 'technica' && !isTecnica)) return;
+    
     setIsTechnicaLoading(true);
-    const q = query(collection(db, 'technical_flow'));
+    // Filtramos por status ativos na técnica
+    const technicalStatuses = ['Aguardando Técnica', 'Em Técnica', 'Aguardando Manutenção'];
+    const q = query(collection(db, 'technical_flow'), where('status', 'in', technicalStatuses));
+    
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const flow = snapshot.docs.map(doc => ({
         ...doc.data(),
@@ -495,7 +451,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsTechnicaLoading(false);
     });
     return () => unsubscribe();
-  }, []);
+  }, [activeQuadrant, isTecnica]);
 
   const mergeMechanicsList = useCallback((serverBikes: any[], fbFlow: any[]) => {
     const now = Date.now();
@@ -815,19 +771,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
   useEffect(() => {
     if (!driverName) return () => {};
 
+    const nowTs = Timestamp.now();
+    const startOfDayTs = getStartOfDayTs();
+
     // Pedidos pendentes — Firebase usado APENAS para notificação push de novos pedidos
-    // O estado real de pendingRequests vem exclusivamente do Sheets via sync
-    const unsubRequests = onSnapshot(collection(db, 'requests'), (snapshot) => {
+    // O estado real de pendingRequests vem exclusivamente do Sheets via sync.
+    // Filtramos apenas por 'pendente' e criados após o boot do app para economizar leituras.
+    const qRequests = query(
+      collection(db, 'requests'), 
+      where('status', '==', 'pendente'),
+      where('timestamp', '>=', nowTs),
+      limit(10) // Otimização: limita número de leituras
+    );
+    const unsubRequests = onSnapshot(qRequests, (snapshot) => {
       snapshot.docChanges().forEach(change => {
         if (change.type === 'added') {
           const d = change.doc.data();
-          const status = (d.status || '').toString().toLowerCase();
-          if (status === 'pendente' && (d.recipient === driverName || d.recipient === 'Todos')) {
+          if (d.recipient === driverName || d.recipient === 'Todos') {
             showNotification('Novo Pedido', 'Você tem uma nova solicitação pendente.');
           }
         }
       });
-    }, err => handleFirestoreError(err, OperationType.GET, 'requests'));
+    }, err => console.warn('Listener requests notify:', err));
 
     // Estado do motorista — Listener em tempo real (Background Sync)
     const unsubUser = onSnapshot(doc(db, 'users', normalizeName(driverName)), (snap) => {
@@ -876,20 +841,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }, err => console.error('Listener usuário:', err));
 
     // Listener de force_reload — ADM pode forçar atualização de todos os usuários
-    // Sem where() para evitar necessidade de índice composto no Firestore
-    const unsubReload = onSnapshot(collection(db, 'notifications'), snapshot => {
+    // Filtramos por tipo e tempo para evitar ler o histórico completo de notificações
+    const qReload = query(
+      collection(db, 'notifications'), 
+      where('type', '==', 'force_reload'),
+      where('timestamp', '>=', nowTs)
+    );
+    const unsubReload = onSnapshot(qReload, snapshot => {
       if (isAdm) return; // ADM não recarrega
       snapshot.docChanges().forEach(change => {
         if (change.type === 'added') {
-          const data = change.doc.data();
-          if (data.type !== 'force_reload') return; // filtra no cliente
-          const ts = data.timestamp?.toDate?.()?.getTime() || 0;
-          const now = Date.now();
-          // Só recarrega se a notificação foi criada nos últimos 10 segundos
-          if (now - ts < 10000) {
-            console.log('[ForceReload] Recarregando por comando do ADM...');
-            setTimeout(() => window.location.reload(), 1500);
-          }
+          console.log('[ForceReload] Recarregando por comando do ADM...');
+          setTimeout(() => window.location.reload(), 1500);
         }
       });
     }, err => console.error('Listener force_reload:', err));
@@ -938,7 +901,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Listener de posições dos motoristas em tempo real (ADM)
     let unsubLocations = () => {};
     if (isAdm) {
-      unsubLocations = onSnapshot(collection(db, 'locations'), snapshot => {
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      const qLocs = query(
+        collection(db, 'locations'),
+        where('timestamp', '>=', Timestamp.fromDate(twoHoursAgo))
+      );
+      unsubLocations = onSnapshot(qLocs, snapshot => {
         const firebaseLocations: any[] = [];
         snapshot.forEach(d => {
           const data = d.data();
@@ -972,7 +940,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
     let unsubPending = () => {};
     if (isAdm) {
       setIsPendingActionsLoading(true);
-      unsubPending = onSnapshot(collection(db, 'pending_actions'), snapshot => {
+      const qPending = query(
+        collection(db, 'pending_actions'), 
+        where('status', '==', 'pending'),
+        where('timestamp', '>=', startOfDayTs),
+        limit(50) // Otimização: evita ler centenas de ações passadas
+      );
+      unsubPending = onSnapshot(qPending, snapshot => {
         const actions: any[] = [];
         snapshot.forEach(d => {
           const data = d.data();
@@ -994,44 +968,38 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     // Listener de Relatórios em Tempo Real para Contadores do Resumo
     // Atualiza os contadores de Recolhidas, Remanejadas e Não Encontradas instantaneamente
-    const startOfDay = new Date();
-    startOfDay.setHours(0,0,0,0);
-    
-    let qReports;
-    if (isAdm) {
-      qReports = query(
-        collection(db, 'reports'),
-        where('timestamp', '>=', Timestamp.fromDate(startOfDay))
-      );
-    } else {
-      qReports = query(
+    // Otimização: para ADM, desabilitamos o listener em tempo real de TODOS os reports
+    // pois consome muitas leituras (50k/dia fácil). O ADM usa os dados do Sheets Sync (15s).
+    // Mantemos o listener apenas para o próprio motorista ver seus dados instantâneos.
+    let unsubReports = () => {};
+    if (!isAdm) {
+      const qReports = query(
         collection(db, 'reports'),
         where('motorista', '==', driverName),
-        where('timestamp', '>=', Timestamp.fromDate(startOfDay))
+        where('timestamp', '>=', startOfDayTs),
+        limit(100) // Segurança extra
       );
+
+      unsubReports = onSnapshot(qReports, (snapshot) => {
+        const newStats: Record<string, any> = {};
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          const m = data.motorista;
+          if (!m) return;
+          if (!newStats[m]) newStats[m] = { recolhidas: 0, remanejada: 0, naoEncontrada: 0 };
+          
+          if (data.status === 'Filial') newStats[m].recolhidas++;
+          else if (data.status === 'Estação' || data.status === 'Em Estação') newStats[m].remanejada++;
+          else if (data.status === 'Não encontrada') newStats[m].naoEncontrada++;
+        });
+        setFirebaseDriverStats(newStats);
+      }, err => console.warn('Listener reports stats:', err));
     }
 
-    const unsubReports = onSnapshot(qReports, (snapshot) => {
-      const newStats: Record<string, any> = {};
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        const m = data.motorista;
-        if (!m) return;
-        if (!newStats[m]) newStats[m] = { recolhidas: 0, remanejada: 0, naoEncontrada: 0 };
-        
-        // Contabiliza apenas destinos finais para evitar duplicidade
-        // Recolhidas = Entregues na Filial (status 'Filial')
-        // Remanejadas = Entregues na Estação (status 'Estação' ou 'Em Estação')
-        if (data.status === 'Filial') newStats[m].recolhidas++;
-        else if (data.status === 'Estação' || data.status === 'Em Estação') newStats[m].remanejada++;
-        else if (data.status === 'Não encontrada') newStats[m].naoEncontrada++;
-      });
-      setFirebaseDriverStats(newStats);
-    }, err => console.warn('Listener reports stats:', err));
-
     return () => { unsubRequests(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); unsubReports(); };
-  }, [driverName, isAdm, timelineDate]);
+  }, [driverName, isAdm, timelineDate, getStartOfDayTs]);
 
+  const routeBikesKey = routeBikes.join(',');
   // Listener em tempo real para as bikes na rota (Agilidade Máxima)
   // Se uma bike na rota for recolhida por outro motorista, ela sai da lista imediatamente
   useEffect(() => {
@@ -1049,7 +1017,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
             // Se a bike mudou de status ou responsável, removemos da rota se não for mais nossa
             if (bikeData.status === 'Recolhida' && bikeData.responsavel !== driverName) {
               console.log(`[Agilidade] Bike ${bikeId} recolhida por outro motorista. Removendo da rota.`);
-              setRouteBikes(prev => prev.filter(id => id !== bikeId));
+              setRouteBikes(prev => {
+                if (prev.includes(bikeId)) {
+                  return prev.filter(id => id !== bikeId);
+                }
+                return prev;
+              });
             }
           }
         });
@@ -1059,7 +1032,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
     
     return () => unsubBikes();
-  }, [driverName, routeBikes]);
+  }, [driverName, routeBikesKey, routeBikes]);
 
   // =================================================================
   // GARANTIA DE UNICIDADE
@@ -1156,17 +1129,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const sortedRouteBikes = useMemo(() => {
     if (!routeBikes.length) return routeBikes;
 
-    // 1. Se Nearest Neighbor já rodou para TODAS as bikes → ordem já otimizada, respeita
-    const isFullyOptimized = routeBikes.length > 0 && routeBikes.every(id => routeDistances[id]?.isRoad);
-    if (isFullyOptimized) return routeBikes;
-
-    // 2. Ordena pelo menor valor disponível: distância de estrada (value em metros) ou Haversine
+    // Ordena pelo menor valor disponível: distância de estrada (value em metros) ou Haversine
     return [...routeBikes].sort((a, b) => {
       const rdA = routeDistances[a], rdB = routeDistances[b];
-      // Se ambos têm distância calculada (estrada ou Haversine), usa value
+      // Se ambos têm distância calculada, usa value
       if (rdA?.value !== undefined && rdB?.value !== undefined) return rdA.value - rdB.value;
       if (rdA?.value !== undefined) return -1;
       if (rdB?.value !== undefined) return 1;
+      
       // Fallback: Haversine com coordenadas das bikes
       if (!currentDriverLocation) return 0;
       const dA = routeBikesDetails[a], dB = routeBikesDetails[b];
@@ -4025,14 +3995,6 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
           // but removing the unused state for now to satisfy lint
         }
       }
-
-      if (d.adminAlerts) {
-        const n = d.adminAlerts.length;
-        setAlertCount(n);
-        if (n > lastViewedAlertCountRef.current) {
-          setHasNewAlerts(true);
-        }
-      }
     };
 
     const today = localDateStr();
@@ -4302,58 +4264,54 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
     if (bikesWithCoords.length === 0) return;
 
-    console.log(`[Routing] Otimizando rota para ${bikesWithCoords.length} bikes...`);
+    console.log(`[Routing] Calculando distâncias de carro para ${bikesWithCoords.length} bikes...`);
 
-    // Nearest Neighbor partindo da posição do motorista
-    let currentLat = currentDriverLocation.lat;
-    let currentLng = currentDriverLocation.lng;
-    const remaining = [...bikesWithCoords];
+    // Calcula distância de carro do motorista para CADA bike
+    const distances = await Promise.all(
+      bikesWithCoords.map(async b => {
+        const { distanceM, durationS } = await getRoadDistance(
+          currentDriverLocation.lat, currentDriverLocation.lng,
+          b.details.currentLat, b.details.currentLng
+        );
+        return { bike: b, distanceM, durationS };
+      })
+    );
+
+    // Ordena pelo percurso de carro mais curto do motorista até a bike
+    distances.sort((a, b) => a.distanceM - b.distanceM);
+    
     const ordered: string[] = [];
     const newDistances: Record<string, { distance: string, duration: string, value: number, isRoad: boolean }> = {};
 
-    while (remaining.length > 0) {
-      // Calcula distância de carro de onde estou para cada bike restante
-      const distances = await Promise.all(
-        remaining.map(async b => {
-          const { distanceM, durationS } = await getRoadDistance(
-            currentLat, currentLng,
-            b.details.currentLat, b.details.currentLng
-          );
-          return { bike: b, distanceM, durationS };
-        })
-      );
-
-      // Pega a mais próxima
-      distances.sort((a, b) => a.distanceM - b.distanceM);
-      const nearest = distances[0];
-      ordered.push(nearest.bike.id);
-
-      const distKm = nearest.distanceM / 1000;
-      const mins = Math.round(nearest.durationS / 60);
-      newDistances[nearest.bike.id] = {
-        distance: distKm < 1 ? `${nearest.distanceM.toFixed(0)}m` : `${distKm.toFixed(1)}km`,
+    distances.forEach(item => {
+      ordered.push(item.bike.id);
+      const distKm = item.distanceM / 1000;
+      const mins = Math.round(item.durationS / 60);
+      newDistances[item.bike.id] = {
+        distance: distKm < 1 ? `${item.distanceM.toFixed(0)}m` : `${distKm.toFixed(1)}km`,
         duration: `~${mins} min`,
-        value: nearest.distanceM,
+        value: item.distanceM,
         isRoad: true
       };
-
-      // Avança para a posição dessa bike
-      currentLat = nearest.bike.details.currentLat;
-      currentLng = nearest.bike.details.currentLng;
-      remaining.splice(remaining.indexOf(nearest.bike), 1);
-    }
+    });
 
     // Bikes sem coordenadas ficam no final
     const withoutCoords = routeBikes.filter(id => !bikesWithCoords.find(b => b.id === id));
+    const newOrder = [...ordered, ...withoutCoords];
+
     setRouteDistances(prev => ({ ...prev, ...newDistances }));
-    // Reordena routeBikes na ordem otimizada
-    setRouteBikes([...ordered, ...withoutCoords]);
-    console.log('[Routing] Rota otimizada concluída.');
+    
+    setRouteBikes(prev => {
+      if (prev.join('|') === newOrder.join('|')) return prev;
+      return newOrder;
+    });
+    console.log('[Routing] Cálculo de distâncias e ordenação concluídos.');
   }, [currentDriverLocation, routeBikes, routeBikesDetails, getRoadDistance]);
 
   // Hash de coordenadas para reagir quando as bikes se movem
   const bikesHash = useMemo(() => {
-    return routeBikes.map(id => {
+    // Ordenamos para que a ordem da rota não dispare o roteamento (evita loop de reordenação)
+    return [...routeBikes].sort().map(id => {
       const d = routeBikesDetails[id];
       return d ? `${d.currentLat},${d.currentLng}` : '';
     }).join('|');
@@ -4361,10 +4319,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
   // Dispara roteamento ao mudar posição ou bikes — com debounce de 3s
   useEffect(() => {
-    if (!currentDriverLocation || !routeBikes.length) return;
+    if (!currentDriverLocation || !routeBikes.length || !bikesHash) return;
     
     const timer = setTimeout(() => {
-      if (bikesHash) console.log('[Routing] Iniciando otimização por mudança de posição/bikes');
+      console.log('[Routing] Iniciando otimização por mudança de posição/bikes');
       buildOptimizedRoute();
     }, 3000);
     return () => clearTimeout(timer);
@@ -4377,7 +4335,15 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     routeBikes.forEach(id => {
       const d = routeBikesDetails[id];
       // Sempre calcula Haversine como base de ordenação — sobrescrito pelo Nearest Neighbor quando disponível
-      if (d?.currentLat && d?.currentLng && !routeDistances[id]?.isRoad) {
+      // IMPORTANTE: Não incluímos routeDistances nas dependências para evitar loop infinito
+      dists[id] = { 
+        distance: '', 
+        duration: '', 
+        value: 999999,
+        isRoad: false 
+      };
+
+      if (d?.currentLat && d?.currentLng) {
         const km = calculateDistance(currentDriverLocation.lat, currentDriverLocation.lng, d.currentLat, d.currentLng);
         dists[id] = { 
           distance: km < 1 ? `${(km*1000).toFixed(0)}m` : `${km.toFixed(1)}km`, 
@@ -4387,8 +4353,25 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         };
       }
     });
-    if (Object.keys(dists).length > 0) setRouteDistances(prev => ({ ...prev, ...dists }));
-  }, [currentDriverLocation, routeBikes, routeBikesDetails, routeDistances]);
+
+    if (Object.keys(dists).length > 0) {
+      setRouteDistances(prev => {
+        const next = { ...prev };
+        let changed = false;
+        Object.entries(dists).forEach(([id, newVal]) => {
+          // Só aplica Haversine se não houver um cálculo de ROTA (road) já feito
+          if (!prev[id]?.isRoad) {
+            // Verifica se o valor mudou significativamente para evitar updates constantes
+            if (prev[id]?.value !== newVal.value) {
+              next[id] = newVal;
+              changed = true;
+            }
+          }
+        });
+        return changed ? next : prev;
+      });
+    }
+  }, [currentDriverLocation, routeBikes, routeBikesDetails]);
 
   useEffect(() => {
     if (isAdm) {
@@ -5174,16 +5157,6 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
           {!isMecanica && !isTecnica && <>
             <button onClick={() => { setPrefilledBikeNumber(undefined); setRequestModalOpen(true); }} disabled={isLoading} title="Nova Solicitação" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             <button onClick={() => setRouteModalOpen(true)} disabled={isLoading} title="Criar Roteiro" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusPlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
-            <button onClick={() => {
-              setIsAdminAlertsOpen(true);
-              setHasNewAlerts(false);
-              lastViewedAlertCountRef.current = alertCount;
-              try { localStorage.setItem('lastViewedAlertCount', String(alertCount)); } catch {}
-            }} disabled={isLoading} title="Alertas"
-              className={`p-1.5 sm:p-2 rounded-full relative disabled:opacity-50 ${hasNewAlerts && alertCount > 0 ? 'text-red-600 bg-red-50 animate-pulse' : 'text-gray-500 hover:bg-gray-100 hover:text-red-600'}`}>
-              <AlertTriangleIcon className={`w-6 h-6 sm:w-7 sm:h-7 ${hasNewAlerts && alertCount > 0 ? 'animate-bounce' : ''}`}/>
-              {alertCount > 0 && <span className="absolute top-0 right-0 bg-red-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full border-2 border-white">{alertCount}</span>}
-            </button>
             {isAdm && <button onClick={onShowMap} disabled={isLoading} title="Mapa" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><MapIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>}
             {isAdm && (
               <button 
@@ -5467,7 +5440,12 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
               </div>
               <div>
                 <p className="font-semibold text-gray-500 text-xs uppercase">Bateria</p>
-                <p className="text-gray-800 font-medium">{formatBattery(searchedBike['Bateria'])}%</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-gray-800 font-medium">{formatBattery(searchedBike['Bateria'])}%</p>
+                  <span className="text-[10px] font-bold bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full uppercase">
+                    {searchedBike['Status'] || searchedBike['status'] || searchedBike['statusSistema'] || searchedBike['situacao'] || bikeConflicts[String(searchedBike['Patrimônio'])]?.status || 'N/A'}
+                  </span>
+                </div>
               </div>
               <div>
                 <p className="font-semibold text-gray-500 text-xs uppercase">Última Info</p>
@@ -7477,7 +7455,14 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           <div className="flex items-center gap-2">
                             <p className="font-mono text-gray-800 font-bold text-lg">{bike}</p>
                             {details?.battery !== undefined && (
-                              <div className="flex items-center justify-center w-8 h-8 rounded-full border-2 border-blue-500 text-[9px] font-bold text-blue-600 bg-white shadow-sm">{formatBattery(details.battery)}%</div>
+                              <div className="flex items-center gap-1.5">
+                                <div className="flex items-center justify-center w-8 h-8 rounded-full border-2 border-blue-500 text-[9px] font-bold text-blue-600 bg-white shadow-sm flex-shrink-0">{formatBattery(details.battery)}%</div>
+                                {(details?.status || details?.Status || details?.statusSistema || details?.situacao || bikeConflicts[bike]?.status || 'N/A') && (
+                                  <span className="text-[10px] font-bold bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full uppercase truncate max-w-[100px]" title={String(details?.status || details?.Status || details?.statusSistema || details?.situacao || bikeConflicts[bike]?.status || 'N/A')}>
+                                    {String(details?.status || details?.Status || details?.statusSistema || details?.situacao || bikeConflicts[bike]?.status || 'N/A')}
+                                  </span>
+                                )}
+                              </div>
                             )}
                             {renderConflictIcon(bike)}
                             {moved > 10 && (
@@ -7520,7 +7505,14 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                     <div className="flex items-center gap-3">
                       <p className="font-mono text-gray-800 font-bold text-lg">{bike}</p>
                       {collectedBikesDetails[bike]?.battery !== undefined && (
-                        <div className="flex items-center justify-center w-10 h-10 rounded-full border-2 border-blue-500 text-[10px] font-bold text-blue-600 bg-white shadow-sm">{formatBattery(collectedBikesDetails[bike].battery)}%</div>
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex items-center justify-center w-10 h-10 rounded-full border-2 border-blue-500 text-[10px] font-bold text-blue-600 bg-white shadow-sm flex-shrink-0">{formatBattery(collectedBikesDetails[bike].battery)}%</div>
+                          {(collectedBikesDetails[bike]?.status || collectedBikesDetails[bike]?.Status || collectedBikesDetails[bike]?.statusSistema || collectedBikesDetails[bike]?.situacao || bikeConflicts[bike]?.status || 'N/A') && (
+                            <span className="text-[10px] font-bold bg-green-100 text-green-700 px-2 py-0.5 rounded-full uppercase truncate max-w-[100px]" title={String(collectedBikesDetails[bike]?.status || collectedBikesDetails[bike]?.Status || collectedBikesDetails[bike]?.statusSistema || collectedBikesDetails[bike]?.situacao || bikeConflicts[bike]?.status || 'N/A')}>
+                              {String(collectedBikesDetails[bike]?.status || collectedBikesDetails[bike]?.Status || collectedBikesDetails[bike]?.statusSistema || collectedBikesDetails[bike]?.situacao || bikeConflicts[bike]?.status || 'N/A')}
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                     <div className="grid grid-cols-3 gap-2 w-full max-w-[240px]">
@@ -8099,7 +8091,6 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
       <ScheduleModal isOpen={isScheduleModalOpen} onClose={() => setIsScheduleModalOpen(false)} schedule={userSchedule} driverName={driverName} isLoading={isScheduleLoading}/>
       <VehicleSwitchModal isOpen={isVehicleModalOpen} onClose={() => setIsVehicleModalOpen(false)} onSwitch={(p, km) => onUpdateUser({ plate: p, kmInicial: km })} driverName={driverName} currentPlate={plate}/>
-      <AdminAlerts isOpen={isAdminAlertsOpen} onClose={() => setIsAdminAlertsOpen(false)} adminName={driverName} category={category}/>
       <ReporModal isOpen={isReporModalOpen} onClose={() => setIsReporModalOpen(false)} data={reporData} isLoading={isReporLoading}/>
       {/* Modal Histórico Técnica */}
       {isTechnicaHistoryOpen && (() => {

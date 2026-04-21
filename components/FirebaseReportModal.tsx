@@ -66,7 +66,16 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     if (!isOpen) return;
 
     setIsLoading(true);
-    const q = query(collection(db, 'reports'), orderBy('timestamp', 'desc'), limit(1000));
+    // ✅ Otimizado: Só busca relatórios de HOJE por padrão para economizar leituras
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    
+    const q = query(
+      collection(db, 'reports'), 
+      where('timestamp', '>=', Timestamp.fromDate(startOfDay)),
+      orderBy('timestamp', 'desc'), 
+      limit(500)
+    );
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const reportsData = snapshot.docs.map(doc => {

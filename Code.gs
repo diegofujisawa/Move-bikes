@@ -794,23 +794,39 @@ function getDriverLocations(providedData) {
 // =================================================================
 function getBikeIndex(forceReload = false) {
   const cache = CacheService.getScriptCache();
-  const cacheKey = 'bikes_index';
+  const cacheKey = 'bikes_index_v2';
   const cached = forceReload ? null : cache.get(cacheKey);
   if (cached) { try { return JSON.parse(cached); } catch (e) {} }
   const sheet = getSpreadsheet().getSheetByName(BIKES_SHEET_NAME);
   if (!sheet) return {};
   const data = sheet.getDataRange().getValues();
   if (!data.length) return {};
-  const firstCell = String(data[0][COLUMN_INDICES.BIKES.PATRIMONIO - 1]).trim();
+  
+  // Tenta encontrar colunas dinamicamente se houver cabeçalhos
+  const headers = data[0].map(h => String(h).trim().toLowerCase());
+  const patIdx = headers.indexOf('patrimônio') !== -1 ? headers.indexOf('patrimônio') : COLUMN_INDICES.BIKES.PATRIMONIO - 1;
+  const statusIdx = headers.indexOf('status') !== -1 ? headers.indexOf('status') : COLUMN_INDICES.BIKES.STATUS - 1;
+  const bateriaIdx = headers.indexOf('bateria') !== -1 ? headers.indexOf('bateria') : COLUMN_INDICES.BIKES.BATERIA - 1;
+
+  const firstCell = String(data[0][patIdx]).trim();
   const hasHeader = isNaN(parseFloat(firstCell)) || firstCell === '';
   const rows = hasHeader ? data.slice(1) : data;
   const index = {};
   rows.forEach(row => {
-    const pat = String(row[COLUMN_INDICES.BIKES.PATRIMONIO - 1]).trim();
+    const pat = String(row[patIdx]).trim();
     if (!pat || pat === '0') return;
-    index[pat] = row;
+    
+    // Normaliza o objeto da linha para garantir que as colunas críticas estejam nos índices esperados pelo resto do código
+    // ou simplesmente guarda a linha original se o mapeamento estiver correto.
+    // Para maior compatibilidade, vamos garantir que a linha no index tenha os valores nos índices definidos em COLUMN_INDICES
+    const normalizedRow = [...row];
+    if (statusIdx !== COLUMN_INDICES.BIKES.STATUS - 1) normalizedRow[COLUMN_INDICES.BIKES.STATUS - 1] = row[statusIdx];
+    if (bateriaIdx !== COLUMN_INDICES.BIKES.BATERIA - 1) normalizedRow[COLUMN_INDICES.BIKES.BATERIA - 1] = row[bateriaIdx];
+    if (patIdx !== COLUMN_INDICES.BIKES.PATRIMONIO - 1) normalizedRow[COLUMN_INDICES.BIKES.PATRIMONIO - 1] = row[patIdx];
+
+    index[pat] = normalizedRow;
     const patNoZeros = String(parseFloat(pat));
-    if (patNoZeros !== pat && patNoZeros !== 'NaN') index[patNoZeros] = row;
+    if (patNoZeros !== pat && patNoZeros !== 'NaN') index[patNoZeros] = normalizedRow;
   });
   try { cache.put(cacheKey, JSON.stringify(index), 300); } catch (e) {}
   return index;
@@ -876,9 +892,13 @@ function searchBike(bikeNumber) {
       const debugInfo = debugSearch(bikeStr);
       return { success: false, error: `Bicicleta "${bikeStr}" não encontrada.`, debug: debugInfo };
     }
+    const stVal = String(row[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim();
     const bikeObject = {
       'Patrimônio':                  row[COLUMN_INDICES.BIKES.PATRIMONIO - 1],
-      'Status':                      row[COLUMN_INDICES.BIKES.STATUS - 1],
+      'Status':                      stVal,
+      'status':                      stVal,
+      'statusSistema':               stVal,
+      'situacao':                    stVal,
       'Localidade':                  row[COLUMN_INDICES.BIKES.LOCALIDADE - 1],
       'Usuário':                     row[COLUMN_INDICES.BIKES.USUARIO - 1],
       'Bateria':                     row[COLUMN_INDICES.BIKES.BATERIA - 1],
@@ -2346,6 +2366,10 @@ function getRouteDetails(driverName, bikeNumbers, providedBikesSheet, providedRe
           currentLat: parseCoordinate(row[COLUMN_INDICES.BIKES.LATITUDE - 1]),
           currentLng: parseCoordinate(row[COLUMN_INDICES.BIKES.LONGITUDE - 1]),
           battery: row[COLUMN_INDICES.BIKES.BATERIA - 1],
+          status: String(row[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim(),
+          'Status': String(row[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim(),
+          'statusSistema': String(row[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim(),
+          'situacao': String(row[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim(),
           initialLat: null, initialLng: null, ocorrencia: false
         };
       }
@@ -2387,7 +2411,11 @@ function getBikeDetailsBatch(bikeNumbers) {
     const row = index[String(num).trim()];
     if (row) {
       result[num] = {
-        'Patrimônio': row[COLUMN_INDICES.BIKES.PATRIMONIO - 1], 'Status': row[COLUMN_INDICES.BIKES.STATUS - 1],
+        'Patrimônio': row[COLUMN_INDICES.BIKES.PATRIMONIO - 1],
+        'Status': String(row[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim(),
+        'status': String(row[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim(),
+        'statusSistema': String(row[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim(),
+        'situacao': String(row[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim(),
         'Localidade': row[COLUMN_INDICES.BIKES.LOCALIDADE - 1], 'Usuário': row[COLUMN_INDICES.BIKES.USUARIO - 1],
         'Bateria': row[COLUMN_INDICES.BIKES.BATERIA - 1], 'Carregando': row[COLUMN_INDICES.BIKES.CARREGAMENTO - 1],
         'Trava': row[COLUMN_INDICES.BIKES.TRAVA - 1],
