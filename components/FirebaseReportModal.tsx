@@ -170,7 +170,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     try {
       const docRef = doc(db, 'reports', editingId);
       const updatePayload = { ...editData };
-      delete updatePayload.id; // Don't save ID back to doc fields
+      delete updatePayload.id;
       
       await setDoc(docRef, updatePayload, { merge: true });
       setEditingId(null);
@@ -183,116 +183,97 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     }
   };
 
+  // =================================================================
+  // OTIMIZADO v85.6: usa getSheetsReportsToday em vez de exportAllData
+  // Custo: ~300 leituras/clique (antes: ~22.000 leituras/clique)
+  // =================================================================
   const handleSyncWithSheets = async () => {
     if (!window.confirm('Deseja comparar os dados do Firebase com a Planilha e sincronizar registros faltantes de HOJE?')) return;
-    
+
     setIsSyncing(true);
     try {
-      // 1. Get ALL data from Sheets
-      const res = await apiCall({ action: 'exportAllData' });
+      // ✅ NOVO: endpoint específico que lê só as últimas 300 linhas do Relatório
+      // ❌ ANTIGO: apiCall({ action: 'exportAllData' }) — lia TODA a planilha (~22.000 leituras)
+      const res = await apiCall({
+        action: 'getSheetsReportsToday',
+        category: 'ADM',
+      });
+
       if (!res.success || !res.data) throw new Error(res.error || 'Falha ao buscar dados da planilha.');
 
-      const sheetsReports = res.data['Relatorio'] || [];
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      // 2. Filter Sheets reports for today and relevant statuses
-      const todaySheetsReports = sheetsReports.filter((r: any) => {
-        const ts = r['Carimbo de data/hora'] || r['Timestamp'] || r['TIMESTAMP'] || r['Data'];
-        if (!ts) return false;
-        
-        // Parse Sheet Timestamp
-        let date: Date | null = null;
-        if (typeof ts === 'string') {
-          const parts = ts.split(' ');
-          const dateParts = parts[0].split('/');
-          if (dateParts.length === 3) {
-            date = new Date(`${dateParts[2]}-${dateParts[1]}-${dateParts[0]}T${parts[1] || '12:00:00'}`);
-          } else {
-            date = new Date(ts);
-          }
-        } else if (ts instanceof Date) {
-          date = ts;
-        }
-        
-        if (!date || isNaN(date.getTime())) return false;
-        
-        const reportDay = new Date(date);
-        reportDay.setHours(0, 0, 0, 0);
-        
-        if (reportDay.getTime() !== today.getTime()) return false;
-
-        const status = (r['Status'] || '').toLowerCase();
-        const isAllowed = status.includes('estação') || status.includes('estacao') || 
-                         status.includes('filial') || status.includes('recolhida') || 
-                         status.includes('vandalizada') || status.includes('não encontrada') || status.includes('nao encontrada');
-        
-        return isAllowed;
-      });
+      const todaySheetsReports: Array<{
+        timestamp: string;
+        patrimonio: string;
+        status: string;
+        observacao: string;
+        motorista: string;
+        statusSistema: string;
+        bateria: string;
+        trava: string;
+        localidade: string;
+      }> = res.data;
 
       console.log(`[Sync] Encontrados ${todaySheetsReports.length} registros hoje na planilha.`);
 
-      // 3. Prepare list of existing Firebase reports for today (already in state)
-      const existingIds = new Set(reports
-        .filter(r => {
-          const rDate = r.timestamp instanceof Date ? r.timestamp : (r.timestamp as any)?.toDate?.() || new Date();
-          const rd = new Date(rDate);
-          rd.setHours(0, 0, 0, 0);
-          return rd.getTime() === today.getTime();
-        })
-        .map(r => `${String(r.patrimonio || r.bikeNumber)}_${String(r.motorista || r.driverName)}_${(r.status || '').toUpperCase()}`)
+      // Prepara set de chaves já existentes no Firebase (registros de hoje)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const existingIds = new Set(
+        reports
+          .filter(r => {
+            const rDate = r.timestamp instanceof Date
+              ? r.timestamp
+              : (r.timestamp as any)?.toDate?.() || new Date();
+            const rd = new Date(rDate);
+            rd.setHours(0, 0, 0, 0);
+            return rd.getTime() === today.getTime();
+          })
+          .map(r =>
+            `${String(r.patrimonio || r.bikeNumber)}_${String(r.motorista || r.driverName)}_${(r.status || '').toUpperCase()}`
+          )
       );
 
       let addedCount = 0;
-      const batchSize = 5; // Process in small batches to avoid overload
-      
+      const batchSize = 5;
+
       for (let i = 0; i < todaySheetsReports.length; i += batchSize) {
         const chunk = todaySheetsReports.slice(i, i + batchSize);
-        await Promise.all(chunk.map(async (sr: any) => {
-          const pat = String(sr['Patrimônio'] || sr['Patrimonio'] || '');
-          const status = (sr['Status'] || '').toUpperCase();
-          const motorista = (sr['Motorista'] || sr['VINICIUS'] || '').toUpperCase(); // O Sheets do print mostra VINICIUS na coluna E
-          const timestampRaw = sr['Carimbo de data/hora'] || sr['Timestamp'] || sr['TIMESTAMP'] || sr['Data'];
-          
-          if (!pat || !motorista) return;
+        await Promise.all(
+          chunk.map(async sr => {
+            const pat      = sr.patrimonio;
+            const status   = (sr.status || '').toUpperCase();
+            const motorista = sr.motorista;
 
-          const key = `${pat}_${motorista}_${status}`;
-          if (!existingIds.has(key)) {
-            // Missing in Firebase!
+            if (!pat || !motorista) return;
+
+            const key = `${pat}_${motorista}_${status}`;
+            if (existingIds.has(key)) return;
+
             try {
               const deterministicId = `sync_${pat}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-              
-              // Tenta converter timestamp da planilha para Date
-              let finalDate: any = serverTimestamp();
-              if (timestampRaw) {
-                const parts = String(timestampRaw).split(' ');
-                const dateParts = parts[0].split('/');
-                if (dateParts.length === 3) {
-                  const d = new Date(`${dateParts[2]}-${dateParts[1]}-${dateParts[0]}T${parts[1] || '12:00:00'}`);
-                  if (!isNaN(d.getTime())) finalDate = d;
-                }
-              }
+              const finalDate: any = sr.timestamp ? new Date(sr.timestamp) : serverTimestamp();
 
               await setDoc(doc(db, 'reports', deterministicId), {
-                patrimonio: pat,
-                status: sr['Status'] || '',
-                observacao: sr['Observação'] || sr['Observacao'] || '',
-                motorista: motorista,
-                statusSistema: sr['Status Sistema'] || sr['Status no Sistema'] || '',
-                bateria: sr['Bateria'] || '',
-                trava: sr['Trava'] || '',
-                localidade: sr['Localidade'] || '',
-                timestamp: finalDate,
-                type: 'Sincronizado'
+                patrimonio:    pat,
+                status:        sr.status,
+                observacao:    sr.observacao,
+                motorista:     motorista,
+                statusSistema: sr.statusSistema,
+                bateria:       sr.bateria,
+                trava:         sr.trava,
+                localidade:    sr.localidade,
+                timestamp:     finalDate,
+                type:          'Sincronizado',
               }, { merge: true });
-              
+
               addedCount++;
-              existingIds.add(key); // Mark as added
+              existingIds.add(key);
             } catch (e) {
               console.error(`[Sync] Falha ao adicionar bike ${pat}:`, e);
             }
-          }
-        }));
+          })
+        );
       }
 
       if (addedCount > 0) {
@@ -302,8 +283,8 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
       }
 
     } catch (error: any) {
-      console.error("Sync error:", error);
-      alert("Erro durante a sincronização: " + error.message);
+      console.error('Sync error:', error);
+      alert('Erro durante a sincronização: ' + error.message);
     } finally {
       setIsSyncing(false);
     }
@@ -318,7 +299,6 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     const st = (r.statusSistema || '').toLowerCase();
     const type = (r.type || '').toLowerCase();
     
-    // Search term filter
     const matchesSearch = p.includes(searchTerm.toLowerCase()) ||
            m.includes(searchTerm.toLowerCase()) ||
            s.includes(searchTerm.toLowerCase()) ||
@@ -327,14 +307,11 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
            st.includes(searchTerm.toLowerCase()) ||
            type.includes(searchTerm.toLowerCase());
 
-    // Driver filter
     const matchesDriver = !filterDriver || m === filterDriver.toLowerCase();
     
-    // Status filter
     const displayStatus = (r.status || '').toUpperCase() === 'FILIAL' ? 'RECOLHIDA' : (r.status || '').toUpperCase();
     const matchesStatus = !filterStatus || displayStatus === filterStatus.toUpperCase();
     
-    // Date filter
     let matchesDate = true;
     if (r.timestamp instanceof Date) {
       const reportDate = new Date(r.timestamp);
@@ -353,8 +330,6 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
       }
     }
 
-    // New requirement: Only driver app registrations (Recolhida, Vandalizada, Estação)
-    // Exclude MECANICA profile and maintenance statuses
     const statusLow = (r.status || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const typeLow = (r.type || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const motoristaLow = (r.motorista || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -374,7 +349,6 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     return matchesSearch && matchesDriver && matchesStatus && matchesDate;
   });
 
-  // Get unique drivers and statuses for filters based on the allowed records
   const allowedReports = reports.filter(r => {
     const statusLow = (r.status || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const typeLow = (r.type || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -493,7 +467,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
               onClick={handleSyncWithSheets}
               disabled={isSyncing || isLoading}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-all active:scale-95 disabled:bg-gray-400"
-              title="Sincronizar com a Planilha"
+              title="Sincronizar com a Planilha (otimizado - ~300 leituras)"
             >
               {isSyncing ? <RefreshIcon className="w-4 h-4 animate-spin" /> : <RefreshIcon className="w-4 h-4" />}
               Sincronizar Contador
@@ -778,7 +752,13 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
         {/* Footer */}
         <div className="p-3 bg-gray-50 border-t flex justify-between items-center text-[10px] text-gray-400 font-medium">
           <p>Exibindo {filteredReports.length} registros (Filtrado: Recolhidas, Vandalizadas e Estação)</p>
-          <p>Fonte: Firebase Firestore (Coleção: reports)</p>
+          <div className="flex items-center gap-3">
+            <p>Fonte: Firebase Firestore (Coleção: reports)</p>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-green-500 inline-block animate-pulse"></span>
+              FIREBASE ATIVO
+            </span>
+          </div>
         </div>
       </div>
     </div>
