@@ -18,7 +18,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.9-normdriver-global';
+const BACKEND_VERSION = '85.10-mechanics-cache-fix';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -2639,7 +2639,7 @@ function getMechanicsList() {
           const isExit = EXIT_STATUSES.some(s => last.status.includes(s));
           if (last && isExit && last.tsMs > reportEntries[pat].tsMs) delete reportEntries[pat];
         });
-        cache.put(reportCacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 300);
+        cache.put(reportCacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 60);
       }
     } catch (e) { console.error('getMechanicsList - erro ao ler relatório:', e); }
   }
@@ -2961,6 +2961,7 @@ function clearAlterarStatus(bikes) {
         if (!alreadyExists) { sheet.appendRow([item.patrimonio, 'Remanejada', now, '', 'LIMPAR_LISTA', now, '']); cleared++; }
       }
     });
+    _clearMechanicsCache();
     return { success: true, cleared };
   } catch (e) { return { success: false, error: 'Erro ao limpar lista: ' + e.message }; }
 }
