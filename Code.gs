@@ -18,7 +18,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.8-analytical-finalstatus';
+const BACKEND_VERSION = '85.9-normdriver-global';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -525,6 +525,9 @@ function handleSync(request) {
         console.error('Erro em getVandalized durante sync:', vandalizedResult.error);
       }
       response.data.vandalized = vandalizedResult.data || [];
+      response.data.changeStatusData = getChangeStatusData(statusTimeRange, {
+        report: getSheet(REPORT_SHEET_NAME), bikes: getSheet(BIKES_SHEET_NAME)
+      }).data || { vandalizadas: [], filial: [] };
     } else {
       response.data.driversSummary = getDriversSummary(summaryTimeRange, {
         access: getSheet(ACCESS_SHEET_NAME), report: getSheet(REPORT_SHEET_NAME),
@@ -532,6 +535,9 @@ function handleSync(request) {
         stations: getSheet(STATIONS_SHEET_NAME)
       }, driverName).data || [];
     }
+
+    // CORREÇÃO v85.7: getAdminAlerts agora existe como stub seguro
+    response.data.adminAlerts = getAdminAlerts(driverName, isAdm).alerts || [];
 
     if (isMecanica || isAdm) {
       response.data.mechanicsList = getMechanicsList().data || [];
@@ -544,6 +550,14 @@ function handleSync(request) {
     console.error('Erro na sincronização:', e);
     return { success: false, error: 'Erro na sincronização: ' + e.message };
   }
+}
+
+// =================================================================
+// --- CORREÇÃO v85.7: getAdminAlerts (stub) ---
+// Evita erro em runtime no handleSync. Retorna lista vazia.
+// =================================================================
+function getAdminAlerts(driverName, isAdm) {
+  return { alerts: [] };
 }
 
 function _findVehicleRow(sheet, plate) {
@@ -1202,6 +1216,28 @@ function getMotoristas(providedData) {
 function normalizeName(name) {
   if (!name) return '';
   return String(name).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+// =================================================================
+// --- HELPERS GLOBAIS DE NORMALIZAÇÃO ---
+// Definidos no escopo global para uso em getDriversSummary,
+// getAnalyticalDashboardData e qualquer outra função.
+// =================================================================
+
+/**
+ * Normaliza patrimônio: converte "00476" → "476", "476" → "476"
+ */
+function normPat(p) {
+  return String(parseFloat(p) || String(p).trim());
+}
+
+/**
+ * Normaliza nome de motorista: lowercase + sem acentos + trim
+ * "ANDRE", "André", "Andre" → "andre"
+ */
+function normDriver(d) {
+  return (d || '').toString().trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
 function getDriverState(driverName, providedSheet) {
@@ -1923,6 +1959,70 @@ function getReporData() {
   }
 }
 
+function getChangeStatusData(timeRange = '24h', providedSheets = null) {
+  const cacheKey = 'change_status_data_' + timeRange;
+  const cache = CacheService.getScriptCache();
+  if (!providedSheets) {
+    const cached = cache.get(cacheKey);
+    if (cached) { try { return { success: true, data: JSON.parse(cached), cached: true }; } catch (e) {} }
+  }
+  try {
+    const reportSheet  = providedSheets ? providedSheets.report  : getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
+    const stationSheet = providedSheets ? providedSheets.stations : getSpreadsheet().getSheetByName(STATIONS_SHEET_NAME);
+    if (!reportSheet) return { success: true, data: { vandalizadas: [], filial: [] } };
+    const stationNames = [];
+    if (stationSheet && stationSheet.getLastRow() > 1) {
+      stationSheet.getRange(2, COLUMN_INDICES.STATIONS.NAME, stationSheet.getLastRow() - 1, 1).getValues()
+        .forEach(row => { if (row[0]) stationNames.push(row[0].toString().trim().toLowerCase()); });
+    }
+    const now = new Date();
+    const cutoffDate = new Date();
+    let rowsToRead = 5000;
+    if (timeRange === '48h')   { cutoffDate.setDate(now.getDate() - 2); rowsToRead = 8000; }
+    else if (timeRange === '72h')   { cutoffDate.setDate(now.getDate() - 3); rowsToRead = 12000; }
+    else if (timeRange === 'week')  { cutoffDate.setDate(now.getDate() - 7); rowsToRead = 20000; }
+    else                             { cutoffDate.setDate(now.getDate() - 1); }
+    const lastRow = reportSheet.getLastRow();
+    if (lastRow < 2) return { success: true, data: { vandalizadas: [], filial: [] } };
+    const actualRows = Math.min(lastRow - 1, rowsToRead);
+    const data = reportSheet.getRange(lastRow - actualRows + 1, 1, actualRows, 6).getValues();
+    const lastReports = {};
+    data.forEach(row => {
+      const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+      if (!ts || ts < cutoffDate) return;
+      let patrimonio = (row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim().replace(/^0+/, '');
+      if (!patrimonio || patrimonio.toUpperCase() === 'TESTE') return;
+      const status      = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim();
+      const statusLower = status.toLowerCase();
+      const observacao  = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
+      const isStatusChange = ['recolhida','vandalizada','filial','oficina','recolher','vandalismo'].some(s => statusLower.includes(s));
+      const isRecovery     = ['ativo','manutenção','manutencao'].some(s => statusLower.includes(s));
+      const isStation      = stationNames.includes(statusLower) || statusLower === 'estação' || statusLower === 'estacao';
+      const effectiveStatus= isStation ? (statusLower === 'estação' || statusLower === 'estacao' ? observacao.toLowerCase() : statusLower) : statusLower;
+      const current = lastReports[patrimonio];
+      let shouldUpdate = !current
+        || (isStatusChange && (!current.isStatusChange || ts > current.timestamp))
+        || (isRecovery && ts > current.timestamp)
+        || (!current.isStatusChange && !current.isRecovery && ts > current.timestamp);
+      if (shouldUpdate) lastReports[patrimonio] = { timestamp: ts, status: effectiveStatus, observation: observacao, isStatusChange, isRecovery };
+    });
+    const sortFn = (a, b) => (parseInt(a.patrimonio.replace(/\D/g,'')) || 0) - (parseInt(b.patrimonio.replace(/\D/g,'')) || 0);
+    const vandalizadas = [], filial = [];
+    Object.keys(lastReports).forEach(patrimonio => {
+      const r = lastReports[patrimonio];
+      if (r.isRecovery) return;
+      const item = { patrimonio, observation: r.observation || '' };
+      if (r.status.includes('vandalizada') || r.status.includes('vandalismo')) vandalizadas.push(item);
+      else if (r.status.includes('filial') || r.status.includes('recolhida') || r.status.includes('recolher')) filial.push(item);
+    });
+    const result = { vandalizadas: vandalizadas.sort(sortFn), filial: filial.sort(sortFn) };
+    if (!providedSheets) { try { cache.put(cacheKey, JSON.stringify(result), 120); } catch (e) {} }
+    return { success: true, data: result };
+  } catch (e) {
+    return { success: false, error: 'Erro ao buscar dados de status: ' + e.message };
+  }
+}
+
 function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameFilter = null, timelineDate = null) {
   const cacheKey = `summary_${timeRange}_${driverNameFilter || 'all'}`;
   const cache = CacheService.getScriptCache();
@@ -1962,7 +2062,6 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
       const parts = timelineDate.split('-');
       timelineFilterDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]), 0, 0, 0, 0);
       timelineEndDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]), 23, 59, 59, 999);
-      rowsToRead = 30000;
     }
     if (timeRange === 'week') { const day = now.getDay(); const diffToMon = (day === 0 ? -6 : 1) - day; filterDate.setDate(now.getDate() + diffToMon); rowsToRead = 50000; }
     else if (timeRange === 'month') { filterDate.setDate(1); rowsToRead = 80000; }
@@ -1976,20 +2075,16 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
     let reportsData = [];
     if (lastRowR > 1) {
       const numRows = Math.min(lastRowR - 1, rowsToRead);
-      const numCols = Math.max(reportSheet.getLastColumn(), 10);
-      reportsData = reportSheet.getRange(lastRowR - numRows + 1, 1, numRows, numCols).getValues();
+      reportsData = reportSheet.getRange(lastRowR - numRows + 1, 1, numRows, reportSheet.getLastColumn()).getValues();
     }
     const stats = {};
     const driverLookup = {};
-    drivers.forEach(d => { 
-      stats[d] = { recolhidas: 0, remanejada: 0, naoEncontrada: 0, naoAtendida: 0 }; 
-      driverLookup[normDriver(d)] = d; 
-    });
+    drivers.forEach(d => { stats[d] = { recolhidas: 0, remanejada: 0, naoEncontrada: 0, naoAtendida: 0 }; driverLookup[d.toLowerCase()] = d; });
     reportsData.forEach(row => {
       const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
       if (!ts || ts < filterDate || ts > endDate) return;
       const driverRaw = (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
-      const driverKey = driverLookup[normDriver(driverRaw)];
+      const driverKey = driverLookup[driverRaw.toLowerCase()];
       if (!driverKey) return;
       const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
       if (status.includes('filial') || status.includes('recolhida') || status === 'vandalizada') stats[driverKey].recolhidas++;
@@ -2026,68 +2121,16 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
     }
     const timelines = {};
     const timelineWindows = {};
-    const occurrenceBikes = {};
-    drivers.forEach(d => { timelines[d] = []; occurrenceBikes[d] = []; });
-
-    const tlStart = timelineDate ? timelineFilterDate : filterDate;
-    const tlEnd   = timelineDate ? timelineEndDate   : endDate;
-
-    // --- LÓGICA DE OCORRÊNCIAS (Racional do Dashboard) ---
-    // Mapeia solicitações manuais aceitas pelo motorista: "motorista_lower|patnorm" -> [tsAceiteMs]
-    const acceptedRequestsMap = {};
-    const normPat = p => String(parseFloat(p) || String(p).trim());
-    const normDriver = d => (d || '').toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-
-    if (requestsSheet && lastRowReq > 1) {
-      requestsSheet.getRange(2, 1, lastRowReq - 1, requestsSheet.getLastColumn()).getValues().forEach(row => {
-        const acceptedBy   = (row[COLUMN_INDICES.REQUESTS.ACEITA_POR  - 1] || '').toString().trim();
-        const acceptedDate = row[COLUMN_INDICES.REQUESTS.ACEITA_DATA   - 1];
-        const situacao     = (row[COLUMN_INDICES.REQUESTS.SITUACAO     - 1] || '').toString().trim().toLowerCase();
-        const patrimonios  = (row[COLUMN_INDICES.REQUESTS.PATRIMONIO   - 1] || '').toString().trim();
-        const ocorrenciaType = (row[COLUMN_INDICES.REQUESTS.OCORRENCIA   - 1] || '').toString().toLowerCase().trim();
-        const local        = (row[COLUMN_INDICES.REQUESTS.LOCAL        - 1] || '').toString().toLowerCase().trim();
-
-        if (!acceptedBy || !acceptedDate) return;
-        if (situacao !== 'aceita' && situacao !== 'finalizada') return;
-        if (ocorrenciaType === 'roteiro gerado') return; 
-        if (local.includes('roteiro automatico') || local.includes('criado via roteiro')) return; 
-
-        let tsAceite = parseTimestamp(acceptedDate);
-        if (!tsAceite) return;
-
-        if (tsAceite.getHours() === 0 && tsAceite.getMinutes() === 0 && tsAceite.getSeconds() === 0) {
-          const tsReq = parseTimestamp(row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1]);
-          if (tsReq) tsAceite = tsReq;
-        }
-
-        const driverLow = normDriver(acceptedBy);
-        const pats = patrimonios.split(',').map(s => s.trim()).filter(Boolean);
-        const driverKey = driverLookup[driverLow];
-
-        // Só considera ocorrência se o aceite foi no mesmo dia (ou janela de 7 dias)
-        // Para simplificar e garantir o dashboard: se o aceite ou a solicitação foi no dia da timeline
-        const isRequestRelevant = (tsAceite >= tlStart && tsAceite <= tlEnd);
-
-        pats.forEach(pat => {
-          const patN = normPat(pat);
-          const key = driverLow + '|' + patN;
-          if (!acceptedRequestsMap[key]) acceptedRequestsMap[key] = [];
-          acceptedRequestsMap[key].push(tsAceite.getTime());
-          
-          if (isRequestRelevant && driverKey && !occurrenceBikes[driverKey].includes(patN)) {
-            occurrenceBikes[driverKey].push(patN);
-          }
-        });
-      });
-    }
-
+    drivers.forEach(d => { timelines[d] = []; });
     if (timeRange === 'day' || timeRange === '-1' || timelineDate) {
+      const tlStart = timelineDate ? timelineFilterDate : filterDate;
+      const tlEnd   = timelineDate ? timelineEndDate   : endDate;
       const driverFirstLast = {};
       reportsData.forEach(row => {
         const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
         if (!ts || ts < tlStart || ts > tlEnd) return;
         const driverRaw = (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
-        const driverKey = driverLookup[normDriver(driverRaw)];
+        const driverKey = driverLookup[driverRaw.toLowerCase()];
         if (!driverKey) return;
         const tsMs = ts.getTime();
         if (!driverFirstLast[driverKey]) driverFirstLast[driverKey] = { firstMs: tsMs, lastMs: tsMs };
@@ -2098,7 +2141,7 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
         const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
         if (!ts || ts < tlStart || ts > tlEnd) return;
         const driverRaw = (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim();
-        const driverKey = driverLookup[normDriver(driverRaw)];
+        const driverKey = driverLookup[driverRaw.toLowerCase()];
         if (!driverKey) return;
         const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
         let type = null;
@@ -2110,29 +2153,15 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
         if (type) {
           const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
           const obs = String(row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').trim();
-          
-          // Lógica do Dashboard: É ocorrência se existe uma solicitação aceita para este driver/pat antes do evento
-          const driverLow = normDriver(driverRaw);
-          const patNorm = normPat(pat);
-          const key = driverLow + '|' + patNorm;
-          const tsMs = ts.getTime();
-          const TOLERANCIA_MS = 2 * 60 * 60 * 1000; // 2h de tolerância
-          const SETE_DIAS_MS = 7 * 24 * 60 * 60 * 1000;
-          
-          const isOccFromRequests = (acceptedRequestsMap[key] || []).some(tsAcc => tsMs >= tsAcc - TOLERANCIA_MS && tsMs <= tsAcc + SETE_DIAS_MS);
-          const isOccFromColumn = String(row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').trim() === 'Ocorrência';
-          const isOccFromList = (occurrenceBikes[driverKey] || []).includes(patNorm);
-          
-          const isOcc = isOccFromRequests || isOccFromColumn || isOccFromList;
-          timelines[driverKey].push({ tsMs, hour: ts.getHours(), min: ts.getMinutes(), type, bikeNumber: pat, observacao: obs, isOccurrence: isOcc });
+          const isOcc = String(row[COLUMN_INDICES.REPORTS.OCORRENCIA - 1] || '').trim() === 'Ocorrência';
+          timelines[driverKey].push({ tsMs: ts.getTime(), hour: ts.getHours(), min: ts.getMinutes(), type, bikeNumber: pat, observacao: obs, isOccurrence: isOcc });
         }
       });
       drivers.forEach(d => { const fl = driverFirstLast[d]; if (fl) timelineWindows[d] = { startMs: fl.firstMs, endMs: fl.lastMs }; });
     }
     const summary = drivers.map(d => ({
       name: d, stats: stats[d], realTime: realTime[d] || { route: [], collected: [] },
-      pendingRequests: pendingCounts[d], timeline: timelines[d] || [], timelineWindow: timelineWindows[d] || null,
-      occurrenceBikes: occurrenceBikes[d] || []
+      pendingRequests: pendingCounts[d], timeline: timelines[d] || [], timelineWindow: timelineWindows[d] || null
     }));
     if (useCache) { try { cache.put(cacheKey, JSON.stringify(summary), 30); } catch (e) {} }
     return { success: true, data: summary };
@@ -2214,12 +2243,6 @@ function getAnalyticalDashboardData(timeRange) {
     // Índice de finalizadores: Map<"motorista_lower|patnorm", [{tsMs, tipo}]>
     // tipo: 'sucesso' | 'sem_sucesso'
     const finalizMap = {};
-
-    const normPat = p => String(parseFloat(p) || String(p).trim());
-    // Normaliza nome do driver: lowercase + remove acentos + trim
-    // Garante que "ANDRE", "André", "Andre" todos viram "andre"
-    const normDriver = d => (d || '').toString().trim().toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
     for (let i = 0; i < reportData.length; i++) {
       const row    = reportData[i];
@@ -2448,13 +2471,6 @@ function switchVehicle(driverName, plate, kmInicial, kmFinalAtual, currentPlate)
   }
 }
 
-function _clearMechanicsCache() {
-  const cache = CacheService.getScriptCache();
-  cache.remove('mechanics_list_v1');
-  cache.remove('mechanics_report_scan_v6');
-  cache.remove('technical_list_v1');
-}
-
 function addToMechanics(bikeNumber) {
   const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
   if (!sheet) return;
@@ -2465,7 +2481,6 @@ function addToMechanics(bikeNumber) {
         && data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] !== 'Remanejada') return;
   }
   sheet.appendRow([bikeNumber, 'Alterar Status', new Date(), '', '', '', '']);
-  _clearMechanicsCache();
 }
 
 function getDirections(fromLat, fromLng, toLat, toLng) {
@@ -2712,12 +2727,10 @@ function insertBikeMechanics(bikeNumber, mechanicName, targetStatus) {
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue('MANUAL');
-      _clearMechanicsCache();
       return { success: true };
     }
   }
   sheet.appendRow([bikeNumber, targetStatus, new Date(), mechanicName, 'MANUAL', '', '']);
-  _clearMechanicsCache();
   return { success: true };
 }
 
@@ -2736,12 +2749,10 @@ function confirmMechanicsReceipt(bikeNumber, mechanicName) {
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Em Manutenção');
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
-      _clearMechanicsCache();
       return { success: true };
     }
   }
   sheet.appendRow([bikeNumber, 'Em Manutenção', new Date(), mechanicName, '', '', '']);
-  _clearMechanicsCache();
   return { success: true };
 }
 
@@ -2755,12 +2766,10 @@ function markAsNotFound(bikeNumber, mechanicName) {
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Não encontrada');
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
-      _clearMechanicsCache();
       return { success: true };
     }
   }
   sheet.appendRow([bikeNumber, 'Não encontrada', new Date(), mechanicName, '', '', '']);
-  _clearMechanicsCache();
   return { success: true };
 }
 
@@ -2792,11 +2801,9 @@ function deleteMechanicsBike(bikeNumber) {
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Em Manutenção');
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.CARRETINHA).setValue('');
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
-        _clearMechanicsCache();
         return { success: true, movedToMaintenance: true };
       }
       sheet.deleteRow(i + 1);
-      _clearMechanicsCache();
       return { success: true };
     }
   }
@@ -2816,12 +2823,10 @@ function sendToTechnical(bikeNumber, mechanicName) {
       if (rowPat === pStr && rowStatus !== 'Remanejada') {
         sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Aguardando Técnica');
         sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName || '');
-        _clearMechanicsCache();
         return { success: true };
       }
     }
     sheet.appendRow([bikeNumber, 'Aguardando Técnica', new Date(), mechanicName || '', '', '', '']);
-    _clearMechanicsCache();
     return { success: true };
   } catch (e) { return { success: false, error: e.message }; }
 }
@@ -2874,12 +2879,10 @@ function confirmTechnicaReceipt(bikeNumber, technicianName) {
       if (rowPat === pStr && rowStatus === 'Aguardando Técnica') {
         sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Em Técnica');
         if (technicianName) sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(technicianName);
-        _clearMechanicsCache();
         return { success: true };
       }
     }
     sheet.appendRow([bikeNumber, 'Em Técnica', new Date(), technicianName || '', '', '', '']);
-    _clearMechanicsCache();
     return { success: true };
   } catch (e) { return { success: false, error: e.message }; }
 }
@@ -2901,7 +2904,6 @@ function finalizeTechnicaRepair(bikeNumber, technicianName, treatment, originalM
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mecanicoOriginal);
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue('Retorno da Técnica: ' + treatment + (technicianName ? ' [' + technicianName + ']' : ''));
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue('');
-        _clearMechanicsCache();
         return { success: true, originalMechanic: mecanicoOriginal };
       }
     }
@@ -2925,7 +2927,6 @@ function removeFromTrailer(bikeNumber, targetStatus) {
           sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue(targetStatus);
           sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
         }
-        _clearMechanicsCache();
         return { success: true, status: targetStatus || (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim(), mecanico: (data[i][COLUMN_INDICES.MECHANICS.MECANICO - 1] || '').toString().trim() };
       }
     }
@@ -2952,21 +2953,14 @@ function clearAlterarStatus(bikes) {
         }
       } else {
         let alreadyExists = false;
-        for (let i = data.length - 1; i >= 1; i--) {
+        for (let i = 1; i < data.length; i++) {
           const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
           const rowStatus = String(data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
-          if (rowPat === pat && rowStatus !== 'Remanejada') { 
-            sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada'); 
-            sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(now);
-            alreadyExists = true; 
-            cleared++; 
-            break; 
-          }
+          if (rowPat === pat && rowStatus !== 'Remanejada') { sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada'); alreadyExists = true; cleared++; break; }
         }
         if (!alreadyExists) { sheet.appendRow([item.patrimonio, 'Remanejada', now, '', 'LIMPAR_LISTA', now, '']); cleared++; }
       }
     });
-    _clearMechanicsCache();
     return { success: true, cleared };
   } catch (e) { return { success: false, error: 'Erro ao limpar lista: ' + e.message }; }
 }
@@ -2989,7 +2983,6 @@ function finalizeMechanicsRepair(bikeNumber, mechanicName, treatment) {
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue(treatment);
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(new Date());
-      _clearMechanicsCache();
       return { success: true };
     }
   }
@@ -3016,7 +3009,6 @@ function markAsVandalizedNoRecovery(bikeNumber, mechanicName, room, reasons) {
     }
   }
   if (!found) return { success: false, error: 'Bicicleta não encontrada na planilha mecânica.' };
-  _clearMechanicsCache();
   return { success: true };
 }
 
@@ -3038,7 +3030,6 @@ function organizeTrailer(bikeNumbers, trailerName) {
       count++;
     }
   }
-  _clearMechanicsCache();
   return { success: true, message: `${count} bikes organizadas na carretinha ${trailerName}.` };
 }
 
@@ -3061,7 +3052,6 @@ function finalizeTrailer(trailerName) {
       count++;
     }
   }
-  _clearMechanicsCache();
   return { success: true, message: `${count} bikes finalizadas da carretinha ${trailerName}.` };
 }
 
