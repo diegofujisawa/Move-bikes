@@ -900,10 +900,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Listener de posições dos motoristas em tempo real (ADM)
     let unsubLocations = () => {};
     if (isAdm) {
-      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      // Reduziu janela de 2h → 45min para diminuir leituras do listener locations
+      // Motoristas inativos por >45min são considerados offline de qualquer forma
+      const fortyFiveMinAgo = new Date(Date.now() - 45 * 60 * 1000);
       const qLocs = query(
         collection(db, 'locations'),
-        where('timestamp', '>=', Timestamp.fromDate(twoHoursAgo))
+        where('timestamp', '>=', Timestamp.fromDate(fortyFiveMinAgo))
       );
       unsubLocations = onSnapshot(qLocs, snapshot => {
         const firebaseLocations: any[] = [];
@@ -965,35 +967,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
       });
     }
 
-    // Listener de Relatórios em Tempo Real para Contadores do Resumo
-    // Atualiza os contadores de Recolhidas, Remanejadas e Não Encontradas instantaneamente
-    // Otimização: para ADM, desabilitamos o listener em tempo real de TODOS os reports
-    // pois consome muitas leituras (50k/dia fácil). O ADM usa os dados do Sheets Sync (15s).
-    // Mantemos o listener apenas para o próprio motorista ver seus dados instantâneos.
+    // Listener de reports DESABILITADO — economia de leituras Firestore
+    // Stats do motorista vêm do Sheets via sync a cada 12s (suficiente)
+    // O listener disparava a cada finalização e lia todos os docs do dia na carga inicial
     let unsubReports = () => {};
-    if (!isAdm) {
-      const qReports = query(
-        collection(db, 'reports'),
-        where('motorista', '==', driverName),
-        where('timestamp', '>=', startOfDayTs),
-        limit(100) // Segurança extra
-      );
-
-      unsubReports = onSnapshot(qReports, (snapshot) => {
-        const newStats: Record<string, any> = {};
-        snapshot.forEach(doc => {
-          const data = doc.data();
-          const m = data.motorista;
-          if (!m) return;
-          if (!newStats[m]) newStats[m] = { recolhidas: 0, remanejada: 0, naoEncontrada: 0 };
-          
-          if (data.status === 'Filial') newStats[m].recolhidas++;
-          else if (data.status === 'Estação' || data.status === 'Em Estação') newStats[m].remanejada++;
-          else if (data.status === 'Não encontrada') newStats[m].naoEncontrada++;
-        });
-        setFirebaseDriverStats(newStats);
-      }, err => console.warn('Listener reports stats:', err));
-    }
+    // if (!isAdm) { ... } — removido para preservar quota gratuita
 
     return () => { unsubRequests(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); unsubReports(); };
   }, [driverName, isAdm, timelineDate, getStartOfDayTs]);
@@ -1006,7 +984,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     
     let unsubBikes = () => {};
     try {
-      const bikesToListen = routeBikes.slice(0, 30); // Limite do Firestore 'in'
+      const bikesToListen = routeBikes.slice(0, 10); // Reduzido de 30→10 para economizar leituras
       const qBikes = query(collection(db, 'bikes'), where('__name__', 'in', bikesToListen));
       unsubBikes = onSnapshot(qBikes, (snapshot) => {
         snapshot.docChanges().forEach(change => {
@@ -4403,8 +4381,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       const movedFirebase = getDistanceInMeters(latitude, longitude, lastFirebaseLat, lastFirebaseLng);
       const elapsedFirebase = now - lastFirebaseTime;
       
-      // Atualiza Firebase se: forçado OU moveu > 2 metros OU passou 10 segundos
-      if (force || movedFirebase > 2 || elapsedFirebase > 10000) {
+      // Atualiza Firebase se: forçado OU moveu > 25 metros OU passou 30 segundos
+      // Reduzido de 2m/10s para 25m/30s — economiza ~90% das leituras do listener de locations
+      if (force || movedFirebase > 25 || elapsedFirebase > 30000) {
         lastFirebaseLat = latitude;
         lastFirebaseLng = longitude;
         lastFirebaseTime = now;

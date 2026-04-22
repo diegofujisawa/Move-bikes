@@ -18,7 +18,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.11-requests-filter-fix';
+const BACKEND_VERSION = '85.12-sync-requests-nocache';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -468,6 +468,11 @@ function handleSync(request) {
   if (cached) {
     try {
       const parsed = JSON.parse(cached);
+      // requests sempre fresco — nunca serve do cache de 45s do handleSync.
+      // Evita que notificações novas fiquem invisíveis por até 45s.
+      const freshReqs = getRequests(driverName, category);
+      parsed.data = parsed.data || {};
+      parsed.data.requests = freshReqs.success ? (freshReqs.data || []) : [];
       parsed.cached = true;
       return parsed;
     } catch (e) {}
@@ -543,7 +548,13 @@ function handleSync(request) {
       response.data.mechanicsList = getMechanicsList().data || [];
     }
 
-    try { cache.put(cacheKey, JSON.stringify(response), 45); } catch (e) {}
+    try {
+      // Não cacheia requests — tem cache próprio de 10s e precisa ser fresh
+      // para garantir sincronia entre contador (pendingCounts) e lista de notificações
+      const toCache = JSON.parse(JSON.stringify(response));
+      delete toCache.data.requests;
+      cache.put(cacheKey, JSON.stringify(toCache), 45);
+    } catch (e) {}
 
     return response;
   } catch (e) {
