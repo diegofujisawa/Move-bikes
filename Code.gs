@@ -18,7 +18,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.10-mechanics-cache-fix';
+const BACKEND_VERSION = '85.11-requests-filter-fix';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -991,15 +991,21 @@ function getRequests(driverName, category, providedSheet) {
     const catNorm = normalizeCategory(category);
     const isMotorista = catNorm.includes('MOTORISTA');
     const userNameLower = (driverName || '').toLowerCase();
+    const userNameNorm = normDriver(driverName); // normalizado para comparação robusta
     requests = data.map((row, index) => {
       const patrimonio = row[COLUMN_INDICES.REQUESTS.PATRIMONIO - 1] || '';
       const status = (row[COLUMN_INDICES.REQUESTS.SITUACAO - 1] || STATUS.PENDENTE).trim().toLowerCase();
       const recipient = (row[COLUMN_INDICES.REQUESTS.DESTINATARIO - 1] || 'Todos').toString().trim().toLowerCase();
       const declinedBy = (row[COLUMN_INDICES.REQUESTS.RECUSADA_POR - 1] || '').toString().split(',').map(s => s.trim().toLowerCase());
       const isPending = status === 'pendente';
-      const isForMe = recipient === userNameLower;
-      const isForAllDrivers = recipient === 'todos' && isMotorista;
-      if (patrimonio && isPending && !declinedBy.includes(userNameLower) && (isForMe || isForAllDrivers)) {
+      // isForMe: compara com normDriver para tolerar "Andre" vs "ANDRE" vs "André"
+      const isForMe = normDriver(recipient) === userNameNorm;
+      // isForAllDrivers: alinhado com pendingCounts — aceita 'todos' para qualquer categoria
+      const isForAllDrivers = recipient === 'todos';
+      // declinedBy também deve usar normDriver para comparação robusta
+      const declinedByNorm = (row[COLUMN_INDICES.REQUESTS.RECUSADA_POR - 1] || '').toString()
+        .split(',').map(s => normDriver(s.trim()));
+      if (patrimonio && isPending && !declinedByNorm.includes(userNameNorm) && (isForMe || isForAllDrivers)) {
         return {
           id: index + 2, timestamp: row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1],
           bikeNumber: patrimonio, reason: row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1],
@@ -2114,7 +2120,10 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
         const declined  = (row[COLUMN_INDICES.REQUESTS.RECUSADA_POR - 1] || '').toString().split(',').map(s => s.trim().toLowerCase());
         if (status === 'pendente') {
           drivers.forEach(d => {
-            if ((recipient === 'todos' || recipient === d.toLowerCase()) && !declined.includes(d.toLowerCase())) pendingCounts[d]++;
+            const dNorm = normDriver(d);
+            const recipientNorm = normDriver(recipient);
+            const declinedNorm = declined.map(s => normDriver(s));
+            if ((recipient === 'todos' || recipientNorm === dNorm) && !declinedNorm.includes(dNorm)) pendingCounts[d]++;
           });
         }
       });
