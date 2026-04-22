@@ -300,8 +300,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [bikeSearchResult, setBikeSearchResult] = useState<any[]>([]);
   const [isBikeSearchLoading, setIsBikeSearchLoading] = useState(false);
   const [alerts, setAlerts] = useState<any[]>([]);
-  const [alertsVersion, setAlertsVersion] = useState<string>('');
-  const [isAlertsLoading, setIsAlertsLoading] = useState(false);
   const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
   const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
   const [statusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
@@ -2515,6 +2513,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
   const handleMarkAsNotFound = async (bikeId: string) => {
     setIsLoading(true);
+    markDriverAction();
+    protectMechanicBike(bikeId, 'Remanejada'); // Use Remanejada para sumir da lista imediatamente
     // Optimistic: remove from list immediately
     setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikeId));
     try {
@@ -3704,12 +3704,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
   const fetchAlerts = useCallback(async (forceScan = false) => {
     if (!category.includes('ADM')) return;
-    setIsAlertsLoading(true);
     try {
       const r = await apiGetCall('getAlerts', forceScan ? { forceScan: 'true' } : {});
       if (r.success) {
-        console.log(`Alertas carregados: ${r.data?.length || 0} itens (v${r.version || '?'})`, r.info || '');
-        setAlertsVersion(r.version || '');
+        console.log(`Alertas carregados: ${r.data?.length || 0} itens`, r.info || '');
         const mapped = (r.data || []).map((a: any) => ({
           ...a,
           patrimonio: a.patrimonio || a.id || a.bikeNumber
@@ -3721,8 +3719,6 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       }
     } catch (err: any) {
       setError('Erro de conexão ao buscar alertas: ' + err.message);
-    } finally {
-      setIsAlertsLoading(false);
     }
   }, [category]);
 
@@ -3818,7 +3814,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     if (!force && (document.visibilityState === 'hidden' || isUpdatingStateRef.current)) return;
 
     setIsSyncing(true);
-    if (isAdm) { setIsSummaryLoading(true); setIsAlertsLoading(true); setIsVandalizedLoading(true); }
+    if (isAdm) { setIsSummaryLoading(true); setIsVandalizedLoading(true); }
 
     const applyData = (d: any) => {
       if (d.requests) {
@@ -3963,8 +3959,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
       if (isAdm) {
         if (d.alerts) {
-          console.log(`Sync Alertas: ${d.alerts.length} itens (v${d.alertsVersion})`);
-          setAlertsVersion(d.alertsVersion || '');
+          console.log(`Sync Alertas: ${d.alerts.length} itens`);
           setAlerts((d.alerts || []).map((a: any) => ({
             ...a,
             patrimonio: a.patrimonio || a.id || a.bikeNumber
@@ -4001,7 +3996,6 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             summaryTimeRange,
             statusTimeRange,
             timelineDate,
-            alertsVersion, // ✅ Passa versão atual para o backend pular getAlerts se nada mudou
           }, 3, true)
         ];
 
@@ -4092,9 +4086,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
     } finally {
       setIsSyncing(false);
-      if (isAdm) { setIsSummaryLoading(false); setIsAlertsLoading(false); setIsVandalizedLoading(false); }
+      if (isAdm) { setIsSummaryLoading(false); setIsVandalizedLoading(false); }
     }
-  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate, alertsVersion]);
+  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate]);
 
   // Busca baterias em tempo real para bikes na mecânica conforme o Firebase atualiza a lista
   useEffect(() => {
@@ -5112,6 +5106,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                     onClick={async () => {
                       setIsLimparListaConfirmOpen(false);
                       setIsLoading(true);
+                      markDriverAction();
                       setError(null);
                       try {
                         const r = await apiCall({
@@ -5119,6 +5114,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           bikes: bikesToClear.map(b => ({ patrimonio: b.patrimonio, row: b.row }))
                         }, 1, false);
                         if (r.success) {
+                          // Aplica proteção otimista para todas as bikes limpas
+                          bikesToClear.forEach(b => protectMechanicBike(b.patrimonio, 'Remanejada'));
                           setMechanicsList(prev => prev.filter(b => b.status !== 'Alterar Status' && b.status !== 'Não encontrada'));
                           setSuccessMessage(`${r.cleared} bike(s) removidas da lista.`);
                         } else {
@@ -6443,11 +6440,12 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                             const clusters: Array<{type: string, tsMs: number, bikes: string[], count: number, observacoes: string[], isOccurrence: boolean}> = [];
                             events.forEach(ev => {
                               const last = clusters[clusters.length - 1];
+                              const isEventOcc = !!(ev as any).isOccurrence || (driver.occurrenceBikes || []).some((b: any) => String(b) === String(ev.bikeNumber || ''));
                               if (last && last.type === ev.type && Math.abs(ev.tsMs - last.tsMs) < CLUSTER_MS) {
                                 last.count++;
                                 if (ev.bikeNumber && !last.bikes.includes(ev.bikeNumber)) last.bikes.push(ev.bikeNumber);
                                 if (ev.observacao && !last.observacoes.includes(ev.observacao)) last.observacoes.push(ev.observacao);
-                                if (!!(ev as any).isOccurrence && (ev.type === 'em_posse' || ev.type === 'nao_encontrada')) last.isOccurrence = true;
+                                if (isEventOcc) last.isOccurrence = true;
                                 last.tsMs = Math.round((last.tsMs * (last.count - 1) + ev.tsMs) / last.count);
                               } else {
                                 clusters.push({
@@ -6456,7 +6454,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                   bikes: ev.bikeNumber ? [ev.bikeNumber] : [],
                                   observacoes: ev.observacao ? [ev.observacao] : [],
                                   count: 1,
-                                  isOccurrence: !!(ev as any).isOccurrence && (ev.type === 'em_posse' || ev.type === 'nao_encontrada')
+                                  isOccurrence: isEventOcc
                                 });
                               }
                             });
@@ -6494,8 +6492,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                         title={`${cl.isOccurrence ? '[OCORRÊNCIA] ' : ''}${(cl.type === 'carretinha' || cl.type === 'removida_por_adm') && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}${cl.type === 'em_posse' && cl.bikes.length > 0 ? ` Bike ${cl.bikes.join(', ')}` : isMulti ? ` (${cl.count} bikes)` : ''} — ${fmtTime(cl.tsMs)}`}
                                       >
                                         {cl.isOccurrence && (
-                                          <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 flex flex-col items-center animate-pulse">
-                                            <span className={`text-[12px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
+                                          <div className="absolute -top-7 left-1/2 -translate-x-1/2 flex flex-col items-center">
+                                            <span className="text-[7px] font-black bg-white/90 px-1 rounded border border-gray-200 text-gray-700 whitespace-nowrap mb-0.5 shadow-xs">
+                                              {cl.bikes[0]}
+                                            </span>
+                                            <div className="animate-pulse">
+                                              <span className={`text-[12px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
+                                            </div>
                                           </div>
                                         )}
                                         <div className={`rounded-full border-2 shadow-sm flex items-center justify-center ${isMulti ? 'w-4 h-4' : 'w-2.5 h-2.5'} ${cfg.bg} ${cl.isOccurrence ? (cl.type === 'nao_encontrada' ? 'border-red-500 ring-2 ring-red-400/50' : 'border-yellow-400 ring-2 ring-yellow-400/50') : 'border-white'}`}>
@@ -6555,7 +6558,17 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           <div className="mb-2">
                             <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Bikes em Posse ({driver.realTime?.collected?.length || 0})</p>
                             {driver.realTime?.collected && driver.realTime.collected.length > 0
-                              ? <div className="flex flex-wrap gap-1">{driver.realTime.collected.map((b: string) => <span key={b} className="px-1.5 py-0.5 bg-gray-50 text-gray-700 rounded text-[10px] font-mono border border-gray-200">{b}</span>)}</div>
+                              ? <div className="flex flex-wrap gap-1">{driver.realTime.collected.map((b: string) => {
+                                  const isOcc = !!collectedBikesDetails[b]?.ocorrencia || (driver.timeline || []).some((e: any) => e.bikeNumber === b && e.isOccurrence) || (driver.occurrenceBikes || []).some((occB: any) => String(occB) === String(b));
+                                  return (
+                                    <span key={b} className={`px-1.5 py-0.5 rounded text-[10px] font-mono border flex items-center gap-1 ${
+                                      isOcc ? 'bg-yellow-50 border-yellow-200 text-yellow-700 font-bold' : 'bg-gray-50 border-gray-200 text-gray-700'
+                                    }`}>
+                                      {isOcc && <span className="text-[10px]">★</span>}
+                                      {b}
+                                    </span>
+                                  );
+                                })}</div>
                               : <p className="text-[9px] text-gray-400 italic">Nenhuma bike recolhida</p>}
                           </div>
                           <div>
@@ -6577,11 +6590,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                     Bikes em Alerta
                     <button 
                       onClick={(e) => { e.stopPropagation(); fetchAlerts(true); }}
-                      disabled={isAlertsLoading}
-                      className="p-1 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50"
+                      className="p-1 hover:bg-gray-100 rounded-full transition-colors"
                       title="Atualizar Alertas"
                     >
-                      <svg viewBox="0 0 24 24" className={`w-3 h-3 ${isAlertsLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.85.83 6.72 2.24L21 8"/>
                         <path d="M21 3v5h-5"/>
                       </svg>
@@ -6642,18 +6654,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                             </td>
                           </tr>
                         )) : (
-                          <tr><td colSpan={5} className="p-4 text-center text-gray-400 text-xs italic">{isAlertsLoading ? 'Buscando alertas...' : 'Nenhuma bike em alerta no momento.'}</td></tr>
+                          <tr><td colSpan={5} className="p-4 text-center text-gray-400 text-xs italic">Nenhuma bike em alerta no momento.</td></tr>
                         )}
                       </tbody>
-                      {alertsVersion && (
-                        <tfoot>
-                          <tr className="bg-gray-50 border-t">
-                            <td colSpan={5} className="p-1 text-[8px] text-gray-400 text-right italic pr-2">
-                              Backend: {alertsVersion}
-                            </td>
-                          </tr>
-                        </tfoot>
-                      )}
                     </table>
                   </div>
                 </div>
@@ -7710,8 +7713,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                   return (
                     <div key={ci} className="absolute -translate-x-1/2 flex flex-col items-center" style={{left: `${pos}%`, top: 0}}>
                       {cl.isOccurrence && (
-                        <div className="absolute -top-4 left-1/2 -translate-x-1/2 flex flex-col items-center animate-pulse">
-                          <span className={`text-[14px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
+                        <div className="absolute -top-8 left-1/2 -translate-x-1/2 flex flex-col items-center">
+                          <span className="text-[10px] font-black bg-white px-1.5 py-0.5 rounded border border-gray-200 text-gray-800 whitespace-nowrap mb-1 shadow-sm">
+                            {cl.bikes.join(', ')}
+                          </span>
+                          <div className="animate-pulse">
+                            <span className={`text-[14px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
+                          </div>
                         </div>
                       )}
                       <div className={`rounded-full border-2 shadow flex items-center justify-center ${isMulti ? 'w-6 h-6' : 'w-4 h-4'} ${cfg.bg} ${cl.isOccurrence ? (cl.type === 'nao_encontrada' ? 'border-red-500 ring-2 ring-red-400/50' : 'border-yellow-400 ring-2 ring-yellow-400/50') : 'border-white'} mt-3`}>
@@ -7733,6 +7741,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                       <div className={`w-2.5 h-2.5 rounded-full mt-1 flex-shrink-0 ${cfg.bg}`}/>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
+                          {cl.isOccurrence && <span className={`text-xs drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>}
                           <span className="text-xs font-black text-gray-700">
                             {(cl.type === 'carretinha' || cl.type === 'removida_por_adm') && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}
                           </span>
