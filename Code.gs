@@ -18,7 +18,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.12-sync-requests-nocache';
+const BACKEND_VERSION = '85.8-analytical-finalstatus';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -468,11 +468,6 @@ function handleSync(request) {
   if (cached) {
     try {
       const parsed = JSON.parse(cached);
-      // requests sempre fresco — nunca serve do cache de 45s do handleSync.
-      // Evita que notificações novas fiquem invisíveis por até 45s.
-      const freshReqs = getRequests(driverName, category);
-      parsed.data = parsed.data || {};
-      parsed.data.requests = freshReqs.success ? (freshReqs.data || []) : [];
       parsed.cached = true;
       return parsed;
     } catch (e) {}
@@ -548,13 +543,7 @@ function handleSync(request) {
       response.data.mechanicsList = getMechanicsList().data || [];
     }
 
-    try {
-      // Não cacheia requests — tem cache próprio de 10s e precisa ser fresh
-      // para garantir sincronia entre contador (pendingCounts) e lista de notificações
-      const toCache = JSON.parse(JSON.stringify(response));
-      delete toCache.data.requests;
-      cache.put(cacheKey, JSON.stringify(toCache), 45);
-    } catch (e) {}
+    try { cache.put(cacheKey, JSON.stringify(response), 45); } catch (e) {}
 
     return response;
   } catch (e) {
@@ -1002,21 +991,15 @@ function getRequests(driverName, category, providedSheet) {
     const catNorm = normalizeCategory(category);
     const isMotorista = catNorm.includes('MOTORISTA');
     const userNameLower = (driverName || '').toLowerCase();
-    const userNameNorm = normDriver(driverName); // normalizado para comparação robusta
     requests = data.map((row, index) => {
       const patrimonio = row[COLUMN_INDICES.REQUESTS.PATRIMONIO - 1] || '';
       const status = (row[COLUMN_INDICES.REQUESTS.SITUACAO - 1] || STATUS.PENDENTE).trim().toLowerCase();
       const recipient = (row[COLUMN_INDICES.REQUESTS.DESTINATARIO - 1] || 'Todos').toString().trim().toLowerCase();
       const declinedBy = (row[COLUMN_INDICES.REQUESTS.RECUSADA_POR - 1] || '').toString().split(',').map(s => s.trim().toLowerCase());
       const isPending = status === 'pendente';
-      // isForMe: compara com normDriver para tolerar "Andre" vs "ANDRE" vs "André"
-      const isForMe = normDriver(recipient) === userNameNorm;
-      // isForAllDrivers: alinhado com pendingCounts — aceita 'todos' para qualquer categoria
-      const isForAllDrivers = recipient === 'todos';
-      // declinedBy também deve usar normDriver para comparação robusta
-      const declinedByNorm = (row[COLUMN_INDICES.REQUESTS.RECUSADA_POR - 1] || '').toString()
-        .split(',').map(s => normDriver(s.trim()));
-      if (patrimonio && isPending && !declinedByNorm.includes(userNameNorm) && (isForMe || isForAllDrivers)) {
+      const isForMe = recipient === userNameLower;
+      const isForAllDrivers = recipient === 'todos' && isMotorista;
+      if (patrimonio && isPending && !declinedBy.includes(userNameLower) && (isForMe || isForAllDrivers)) {
         return {
           id: index + 2, timestamp: row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1],
           bikeNumber: patrimonio, reason: row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1],
@@ -1233,28 +1216,6 @@ function getMotoristas(providedData) {
 function normalizeName(name) {
   if (!name) return '';
   return String(name).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-}
-
-// =================================================================
-// --- HELPERS GLOBAIS DE NORMALIZAÇÃO ---
-// Definidos no escopo global para uso em getDriversSummary,
-// getAnalyticalDashboardData e qualquer outra função.
-// =================================================================
-
-/**
- * Normaliza patrimônio: converte "00476" → "476", "476" → "476"
- */
-function normPat(p) {
-  return String(parseFloat(p) || String(p).trim());
-}
-
-/**
- * Normaliza nome de motorista: lowercase + sem acentos + trim
- * "ANDRE", "André", "Andre" → "andre"
- */
-function normDriver(d) {
-  return (d || '').toString().trim().toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
 function getDriverState(driverName, providedSheet) {
@@ -2131,10 +2092,7 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
         const declined  = (row[COLUMN_INDICES.REQUESTS.RECUSADA_POR - 1] || '').toString().split(',').map(s => s.trim().toLowerCase());
         if (status === 'pendente') {
           drivers.forEach(d => {
-            const dNorm = normDriver(d);
-            const recipientNorm = normDriver(recipient);
-            const declinedNorm = declined.map(s => normDriver(s));
-            if ((recipient === 'todos' || recipientNorm === dNorm) && !declinedNorm.includes(dNorm)) pendingCounts[d]++;
+            if ((recipient === 'todos' || recipient === d.toLowerCase()) && !declined.includes(d.toLowerCase())) pendingCounts[d]++;
           });
         }
       });
@@ -2263,6 +2221,12 @@ function getAnalyticalDashboardData(timeRange) {
     // Índice de finalizadores: Map<"motorista_lower|patnorm", [{tsMs, tipo}]>
     // tipo: 'sucesso' | 'sem_sucesso'
     const finalizMap = {};
+
+    const normPat = p => String(parseFloat(p) || String(p).trim());
+    // Normaliza nome do driver: lowercase + remove acentos + trim
+    // Garante que "ANDRE", "André", "Andre" todos viram "andre"
+    const normDriver = d => (d || '').toString().trim().toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
     for (let i = 0; i < reportData.length; i++) {
       const row    = reportData[i];
@@ -2659,7 +2623,7 @@ function getMechanicsList() {
           const isExit = EXIT_STATUSES.some(s => last.status.includes(s));
           if (last && isExit && last.tsMs > reportEntries[pat].tsMs) delete reportEntries[pat];
         });
-        cache.put(reportCacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 60);
+        cache.put(reportCacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 300);
       }
     } catch (e) { console.error('getMechanicsList - erro ao ler relatório:', e); }
   }
@@ -2981,7 +2945,6 @@ function clearAlterarStatus(bikes) {
         if (!alreadyExists) { sheet.appendRow([item.patrimonio, 'Remanejada', now, '', 'LIMPAR_LISTA', now, '']); cleared++; }
       }
     });
-    _clearMechanicsCache();
     return { success: true, cleared };
   } catch (e) { return { success: false, error: 'Erro ao limpar lista: ' + e.message }; }
 }

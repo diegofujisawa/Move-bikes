@@ -300,6 +300,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [bikeSearchResult, setBikeSearchResult] = useState<any[]>([]);
   const [isBikeSearchLoading, setIsBikeSearchLoading] = useState(false);
   const [alerts, setAlerts] = useState<any[]>([]);
+  const [alertsVersion, setAlertsVersion] = useState<string>('');
+  const [isAlertsLoading, setIsAlertsLoading] = useState(false);
   const [vandalizedBikes, setVandalizedBikes] = useState<any[]>([]);
   const [isVandalizedLoading, setIsVandalizedLoading] = useState(false);
   const [statusTimeRange] = useState<'24h' | '48h' | '72h' | 'week'>('24h');
@@ -900,12 +902,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Listener de posições dos motoristas em tempo real (ADM)
     let unsubLocations = () => {};
     if (isAdm) {
-      // Reduziu janela de 2h → 45min para diminuir leituras do listener locations
-      // Motoristas inativos por >45min são considerados offline de qualquer forma
-      const fortyFiveMinAgo = new Date(Date.now() - 45 * 60 * 1000);
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
       const qLocs = query(
         collection(db, 'locations'),
-        where('timestamp', '>=', Timestamp.fromDate(fortyFiveMinAgo))
+        where('timestamp', '>=', Timestamp.fromDate(twoHoursAgo))
       );
       unsubLocations = onSnapshot(qLocs, snapshot => {
         const firebaseLocations: any[] = [];
@@ -943,7 +943,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsPendingActionsLoading(true);
       const qPending = query(
         collection(db, 'pending_actions'), 
-        where('status', 'in', ['pending', 'activated']),
+        where('status', '==', 'pending'),
         where('timestamp', '>=', startOfDayTs),
         limit(50) // Otimização: evita ler centenas de ações passadas
       );
@@ -951,7 +951,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         const actions: any[] = [];
         snapshot.forEach(d => {
           const data = d.data();
-          if (data.status === 'pending' || data.status === 'activated') {
+          if (data.status === 'pending') {
             actions.push({ id: d.id, ...data });
           }
         });
@@ -967,11 +967,35 @@ const MainScreen: React.FC<MainScreenProps> = ({
       });
     }
 
-    // Listener de reports DESABILITADO — economia de leituras Firestore
-    // Stats do motorista vêm do Sheets via sync a cada 12s (suficiente)
-    // O listener disparava a cada finalização e lia todos os docs do dia na carga inicial
+    // Listener de Relatórios em Tempo Real para Contadores do Resumo
+    // Atualiza os contadores de Recolhidas, Remanejadas e Não Encontradas instantaneamente
+    // Otimização: para ADM, desabilitamos o listener em tempo real de TODOS os reports
+    // pois consome muitas leituras (50k/dia fácil). O ADM usa os dados do Sheets Sync (15s).
+    // Mantemos o listener apenas para o próprio motorista ver seus dados instantâneos.
     let unsubReports = () => {};
-    // if (!isAdm) { ... } — removido para preservar quota gratuita
+    if (!isAdm) {
+      const qReports = query(
+        collection(db, 'reports'),
+        where('motorista', '==', driverName),
+        where('timestamp', '>=', startOfDayTs),
+        limit(100) // Segurança extra
+      );
+
+      unsubReports = onSnapshot(qReports, (snapshot) => {
+        const newStats: Record<string, any> = {};
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          const m = data.motorista;
+          if (!m) return;
+          if (!newStats[m]) newStats[m] = { recolhidas: 0, remanejada: 0, naoEncontrada: 0 };
+          
+          if (data.status === 'Filial') newStats[m].recolhidas++;
+          else if (data.status === 'Estação' || data.status === 'Em Estação') newStats[m].remanejada++;
+          else if (data.status === 'Não encontrada') newStats[m].naoEncontrada++;
+        });
+        setFirebaseDriverStats(newStats);
+      }, err => console.warn('Listener reports stats:', err));
+    }
 
     return () => { unsubRequests(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); unsubReports(); };
   }, [driverName, isAdm, timelineDate, getStartOfDayTs]);
@@ -984,7 +1008,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     
     let unsubBikes = () => {};
     try {
-      const bikesToListen = routeBikes.slice(0, 10); // Reduzido de 30→10 para economizar leituras
+      const bikesToListen = routeBikes.slice(0, 30); // Limite do Firestore 'in'
       const qBikes = query(collection(db, 'bikes'), where('__name__', 'in', bikesToListen));
       unsubBikes = onSnapshot(qBikes, (snapshot) => {
         snapshot.docChanges().forEach(change => {
@@ -2491,8 +2515,6 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
   const handleMarkAsNotFound = async (bikeId: string) => {
     setIsLoading(true);
-    markDriverAction();
-    protectMechanicBike(bikeId, 'Remanejada'); // Use Remanejada para sumir da lista imediatamente
     // Optimistic: remove from list immediately
     setMechanicsList(prev => prev.filter(b => b.patrimonio !== bikeId));
     try {
@@ -3049,8 +3071,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         try {
           await Promise.all(action.bikes.map((id: string) => setDoc(doc(db, 'bikes', id), { 
             carretinha: action.trailerName, 
-            trailerStatus: 'ativado',
-            trailerActivatedBy: driverName,
+            trailerStatus: 'approved',
             ultimaAtualizacao: serverTimestamp() 
           }, { merge: true })));
         } catch (e) {
@@ -3058,13 +3079,12 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         }
 
         const res = await apiCall({ action: 'organizeTrailer', bikeNumbers: action.bikes, trailerName: action.trailerName }, 1, true);
-        if (!res.success) throw new Error(res.error || 'Erro ao ativar carretinha.');
+        if (!res.success) throw new Error(res.error || 'Erro ao aprovar carretinha.');
       }
 
       try {
-        const isTrailer = action.type === 'trailer_validation';
         await updateDoc(doc(db, 'pending_actions', action.id), {
-          status: isTrailer ? 'activated' : 'approved',
+          status: 'approved',
           approvedBy: driverName,
           approvedAt: serverTimestamp()
         });
@@ -3428,8 +3448,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         finalizedBy: driverName,
         timestamp: serverTimestamp(),
         date: localDateStr(),
-        bikeCount: bikeIds.length,
-        bikes: bikeIds
+        bikeCount: bikeIds.length
       }).catch(e => console.warn('[Firebase] trailers_history write:', e.code));
 
       addDoc(collection(db, 'notifications'), {
@@ -3685,10 +3704,12 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
   const fetchAlerts = useCallback(async (forceScan = false) => {
     if (!category.includes('ADM')) return;
+    setIsAlertsLoading(true);
     try {
       const r = await apiGetCall('getAlerts', forceScan ? { forceScan: 'true' } : {});
       if (r.success) {
-        console.log(`Alertas carregados: ${r.data?.length || 0} itens`, r.info || '');
+        console.log(`Alertas carregados: ${r.data?.length || 0} itens (v${r.version || '?'})`, r.info || '');
+        setAlertsVersion(r.version || '');
         const mapped = (r.data || []).map((a: any) => ({
           ...a,
           patrimonio: a.patrimonio || a.id || a.bikeNumber
@@ -3700,6 +3721,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       }
     } catch (err: any) {
       setError('Erro de conexão ao buscar alertas: ' + err.message);
+    } finally {
+      setIsAlertsLoading(false);
     }
   }, [category]);
 
@@ -3795,7 +3818,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     if (!force && (document.visibilityState === 'hidden' || isUpdatingStateRef.current)) return;
 
     setIsSyncing(true);
-    if (isAdm) { setIsSummaryLoading(true); setIsVandalizedLoading(true); }
+    if (isAdm) { setIsSummaryLoading(true); setIsAlertsLoading(true); setIsVandalizedLoading(true); }
 
     const applyData = (d: any) => {
       if (d.requests) {
@@ -3940,7 +3963,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
       if (isAdm) {
         if (d.alerts) {
-          console.log(`Sync Alertas: ${d.alerts.length} itens`);
+          console.log(`Sync Alertas: ${d.alerts.length} itens (v${d.alertsVersion})`);
+          setAlertsVersion(d.alertsVersion || '');
           setAlerts((d.alerts || []).map((a: any) => ({
             ...a,
             patrimonio: a.patrimonio || a.id || a.bikeNumber
@@ -3977,6 +4001,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             summaryTimeRange,
             statusTimeRange,
             timelineDate,
+            alertsVersion, // ✅ Passa versão atual para o backend pular getAlerts se nada mudou
           }, 3, true)
         ];
 
@@ -4067,9 +4092,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       if (cached) { try { applyData(JSON.parse(cached)); } catch {} }
     } finally {
       setIsSyncing(false);
-      if (isAdm) { setIsSummaryLoading(false); setIsVandalizedLoading(false); }
+      if (isAdm) { setIsSummaryLoading(false); setIsAlertsLoading(false); setIsVandalizedLoading(false); }
     }
-  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate]);
+  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate, alertsVersion]);
 
   // Busca baterias em tempo real para bikes na mecânica conforme o Firebase atualiza a lista
   useEffect(() => {
@@ -4381,9 +4406,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       const movedFirebase = getDistanceInMeters(latitude, longitude, lastFirebaseLat, lastFirebaseLng);
       const elapsedFirebase = now - lastFirebaseTime;
       
-      // Atualiza Firebase se: forçado OU moveu > 25 metros OU passou 30 segundos
-      // Reduzido de 2m/10s para 25m/30s — economiza ~90% das leituras do listener de locations
-      if (force || movedFirebase > 25 || elapsedFirebase > 30000) {
+      // Atualiza Firebase se: forçado OU moveu > 2 metros OU passou 10 segundos
+      if (force || movedFirebase > 2 || elapsedFirebase > 10000) {
         lastFirebaseLat = latitude;
         lastFirebaseLng = longitude;
         lastFirebaseTime = now;
@@ -5088,7 +5112,6 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                     onClick={async () => {
                       setIsLimparListaConfirmOpen(false);
                       setIsLoading(true);
-                      markDriverAction();
                       setError(null);
                       try {
                         const r = await apiCall({
@@ -5096,15 +5119,6 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           bikes: bikesToClear.map(b => ({ patrimonio: b.patrimonio, row: b.row }))
                         }, 1, false);
                         if (r.success) {
-                          // Limpa também do Firebase para garantir que não volte no merge
-                          bikesToClear.forEach(async b => {
-                            try {
-                              // Deleta se existir no mechanics_flow
-                              await deleteDoc(doc(db, 'mechanics_flow', String(b.patrimonio)));
-                            } catch (e) {}
-                            protectMechanicBike(b.patrimonio, 'Remanejada');
-                          });
-                          
                           setMechanicsList(prev => prev.filter(b => b.status !== 'Alterar Status' && b.status !== 'Não encontrada'));
                           setSuccessMessage(`${r.cleared} bike(s) removidas da lista.`);
                         } else {
@@ -6119,26 +6133,18 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           </p>
                           <div className="grid grid-cols-1 gap-2">
                             {trailersHistory.map((h) => (
-                              <div key={h.id} className="flex flex-col p-3 bg-white border border-gray-100 rounded-xl shadow-sm hover:shadow-md transition-shadow">
-                                <div className="flex items-center justify-between mb-2">
-                                  <div className="flex flex-col">
-                                    <span className="text-xs font-black text-gray-800 uppercase tracking-tight">{h.trailerName}</span>
-                                    <span className="text-[9px] text-gray-400 font-bold uppercase">
-                                      {h.timestamp?.toDate ? h.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''} • {h.finalizedBy}
-                                    </span>
-                                  </div>
-                                  <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100 uppercase tracking-tighter">
+                              <div key={h.id} className="flex items-center justify-between p-2 bg-gray-50 border border-gray-200 rounded-lg">
+                                <div className="flex flex-col">
+                                  <span className="text-xs font-bold text-gray-700">{h.trailerName}</span>
+                                  <span className="text-[9px] text-gray-400 font-medium">
+                                    {h.timestamp?.toDate ? h.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''} • {h.finalizedBy}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
                                     {h.bikeCount} bikes
                                   </span>
                                 </div>
-                                {h.bikes && h.bikes.length > 0 && (
-                                  <div className="p-2 bg-gray-50 rounded-lg border border-dashed border-gray-200">
-                                    <p className="text-[9px] text-gray-500 font-bold uppercase mb-1">Bikes:</p>
-                                    <p className="text-[10px] font-mono text-gray-600 break-all leading-tight">
-                                      {h.bikes.join(', ')}
-                                    </p>
-                                  </div>
-                                )}
                               </div>
                             ))}
                           </div>
@@ -6437,12 +6443,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                             const clusters: Array<{type: string, tsMs: number, bikes: string[], count: number, observacoes: string[], isOccurrence: boolean}> = [];
                             events.forEach(ev => {
                               const last = clusters[clusters.length - 1];
-                              const isEventOcc = !!(ev as any).isOccurrence || (driver.occurrenceBikes || []).some((b: any) => String(b) === String(ev.bikeNumber || ''));
                               if (last && last.type === ev.type && Math.abs(ev.tsMs - last.tsMs) < CLUSTER_MS) {
                                 last.count++;
                                 if (ev.bikeNumber && !last.bikes.includes(ev.bikeNumber)) last.bikes.push(ev.bikeNumber);
                                 if (ev.observacao && !last.observacoes.includes(ev.observacao)) last.observacoes.push(ev.observacao);
-                                if (isEventOcc) last.isOccurrence = true;
+                                if (!!(ev as any).isOccurrence && (ev.type === 'em_posse' || ev.type === 'nao_encontrada')) last.isOccurrence = true;
                                 last.tsMs = Math.round((last.tsMs * (last.count - 1) + ev.tsMs) / last.count);
                               } else {
                                 clusters.push({
@@ -6451,7 +6456,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                   bikes: ev.bikeNumber ? [ev.bikeNumber] : [],
                                   observacoes: ev.observacao ? [ev.observacao] : [],
                                   count: 1,
-                                  isOccurrence: isEventOcc
+                                  isOccurrence: !!(ev as any).isOccurrence && (ev.type === 'em_posse' || ev.type === 'nao_encontrada')
                                 });
                               }
                             });
@@ -6489,13 +6494,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                         title={`${cl.isOccurrence ? '[OCORRÊNCIA] ' : ''}${(cl.type === 'carretinha' || cl.type === 'removida_por_adm') && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}${cl.type === 'em_posse' && cl.bikes.length > 0 ? ` Bike ${cl.bikes.join(', ')}` : isMulti ? ` (${cl.count} bikes)` : ''} — ${fmtTime(cl.tsMs)}`}
                                       >
                                         {cl.isOccurrence && (
-                                          <div className="absolute -top-7 left-1/2 -translate-x-1/2 flex flex-col items-center">
-                                            <span className="text-[7px] font-black bg-white/90 px-1 rounded border border-gray-200 text-gray-700 whitespace-nowrap mb-0.5 shadow-xs">
-                                              {cl.bikes[0]}
-                                            </span>
-                                            <div className="animate-pulse">
-                                              <span className={`text-[12px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
-                                            </div>
+                                          <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 flex flex-col items-center animate-pulse">
+                                            <span className={`text-[12px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
                                           </div>
                                         )}
                                         <div className={`rounded-full border-2 shadow-sm flex items-center justify-center ${isMulti ? 'w-4 h-4' : 'w-2.5 h-2.5'} ${cfg.bg} ${cl.isOccurrence ? (cl.type === 'nao_encontrada' ? 'border-red-500 ring-2 ring-red-400/50' : 'border-yellow-400 ring-2 ring-yellow-400/50') : 'border-white'}`}>
@@ -6555,17 +6555,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           <div className="mb-2">
                             <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Bikes em Posse ({driver.realTime?.collected?.length || 0})</p>
                             {driver.realTime?.collected && driver.realTime.collected.length > 0
-                              ? <div className="flex flex-wrap gap-1">{driver.realTime.collected.map((b: string) => {
-                                  const isOcc = !!collectedBikesDetails[b]?.ocorrencia || (driver.timeline || []).some((e: any) => e.bikeNumber === b && e.isOccurrence) || (driver.occurrenceBikes || []).some((occB: any) => String(occB) === String(b));
-                                  return (
-                                    <span key={b} className={`px-1.5 py-0.5 rounded text-[10px] font-mono border flex items-center gap-1 ${
-                                      isOcc ? 'bg-yellow-50 border-yellow-200 text-yellow-700 font-bold' : 'bg-gray-50 border-gray-200 text-gray-700'
-                                    }`}>
-                                      {isOcc && <span className="text-[10px]">★</span>}
-                                      {b}
-                                    </span>
-                                  );
-                                })}</div>
+                              ? <div className="flex flex-wrap gap-1">{driver.realTime.collected.map((b: string) => <span key={b} className="px-1.5 py-0.5 bg-gray-50 text-gray-700 rounded text-[10px] font-mono border border-gray-200">{b}</span>)}</div>
                               : <p className="text-[9px] text-gray-400 italic">Nenhuma bike recolhida</p>}
                           </div>
                           <div>
@@ -6587,10 +6577,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                     Bikes em Alerta
                     <button 
                       onClick={(e) => { e.stopPropagation(); fetchAlerts(true); }}
-                      className="p-1 hover:bg-gray-100 rounded-full transition-colors"
+                      disabled={isAlertsLoading}
+                      className="p-1 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50"
                       title="Atualizar Alertas"
                     >
-                      <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <svg viewBox="0 0 24 24" className={`w-3 h-3 ${isAlertsLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.85.83 6.72 2.24L21 8"/>
                         <path d="M21 3v5h-5"/>
                       </svg>
@@ -6651,9 +6642,18 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                             </td>
                           </tr>
                         )) : (
-                          <tr><td colSpan={5} className="p-4 text-center text-gray-400 text-xs italic">Nenhuma bike em alerta no momento.</td></tr>
+                          <tr><td colSpan={5} className="p-4 text-center text-gray-400 text-xs italic">{isAlertsLoading ? 'Buscando alertas...' : 'Nenhuma bike em alerta no momento.'}</td></tr>
                         )}
                       </tbody>
+                      {alertsVersion && (
+                        <tfoot>
+                          <tr className="bg-gray-50 border-t">
+                            <td colSpan={5} className="p-1 text-[8px] text-gray-400 text-right italic pr-2">
+                              Backend: {alertsVersion}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      )}
                     </table>
                   </div>
                 </div>
@@ -6746,7 +6746,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                       setIsDriverSelectionModalOpen(true);
                                     }}
                                     disabled={isLoading}
-                                    className={`p-2 rounded-lg border transition-all ${action.status === 'activated' ? 'bg-blue-600 text-white border-blue-700 animate-pulse' : 'bg-blue-50 text-blue-600 border-blue-100 hover:bg-blue-100'}`}
+                                    className="p-2 bg-blue-50 text-blue-600 rounded-lg border border-blue-100 hover:bg-blue-100 transition-colors"
                                     title="Enviar para Motorista"
                                   >
                                     <TrailerIcon className="w-5 h-5" />
@@ -6754,25 +6754,20 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                 )}
                                 <button
                                   onClick={() => handleApproveAction(action)}
-                                  disabled={isLoading || action.status === 'activated'}
-                                  className={`px-3 py-2 rounded-lg border transition-all flex items-center gap-1 shadow-sm active:scale-95 ${action.status === 'activated' ? 'bg-gray-100 text-gray-400 border-gray-200' : 'bg-green-600 text-white border-green-700 hover:bg-green-700'}`}
-                                  title={action.status === 'activated' ? 'Já Ativado' : 'Ativar Carretinha'}
+                                  disabled={isLoading}
+                                  className="p-2 bg-green-50 text-green-600 rounded-lg border border-green-100 hover:bg-green-100 transition-colors"
+                                  title="Aprovar"
                                 >
-                                  <CheckCircleIcon className="w-4 h-4" />
-                                  <span className="text-[10px] font-black uppercase">
-                                    {action.status === 'activated' ? 'ATIVADO' : 'ATIVAR'}
-                                  </span>
+                                  <CheckCircleIcon className="w-5 h-5" />
                                 </button>
-                                {action.status !== 'activated' && (
-                                  <button
-                                    onClick={() => handleRejectAction(action.id)}
-                                    disabled={isLoading}
-                                    className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
-                                    title="Rejeitar"
-                                  >
-                                    <XIcon className="w-5 h-5" />
-                                  </button>
-                                )}
+                                <button
+                                  onClick={() => handleRejectAction(action.id)}
+                                  disabled={isLoading}
+                                  className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
+                                  title="Rejeitar"
+                                >
+                                  <XIcon className="w-5 h-5" />
+                                </button>
                               </div>
                             )}
                           </div>
@@ -7715,13 +7710,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                   return (
                     <div key={ci} className="absolute -translate-x-1/2 flex flex-col items-center" style={{left: `${pos}%`, top: 0}}>
                       {cl.isOccurrence && (
-                        <div className="absolute -top-8 left-1/2 -translate-x-1/2 flex flex-col items-center">
-                          <span className="text-[10px] font-black bg-white px-1.5 py-0.5 rounded border border-gray-200 text-gray-800 whitespace-nowrap mb-1 shadow-sm">
-                            {cl.bikes.join(', ')}
-                          </span>
-                          <div className="animate-pulse">
-                            <span className={`text-[14px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
-                          </div>
+                        <div className="absolute -top-4 left-1/2 -translate-x-1/2 flex flex-col items-center animate-pulse">
+                          <span className={`text-[14px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
                         </div>
                       )}
                       <div className={`rounded-full border-2 shadow flex items-center justify-center ${isMulti ? 'w-6 h-6' : 'w-4 h-4'} ${cfg.bg} ${cl.isOccurrence ? (cl.type === 'nao_encontrada' ? 'border-red-500 ring-2 ring-red-400/50' : 'border-yellow-400 ring-2 ring-yellow-400/50') : 'border-white'} mt-3`}>
@@ -7743,7 +7733,6 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                       <div className={`w-2.5 h-2.5 rounded-full mt-1 flex-shrink-0 ${cfg.bg}`}/>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          {cl.isOccurrence && <span className={`text-xs drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>}
                           <span className="text-xs font-black text-gray-700">
                             {(cl.type === 'carretinha' || cl.type === 'removida_por_adm') && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}
                           </span>
