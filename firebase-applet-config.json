@@ -1,10 +1,10 @@
 {
-  "projectId": "gen-lang-client-0869602920",
-  "appId": "1:472309142918:web:8c05964abdd8953af08807",
-  "apiKey": "AIzaSyD-oz7Xb3HtLj3S3jYaCFK8M6h6WEgCXu4",
-  "authDomain": "gen-lang-client-0869602920.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-c7eced4b-715b-441c-be34-bb29bbf22b40",
-  "storageBucket": "gen-lang-client-0869602920.firebasestorage.app",
-  "messagingSenderId": "472309142918",
-  "measurementId": ""
+  "apiKey": "AIzaSyBisJ-x_GOhVf1icJ6fRqnQeM89YKpxDS8",
+  "authDomain": "movebikes-fd100.firebaseapp.com",
+  "projectId": "movebikes-fd100",
+  "storageBucket": "movebikes-fd100.firebasestorage.app",
+  "messagingSenderId": "261871425910",
+  "appId": "1:261871425910:web:ddb227c4187a19a4be4257",
+  "measurementId": "G-SLM1BJGY3S",
+  "firestoreDatabaseId": "movebikes"
 }
