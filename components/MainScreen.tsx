@@ -172,11 +172,28 @@ const handleFirestoreError = (error: unknown, operationType: OperationType, path
 
 async function testConnection() {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration. ");
+    const testDoc = doc(db, 'test', 'connection');
+    console.log(`[Firebase] Testando conexão no caminho: ${testDoc.path}`);
+    await getDocFromServer(testDoc);
+    console.log("[Firebase] Conexão Firestore estabelecida com sucesso.");
+  } catch (error: any) {
+    console.error("Firebase Connection Test Failed:", error);
+    
+    const isOffline = error?.message?.includes('the client is offline');
+    const isPermissionDenied = error?.code === 'permission-denied';
+    const isNotFound = error?.code === 'not-found';
+    
+    if (isOffline) {
+      console.error("Erro: O cliente está offline ou a configuração (Project ID/API Key) é inválida.");
+      console.error("Verifique se o Firestore está habilitado no console do Firebase e se o domínio está autorizado.");
+    } else if (isPermissionDenied) {
+      console.warn("Conexão OK, mas acesso negado. Verifique suas Security Rules.");
+    } else {
+      console.error(`Erro de conexão Firebase (${error?.code || 'unknown'}): ${error?.message}`);
     }
+    
+    // Mantém a mensagem original para compatibilidade com o que o usuário viu
+    console.error("Please check your Firebase configuration. ");
   }
 }
 testConnection();

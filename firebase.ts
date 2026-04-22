@@ -20,11 +20,17 @@ const app = initializeApp(firebaseConfig);
 // FIRESTORE com persistência offline — API atualizada para Firebase 12
 // Substitui o depreciado enableIndexedDbPersistence()
 // =================================================================
+const databaseId = (firebaseConfig as any).firestoreDatabaseId && (firebaseConfig as any).firestoreDatabaseId !== 'undefined' 
+  ? (firebaseConfig as any).firestoreDatabaseId 
+  : '(default)';
+
+console.log(`[Firebase] Inicializando Firestore com Database ID: ${databaseId}`);
+
 export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({
     tabManager: persistentMultipleTabManager()
   }),
-}, (firebaseConfig as any).firestoreDatabaseId);
+}, databaseId);
 
 export const auth = getAuth(app);
 
