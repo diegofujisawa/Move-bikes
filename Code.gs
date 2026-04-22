@@ -2952,10 +2952,16 @@ function clearAlterarStatus(bikes) {
         }
       } else {
         let alreadyExists = false;
-        for (let i = 1; i < data.length; i++) {
+        for (let i = data.length - 1; i >= 1; i--) {
           const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
           const rowStatus = String(data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
-          if (rowPat === pat && rowStatus !== 'Remanejada') { sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada'); alreadyExists = true; cleared++; break; }
+          if (rowPat === pat && rowStatus !== 'Remanejada') { 
+            sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada'); 
+            sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(now);
+            alreadyExists = true; 
+            cleared++; 
+            break; 
+          }
         }
         if (!alreadyExists) { sheet.appendRow([item.patrimonio, 'Remanejada', now, '', 'LIMPAR_LISTA', now, '']); cleared++; }
       }

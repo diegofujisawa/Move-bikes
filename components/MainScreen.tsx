@@ -941,7 +941,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsPendingActionsLoading(true);
       const qPending = query(
         collection(db, 'pending_actions'), 
-        where('status', '==', 'pending'),
+        where('status', 'in', ['pending', 'activated']),
         where('timestamp', '>=', startOfDayTs),
         limit(50) // Otimização: evita ler centenas de ações passadas
       );
@@ -949,7 +949,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         const actions: any[] = [];
         snapshot.forEach(d => {
           const data = d.data();
-          if (data.status === 'pending') {
+          if (data.status === 'pending' || data.status === 'activated') {
             actions.push({ id: d.id, ...data });
           }
         });
@@ -3071,7 +3071,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         try {
           await Promise.all(action.bikes.map((id: string) => setDoc(doc(db, 'bikes', id), { 
             carretinha: action.trailerName, 
-            trailerStatus: 'approved',
+            trailerStatus: 'ativado',
+            trailerActivatedBy: driverName,
             ultimaAtualizacao: serverTimestamp() 
           }, { merge: true })));
         } catch (e) {
@@ -3079,12 +3080,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         }
 
         const res = await apiCall({ action: 'organizeTrailer', bikeNumbers: action.bikes, trailerName: action.trailerName }, 1, true);
-        if (!res.success) throw new Error(res.error || 'Erro ao aprovar carretinha.');
+        if (!res.success) throw new Error(res.error || 'Erro ao ativar carretinha.');
       }
 
       try {
+        const isTrailer = action.type === 'trailer_validation';
         await updateDoc(doc(db, 'pending_actions', action.id), {
-          status: 'approved',
+          status: isTrailer ? 'activated' : 'approved',
           approvedBy: driverName,
           approvedAt: serverTimestamp()
         });
@@ -3448,7 +3450,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         finalizedBy: driverName,
         timestamp: serverTimestamp(),
         date: localDateStr(),
-        bikeCount: bikeIds.length
+        bikeCount: bikeIds.length,
+        bikes: bikeIds
       }).catch(e => console.warn('[Firebase] trailers_history write:', e.code));
 
       addDoc(collection(db, 'notifications'), {
@@ -5114,8 +5117,15 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           bikes: bikesToClear.map(b => ({ patrimonio: b.patrimonio, row: b.row }))
                         }, 1, false);
                         if (r.success) {
-                          // Aplica proteção otimista para todas as bikes limpas
-                          bikesToClear.forEach(b => protectMechanicBike(b.patrimonio, 'Remanejada'));
+                          // Limpa também do Firebase para garantir que não volte no merge
+                          bikesToClear.forEach(async b => {
+                            try {
+                              // Deleta se existir no mechanics_flow
+                              await deleteDoc(doc(db, 'mechanics_flow', String(b.patrimonio)));
+                            } catch (e) {}
+                            protectMechanicBike(b.patrimonio, 'Remanejada');
+                          });
+                          
                           setMechanicsList(prev => prev.filter(b => b.status !== 'Alterar Status' && b.status !== 'Não encontrada'));
                           setSuccessMessage(`${r.cleared} bike(s) removidas da lista.`);
                         } else {
@@ -6130,18 +6140,26 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           </p>
                           <div className="grid grid-cols-1 gap-2">
                             {trailersHistory.map((h) => (
-                              <div key={h.id} className="flex items-center justify-between p-2 bg-gray-50 border border-gray-200 rounded-lg">
-                                <div className="flex flex-col">
-                                  <span className="text-xs font-bold text-gray-700">{h.trailerName}</span>
-                                  <span className="text-[9px] text-gray-400 font-medium">
-                                    {h.timestamp?.toDate ? h.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''} • {h.finalizedBy}
-                                  </span>
-                                </div>
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
+                              <div key={h.id} className="flex flex-col p-3 bg-white border border-gray-100 rounded-xl shadow-sm hover:shadow-md transition-shadow">
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="flex flex-col">
+                                    <span className="text-xs font-black text-gray-800 uppercase tracking-tight">{h.trailerName}</span>
+                                    <span className="text-[9px] text-gray-400 font-bold uppercase">
+                                      {h.timestamp?.toDate ? h.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''} • {h.finalizedBy}
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100 uppercase tracking-tighter">
                                     {h.bikeCount} bikes
                                   </span>
                                 </div>
+                                {h.bikes && h.bikes.length > 0 && (
+                                  <div className="p-2 bg-gray-50 rounded-lg border border-dashed border-gray-200">
+                                    <p className="text-[9px] text-gray-500 font-bold uppercase mb-1">Bikes:</p>
+                                    <p className="text-[10px] font-mono text-gray-600 break-all leading-tight">
+                                      {h.bikes.join(', ')}
+                                    </p>
+                                  </div>
+                                )}
                               </div>
                             ))}
                           </div>
@@ -6749,7 +6767,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                       setIsDriverSelectionModalOpen(true);
                                     }}
                                     disabled={isLoading}
-                                    className="p-2 bg-blue-50 text-blue-600 rounded-lg border border-blue-100 hover:bg-blue-100 transition-colors"
+                                    className={`p-2 rounded-lg border transition-all ${action.status === 'activated' ? 'bg-blue-600 text-white border-blue-700 animate-pulse' : 'bg-blue-50 text-blue-600 border-blue-100 hover:bg-blue-100'}`}
                                     title="Enviar para Motorista"
                                   >
                                     <TrailerIcon className="w-5 h-5" />
@@ -6757,20 +6775,25 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                 )}
                                 <button
                                   onClick={() => handleApproveAction(action)}
-                                  disabled={isLoading}
-                                  className="p-2 bg-green-50 text-green-600 rounded-lg border border-green-100 hover:bg-green-100 transition-colors"
-                                  title="Aprovar"
+                                  disabled={isLoading || action.status === 'activated'}
+                                  className={`px-3 py-2 rounded-lg border transition-all flex items-center gap-1 shadow-sm active:scale-95 ${action.status === 'activated' ? 'bg-gray-100 text-gray-400 border-gray-200' : 'bg-green-600 text-white border-green-700 hover:bg-green-700'}`}
+                                  title={action.status === 'activated' ? 'Já Ativado' : 'Ativar Carretinha'}
                                 >
-                                  <CheckCircleIcon className="w-5 h-5" />
+                                  <CheckCircleIcon className="w-4 h-4" />
+                                  <span className="text-[10px] font-black uppercase">
+                                    {action.status === 'activated' ? 'ATIVADO' : 'ATIVAR'}
+                                  </span>
                                 </button>
-                                <button
-                                  onClick={() => handleRejectAction(action.id)}
-                                  disabled={isLoading}
-                                  className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
-                                  title="Rejeitar"
-                                >
-                                  <XIcon className="w-5 h-5" />
-                                </button>
+                                {action.status !== 'activated' && (
+                                  <button
+                                    onClick={() => handleRejectAction(action.id)}
+                                    disabled={isLoading}
+                                    className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
+                                    title="Rejeitar"
+                                  >
+                                    <XIcon className="w-5 h-5" />
+                                  </button>
+                                )}
                               </div>
                             )}
                           </div>
