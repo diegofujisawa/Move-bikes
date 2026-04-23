@@ -2759,10 +2759,12 @@ function insertBikeMechanics(bikeNumber, mechanicName, targetStatus) {
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue('MANUAL');
+      _clearMechanicsCache();
       return { success: true };
     }
   }
   sheet.appendRow([bikeNumber, targetStatus, new Date(), mechanicName, 'MANUAL', '', '']);
+  _clearMechanicsCache();
   return { success: true };
 }
 
@@ -2781,10 +2783,12 @@ function confirmMechanicsReceipt(bikeNumber, mechanicName) {
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Em Manutenção');
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
+      _clearMechanicsCache();
       return { success: true };
     }
   }
   sheet.appendRow([bikeNumber, 'Em Manutenção', new Date(), mechanicName, '', '', '']);
+  _clearMechanicsCache();
   return { success: true };
 }
 
@@ -2798,10 +2802,12 @@ function markAsNotFound(bikeNumber, mechanicName) {
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Não encontrada');
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
+      _clearMechanicsCache();
       return { success: true };
     }
   }
   sheet.appendRow([bikeNumber, 'Não encontrada', new Date(), mechanicName, '', '', '']);
+  _clearMechanicsCache();
   return { success: true };
 }
 
@@ -2911,10 +2917,12 @@ function confirmTechnicaReceipt(bikeNumber, technicianName) {
       if (rowPat === pStr && rowStatus === 'Aguardando Técnica') {
         sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Em Técnica');
         if (technicianName) sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(technicianName);
+        _clearMechanicsCache();
         return { success: true };
       }
     }
     sheet.appendRow([bikeNumber, 'Em Técnica', new Date(), technicianName || '', '', '', '']);
+    _clearMechanicsCache();
     return { success: true };
   } catch (e) { return { success: false, error: e.message }; }
 }
@@ -2936,6 +2944,7 @@ function finalizeTechnicaRepair(bikeNumber, technicianName, treatment, originalM
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mecanicoOriginal);
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue('Retorno da Técnica: ' + treatment + (technicianName ? ' [' + technicianName + ']' : ''));
         sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue('');
+        _clearMechanicsCache();
         return { success: true, originalMechanic: mecanicoOriginal };
       }
     }
@@ -2959,6 +2968,7 @@ function removeFromTrailer(bikeNumber, targetStatus) {
           sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue(targetStatus);
           sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
         }
+        _clearMechanicsCache();
         return { success: true, status: targetStatus || (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim(), mecanico: (data[i][COLUMN_INDICES.MECHANICS.MECANICO - 1] || '').toString().trim() };
       }
     }
@@ -2998,6 +3008,18 @@ function clearAlterarStatus(bikes) {
   } catch (e) { return { success: false, error: 'Erro ao limpar lista: ' + e.message }; }
 }
 
+/**
+ * Limpa o cache da lista de mecânica para forçar atualização no próximo sync
+ */
+function _clearMechanicsCache() {
+  try {
+    const cache = CacheService.getScriptCache();
+    cache.removeAll(['mechanics_list_v1', 'mechanics_report_scan_v6']);
+  } catch (e) {
+    console.error('Erro ao limpar cache mecânica:', e);
+  }
+}
+
 function finalizeMechanicsRepair(bikeNumber, mechanicName, treatment) {
   const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
   if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
@@ -3016,6 +3038,7 @@ function finalizeMechanicsRepair(bikeNumber, mechanicName, treatment) {
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue(treatment);
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(new Date());
+      _clearMechanicsCache();
       return { success: true };
     }
   }
@@ -3042,6 +3065,7 @@ function markAsVandalizedNoRecovery(bikeNumber, mechanicName, room, reasons) {
     }
   }
   if (!found) return { success: false, error: 'Bicicleta não encontrada na planilha mecânica.' };
+  _clearMechanicsCache();
   return { success: true };
 }
 
@@ -3063,6 +3087,7 @@ function organizeTrailer(bikeNumbers, trailerName) {
       count++;
     }
   }
+  _clearMechanicsCache();
   return { success: true, message: `${count} bikes organizadas na carretinha ${trailerName}.` };
 }
 
@@ -3085,6 +3110,7 @@ function finalizeTrailer(trailerName) {
       count++;
     }
   }
+  _clearMechanicsCache();
   return { success: true, message: `${count} bikes finalizadas da carretinha ${trailerName}.` };
 }
 

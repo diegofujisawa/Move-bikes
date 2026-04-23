@@ -2489,10 +2489,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
     // ADM / perfil com acesso direto: move direto no Firebase
     try {
-      await updateDoc(doc(db, 'mechanics_flow', bikeId), {
+      await setDoc(doc(db, 'mechanics_flow', bikeId), {
         status: 'Aguardando Manutenção',
         ultimaAtualizacao: serverTimestamp()
-      });
+      }, { merge: true });
     } catch (err: any) {
       console.error('Erro ao mover para Aguardando Manutenção no Firebase:', err);
     }
@@ -2604,11 +2604,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     try {
       // 1. Atualiza no fluxo da técnica
       try {
-        await updateDoc(doc(db, 'technical_flow', bikeNumber), {
+        await setDoc(doc(db, 'technical_flow', bikeNumber), {
           status: 'Em Técnica',
           tecnico: technicianName,
           ultimaAtualizacao: serverTimestamp()
-        });
+        }, { merge: true });
       } catch (e) {
         console.warn('[Firebase] technical_flow update failed:', e);
       }
@@ -2860,11 +2860,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     setIsMechanicSelectionModalOpen(false);
     try {
       // Atualiza no Firebase mechanics_flow
-      await updateDoc(doc(db, 'mechanics_flow', bikeNumber), {
+      await setDoc(doc(db, 'mechanics_flow', bikeNumber), {
         status: 'Em Manutenção',
         mecanico: mechanicName,
         dataEntrada: serverTimestamp()
-      });
+      }, { merge: true });
 
       try {
         await setDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true });
@@ -2913,11 +2913,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     setIsMechanicRepairModalOpen(false);
     try {
       // Atualiza no Firebase mechanics_flow
-      await updateDoc(doc(db, 'mechanics_flow', bikeNumber), {
+      await setDoc(doc(db, 'mechanics_flow', bikeNumber), {
         status: 'Reserva',
         tratativa: treatment,
         dataSaida: serverTimestamp()
-      });
+      }, { merge: true });
 
       try {
         await setDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, observacao: treatment, ultimaAtualizacao: serverTimestamp() }, { merge: true });
@@ -2964,10 +2964,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
       // Atualiza no Firebase mechanics_flow
       await Promise.all(bikeNumbers.map(id => 
-        updateDoc(doc(db, 'mechanics_flow', id), {
+        setDoc(doc(db, 'mechanics_flow', id), {
           carretinha: trailerName,
           status: 'Reserva'
-        })
+        }, { merge: true })
       ));
 
       await Promise.all(bikeNumbers.map(async (id) => {
@@ -2995,10 +2995,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         const bikes: string[] = action.bikes || [];
         await Promise.all(bikes.map(async (bikeId) => {
           try {
-            await updateDoc(doc(db, 'mechanics_flow', bikeId), {
+            await setDoc(doc(db, 'mechanics_flow', bikeId), {
               status: 'Aguardando Manutenção',
               ultimaAtualizacao: serverTimestamp()
-            });
+            }, { merge: true });
           } catch (e) {
             console.warn(`[Firebase] update status to Aguardando Manutenção failed for ${bikeId}:`, e);
           }
@@ -3032,22 +3032,22 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
           })();
 
           try {
-            await updateDoc(doc(db, 'mechanics_flow', action.bikeNumber), {
+            await setDoc(doc(db, 'mechanics_flow', action.bikeNumber), {
               status: 'Reserva',
               mecanico: action.mechanicName,
               tratativa: action.treatment,
               ultimaAtualizacao: serverTimestamp()
-            });
+            }, { merge: true });
           } catch (e) {
             console.warn('[Firebase] finalizeMechanicsRepair flow update failed:', e);
           }
         } else {
           try {
-            await updateDoc(doc(db, 'mechanics_flow', action.bikeNumber), {
+            await setDoc(doc(db, 'mechanics_flow', action.bikeNumber), {
               status: action.targetStatus,
               mecanico: action.mechanicName || '',
               ultimaAtualizacao: serverTimestamp()
-            });
+            }, { merge: true });
           } catch (e) {
             console.warn('[Firebase] insertBikeMechanics flow update failed:', e);
           }
@@ -5054,10 +5054,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                     protectMechanicBike(patrimonio, { status: 'Reserva', carretinha: null });
                     
                     try {
-                      await updateDoc(doc(db, 'mechanics_flow', patrimonio), {
+                      await setDoc(doc(db, 'mechanics_flow', patrimonio), {
                         carretinha: null,
                         status: 'Reserva'
-                      });
+                      }, { merge: true });
                     } catch (e) {
                       console.warn('[Firebase] removeFromTrailer failed:', e);
                     }
@@ -5958,11 +5958,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                     protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
                                     setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
                                     try {
-                                      await updateDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
+                                      await setDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
                                         status: 'Em Manutenção',
                                         carretinha: null,
                                         dataEntrada: serverTimestamp()
-                                      });
+                                      }, { merge: true });
                                     } catch (e) {
                                       console.warn('[Firebase] removeFromTrailer failed:', e);
                                     }
@@ -5975,11 +5975,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                     protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
                                     
                                     try {
-                                      await updateDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
+                                      await setDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
                                         status: 'Em Manutenção',
                                         carretinha: null,
                                         dataEntrada: serverTimestamp()
-                                      });
+                                      }, { merge: true });
                                     } catch (e) {
                                       console.warn('[Firebase] deleteMechanicsBike (move to maintenance) failed:', e);
                                     }
