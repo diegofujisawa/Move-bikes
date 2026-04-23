@@ -2628,7 +2628,7 @@ function getMechanicsList() {
   } catch(e) { console.error('getMechanicsList - erro ao ler bikes:', e); }
   let reportEntries = {};
   let lastStatusByBike = {};
-  const reportCacheKey = 'mechanics_report_scan_v6';
+  const reportCacheKey = 'mechanics_report_scan_v7';
   let reportCached = cache.get(reportCacheKey);
   if (reportCached) {
     try {
@@ -2638,7 +2638,7 @@ function getMechanicsList() {
     } catch (e) { reportCached = null; }
   }
   if (!reportCached) {
-    const EXIT_STATUSES = ['estação', 'estacao', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'remanejada', 'recuperada', 'encontrada', 'localizada'];
+    const EXIT_STATUSES = ['estação', 'estacao', 'remanejada', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'recuperada', 'encontrada', 'localizada', 'em estação'];
     try {
       const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório');
       if (reportSheet && reportSheet.getLastRow() > 1) {
@@ -2658,7 +2658,7 @@ function getMechanicsList() {
           const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
           if (!lastStatusByBike[pat] || tsMs >= lastStatusByBike[pat].tsMs) lastStatusByBike[pat] = { tsMs, status };
           const statusSistema = (row[COLUMN_INDICES.REPORTS.STATUS_SISTEMA - 1] || '').toString().trim().toLowerCase();
-          const isInitial = /recolhida|vandalizad|filial|recolher|vandalismo|roubada|recuperada|manuten[çc]ão|oficina/.test(status) || /manuten[çc]ão/.test(statusSistema);
+          const isInitial = /recolhida|vandalizad|vandalismo|recolher/.test(status) || /manuten[çc]ão/.test(statusSistema);
           if (isInitial) {
             if (!reportEntries[pat] || tsMs >= reportEntries[pat].tsMs) {
               const prev = reportEntries[pat] || {};
@@ -2705,7 +2705,7 @@ function getMechanicsList() {
     const info = bikeInfoMap[pat] || {};
     const isMechActive = mechData && (mechData.status === 'Aguardando Manutenção' || mechData.status === 'Em Manutenção' || mechData.status === 'Reserva' || mechData.status === 'Aguardando Técnica' || mechData.status === 'Em Técnica');
     const statusLow = entry.status.toLowerCase();
-    const isReportInitial = /recolhida|vandalizad|filial|recolher|vandalismo|roubada|recuperada|manuten[çc]ão|oficina/.test(statusLow);
+    const isReportInitial = /recolhida|vandalizad|vandalismo|recolher/.test(statusLow);
     if (mechData && (mechData.tsMs >= entry.tsMs || (isMechActive && isReportInitial))) {
       if (mechData.status === 'Remanejada') return;
       bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: mechData.status, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: mechData.manual, motorista: entry.motorista || '', observacao: entry.observacao || '' };
