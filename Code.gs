@@ -2982,25 +2982,52 @@ function clearAlterarStatus(bikes) {
     const sheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
     if (!sheet) return { success: false, error: 'Planilha Mecânica não encontrada.' };
     const data = sheet.getDataRange().getValues();
+    const reportSheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
     let cleared = 0;
     const now = new Date();
     bikes.forEach(item => {
       const pat = String(item.patrimonio || '').trim().replace(/^0+/, '');
       if (!pat) return;
+      
+      // 1. Atualizar na aba Mecânica
       if (item.row && item.row > 1) {
         const rowData = data[item.row - 1];
         if (rowData) {
           const currentStatus = String(rowData[COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
-          if (currentStatus !== 'Remanejada') { sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada'); sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(new Date()); cleared++; }
+          if (currentStatus !== 'Remanejada') {
+            sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada');
+            sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(now);
+            cleared++;
+          }
         }
       } else {
         let alreadyExists = false;
         for (let i = 1; i < data.length; i++) {
           const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
           const rowStatus = String(data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
-          if (rowPat === pat && rowStatus !== 'Remanejada') { sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada'); alreadyExists = true; cleared++; break; }
+          if (rowPat === pat && rowStatus !== 'Remanejada') {
+            sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada');
+            sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(now);
+            alreadyExists = true;
+            cleared++;
+            break;
+          }
         }
-        if (!alreadyExists) { sheet.appendRow([item.patrimonio, 'Remanejada', now, '', 'LIMPAR_LISTA', now, '']); cleared++; }
+        if (!alreadyExists) {
+          sheet.appendRow([item.patrimonio, 'Remanejada', now, '', 'LIMPAR_LISTA', now, '']);
+          cleared++;
+        }
+      }
+
+      // 2. Adicionar entrada no Relatório para "encerrar" o ciclo no scanner de Alterar Status
+      if (reportSheet) {
+        const reportRow = [];
+        reportRow[COLUMN_INDICES.REPORTS.TIMESTAMP - 1] = now;
+        reportRow[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] = item.patrimonio;
+        reportRow[COLUMN_INDICES.REPORTS.STATUS - 1] = 'Remanejada';
+        reportRow[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = 'Limpeza de lista (Mecânica)';
+        reportRow[COLUMN_INDICES.REPORTS.MOTORISTA - 1] = 'Sistema';
+        reportSheet.appendRow(reportRow);
       }
     });
     _clearMechanicsCache();
