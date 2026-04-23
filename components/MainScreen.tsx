@@ -17,8 +17,8 @@ import { auth, db } from '../firebase';
 import { signInWithPopup, GoogleAuthProvider, signInAnonymously } from 'firebase/auth';
 import {
   collection, onSnapshot, doc, updateDoc, addDoc, getDocs, deleteDoc,
-  serverTimestamp, setDoc, query, where, getDocFromServer, getDoc,
-  Timestamp, limit
+  serverTimestamp, setDoc, query, where, limit, getDocFromServer, getDoc,
+  Timestamp
 } from 'firebase/firestore';
 import ScheduleModal from './ScheduleModal';
 import ReporModal from './ReporModal';
@@ -172,28 +172,11 @@ const handleFirestoreError = (error: unknown, operationType: OperationType, path
 
 async function testConnection() {
   try {
-    const testDoc = doc(db, 'test', 'connection');
-    console.log(`[Firebase] Testando conexão no caminho: ${testDoc.path}`);
-    await getDocFromServer(testDoc);
-    console.log("[Firebase] Conexão Firestore estabelecida com sucesso.");
-  } catch (error: any) {
-    console.error("Firebase Connection Test Failed:", error);
-    
-    const isOffline = error?.message?.includes('the client is offline');
-    const isPermissionDenied = error?.code === 'permission-denied';
-    const isNotFound = error?.code === 'not-found';
-    
-    if (isOffline) {
-      console.error("Erro: O cliente está offline ou a configuração (Project ID/API Key) é inválida.");
-      console.error("Verifique se o Firestore está habilitado no console do Firebase e se o domínio está autorizado.");
-    } else if (isPermissionDenied) {
-      console.warn("Conexão OK, mas acesso negado. Verifique suas Security Rules.");
-    } else {
-      console.error(`Erro de conexão Firebase (${error?.code || 'unknown'}): ${error?.message}`);
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (error) {
+    if(error instanceof Error && error.message.includes('the client is offline')) {
+      console.error("Please check your Firebase configuration. ");
     }
-    
-    // Mantém a mensagem original para compatibilidade com o que o usuário viu
-    console.error("Please check your Firebase configuration. ");
   }
 }
 testConnection();
@@ -654,13 +637,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
       return prevStr === nextStr ? prev : finalCollected;
     });
 
-    // Espelha no Firebase silenciosamente — flag sheetsSync=true evita loop
-    setDoc(doc(db, 'users', normalizeName(driverName)), {
-      routeBikes: finalRoute,
-      collectedBikes: finalCollected,
-      lastUpdate: serverTimestamp(),
-      sheetsSync: true,
-    }, { merge: true }).catch(() => {});
+    // Espelha no Firebase APENAS se o estado mudou — evita write a cada sync (12s)
+    const prevRouteStr = [...routeBikesRef.current].sort().join(',');
+    const prevCollStr  = [...collectedBikesRef.current].sort().join(',');
+    const nextRouteStr = [...finalRoute].sort().join(',');
+    const nextCollStr  = [...finalCollected].sort().join(',');
+    if (prevRouteStr !== nextRouteStr || prevCollStr !== nextCollStr) {
+      setDoc(doc(db, 'users', normalizeName(driverName)), {
+        routeBikes: finalRoute,
+        collectedBikes: finalCollected,
+        lastUpdate: serverTimestamp(),
+        sheetsSync: true,
+      }, { merge: true }).catch(() => {});
+    }
   }, [driverName]);
 
   /**
@@ -919,10 +908,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Listener de posições dos motoristas em tempo real (ADM)
     let unsubLocations = () => {};
     if (isAdm) {
-      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      // Janela 2h → 45min — menos docs na carga inicial
+      const fortyFiveMinAgo = new Date(Date.now() - 45 * 60 * 1000);
       const qLocs = query(
         collection(db, 'locations'),
-        where('timestamp', '>=', Timestamp.fromDate(twoHoursAgo))
+        where('timestamp', '>=', Timestamp.fromDate(fortyFiveMinAgo)),
+        limit(20)
       );
       unsubLocations = onSnapshot(qLocs, snapshot => {
         const firebaseLocations: any[] = [];
@@ -989,35 +980,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Otimização: para ADM, desabilitamos o listener em tempo real de TODOS os reports
     // pois consome muitas leituras (50k/dia fácil). O ADM usa os dados do Sheets Sync (15s).
     // Mantemos o listener apenas para o próprio motorista ver seus dados instantâneos.
+    // Listener reports REMOVIDO — stats via Sheets sync (12s) é suficiente
+    // Economiza: ~30 leituras iniciais + 1 leitura por finalização
     let unsubReports = () => {};
-    if (!isAdm) {
-      const qReports = query(
-        collection(db, 'reports'),
-        where('motorista', '==', driverName),
-        where('timestamp', '>=', startOfDayTs),
-        limit(100) // Segurança extra
-      );
-
-      unsubReports = onSnapshot(qReports, (snapshot) => {
-        const newStats: Record<string, any> = {};
-        snapshot.forEach(doc => {
-          const data = doc.data();
-          const m = data.motorista;
-          if (!m) return;
-          if (!newStats[m]) newStats[m] = { recolhidas: 0, remanejada: 0, naoEncontrada: 0 };
-          
-          if (data.status === 'Filial') newStats[m].recolhidas++;
-          else if (data.status === 'Estação' || data.status === 'Em Estação') newStats[m].remanejada++;
-          else if (data.status === 'Não encontrada') newStats[m].naoEncontrada++;
-        });
-        setFirebaseDriverStats(newStats);
-      }, err => console.warn('Listener reports stats:', err));
-    }
 
     return () => { unsubRequests(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); unsubReports(); };
   }, [driverName, isAdm, timelineDate, getStartOfDayTs]);
 
-  const routeBikesKey = routeBikes.join(',');
+  const routeBikesKey = [...routeBikes].sort().join(',');
   // Listener em tempo real para as bikes na rota (Agilidade Máxima)
   // Se uma bike na rota for recolhida por outro motorista, ela sai da lista imediatamente
   useEffect(() => {
@@ -1025,7 +995,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     
     let unsubBikes = () => {};
     try {
-      const bikesToListen = routeBikes.slice(0, 30); // Limite do Firestore 'in'
+      const bikesToListen = routeBikes.slice(0, 10); // Reduzido 30→10 para economizar leituras
       const qBikes = query(collection(db, 'bikes'), where('__name__', 'in', bikesToListen));
       unsubBikes = onSnapshot(qBikes, (snapshot) => {
         snapshot.docChanges().forEach(change => {
@@ -1050,7 +1020,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
     
     return () => unsubBikes();
-  }, [driverName, routeBikesKey, routeBikes]);
+  }, [driverName, routeBikesKey]); // routeBikes removido — redundante com routeBikesKey
 
   // =================================================================
   // GARANTIA DE UNICIDADE
@@ -1264,12 +1234,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // Background
         (async () => {
           try {
-            const timelinePromise = addDoc(collection(db, 'timeline_events'), {
-              driverName, bikeNumber, type: 'em_posse',
-              timestamp: serverTimestamp(),
-              date: localDateStr(),
-              isOccurrence: !!routeBikesDetails[bikeNumber]?.ocorrencia || !!searchedBike?.ocorrencia
-            }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
+            const timelinePromise = Promise.resolve(); // timeline_events removido — economiza writes
 
             const persistPromise = persistDriverState(newRoute, newCollected);
 
@@ -1320,13 +1285,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               status: 'Não encontrada', responsavel: null, ultimaAtualizacao: serverTimestamp()
             }, { merge: true }).catch(err => console.warn('[Firebase] bikes write:', err.code));
 
-            const timelinePromise = addDoc(collection(db, 'timeline_events'), {
-              driverName, bikeNumber, type: 'nao_encontrada',
-              timestamp: serverTimestamp(),
-              date: localDateStr(),
-              isOccurrence: !!routeBikesDetails[bikeNumber]?.ocorrencia || !!searchedBike?.ocorrencia,
-              observacao: 'Bicicleta não encontrada no local'
-            }).catch(e => console.warn('[Firebase] timeline write failed:', e));
+            const timelinePromise = Promise.resolve(); // timeline_events removido
 
             const sheetsPromise = apiCall({
               action: 'finalizeCollectedBike', driverName, bikeNumber,
@@ -1489,13 +1448,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               finalStatus, finalObservation: finalObservation
             }, 1, true).catch(e => console.warn('[Sheets] finalizeCollectedBike failed:', e));
 
-            const timelinePromise = addDoc(collection(db, 'timeline_events'), {
-              driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
-              timestamp: serverTimestamp(),
-              date: localDateStr(),
-              isOccurrence: isOccurrence,
-              observacao: finalObservation
-            }).catch(e => console.warn('[Firebase] timeline write failed:', e));
+            const timelinePromise = Promise.resolve(); // timeline_events removido
 
             const persistPromise = persistDriverState(newRoute, newCollected);
 
@@ -1687,17 +1640,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             const trailerLabel = title || 'Carretinha';
 
             await Promise.all([
-              ...bikesToAdd.flatMap(id => {
-                return [
-                  addDoc(collection(db, 'timeline_events'), {
-                    driverName, bikeNumber: id,
-                    type: 'carretinha',
-                    observacao: trailerLabel,
-                    timestamp: serverTimestamp(),
-                    date: localDateStr()
-                  }).catch(() => {})
-                ];
-              }),
+              // timeline_events carretinha removido
               persistDriverState(newRoute, newCollected),
               apiCall({ action: 'acceptRequest', requestId, driverName }, 1, true)
             ]);
@@ -3518,9 +3461,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       }
 
       // Firebase não-bloqueante
+      // Só atualiza users — loop de setDoc bikes removido (economiza writes O(n))
       setDoc(doc(db, 'users', normalizeName(targetDriver)), { routeBikes: route, collectedBikes: collected, lastUpdate: serverTimestamp(), sheetsSync: false }, { merge: true }).catch(e => console.warn('[Firebase] users write:', e.code));
-      route.forEach(id => setDoc(doc(db, 'bikes', id), { status: 'Em Rota', responsavel: targetDriver, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {}));
-      collected.forEach(id => setDoc(doc(db, 'bikes', id), { status: 'Recolhida', responsavel: targetDriver, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {}));
       // Sheets — fonte de verdade
       const result = await apiCall({ action: 'updateDriverState', driverName: targetDriver, routeBikes: route, collectedBikes: collected });
       if (result.success) { alert(`Estado de ${targetDriver} atualizado!`); refreshAll(true); setIsEditDriverModalOpen(false); }
@@ -4423,8 +4365,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       const movedFirebase = getDistanceInMeters(latitude, longitude, lastFirebaseLat, lastFirebaseLng);
       const elapsedFirebase = now - lastFirebaseTime;
       
-      // Atualiza Firebase se: forçado OU moveu > 2 metros OU passou 10 segundos
-      if (force || movedFirebase > 2 || elapsedFirebase > 10000) {
+      // Atualiza Firebase se: forçado OU moveu > 25 metros OU passou 30 segundos
+      // Reduzido de 2m/10s → 25m/30s — economiza ~67% das writes em 'locations'
+      if (force || movedFirebase > 25 || elapsedFirebase > 30000) {
         lastFirebaseLat = latitude;
         lastFirebaseLng = longitude;
         lastFirebaseTime = now;
