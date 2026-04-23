@@ -1234,7 +1234,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // Background
         (async () => {
           try {
-            const timelinePromise = Promise.resolve(); // timeline_events removido — economiza writes
+            const timelinePromise = addDoc(collection(db, 'timeline_events'), {
+              driverName, bikeNumber, type: 'em_posse',
+              timestamp: serverTimestamp(),
+              date: localDateStr(),
+              isOccurrence: isOcc
+            }).catch(err => console.warn('[Timeline] Erro:', err.code, err.message));
 
             const persistPromise = persistDriverState(newRoute, newCollected);
 
@@ -1285,7 +1290,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
               status: 'Não encontrada', responsavel: null, ultimaAtualizacao: serverTimestamp()
             }, { merge: true }).catch(err => console.warn('[Firebase] bikes write:', err.code));
 
-            const timelinePromise = Promise.resolve(); // timeline_events removido
+            const timelinePromise = addDoc(collection(db, 'timeline_events'), {
+              driverName, bikeNumber, type: 'nao_encontrada',
+              timestamp: serverTimestamp(),
+              date: localDateStr(),
+              isOccurrence: !!routeBikesDetails[bikeNumber]?.ocorrencia || !!searchedBike?.ocorrencia,
+              observacao: 'Bicicleta não encontrada no local'
+            }).catch(e => console.warn('[Firebase] timeline write failed:', e));
 
             const sheetsPromise = apiCall({
               action: 'finalizeCollectedBike', driverName, bikeNumber,
@@ -1448,7 +1459,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
               finalStatus, finalObservation: finalObservation
             }, 1, true).catch(e => console.warn('[Sheets] finalizeCollectedBike failed:', e));
 
-            const timelinePromise = Promise.resolve(); // timeline_events removido
+            const timelinePromise = addDoc(collection(db, 'timeline_events'), {
+              driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
+              timestamp: serverTimestamp(),
+              date: localDateStr(),
+              isOccurrence: isOccurrence,
+              observacao: finalObservation
+            }).catch(e => console.warn('[Firebase] timeline write failed:', e));
 
             const persistPromise = persistDriverState(newRoute, newCollected);
 
@@ -1640,7 +1657,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
             const trailerLabel = title || 'Carretinha';
 
             await Promise.all([
-              // timeline_events carretinha removido
+              ...bikesToAdd.map(id => 
+                addDoc(collection(db, 'timeline_events'), {
+                  driverName, bikeNumber: id,
+                  type: 'carretinha',
+                  observacao: trailerLabel,
+                  timestamp: serverTimestamp(),
+                  date: localDateStr()
+                }).catch(() => {})
+              ),
               persistDriverState(newRoute, newCollected),
               apiCall({ action: 'acceptRequest', requestId, driverName }, 1, true)
             ]);
