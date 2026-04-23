@@ -2980,6 +2980,12 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       }));
 
       setSuccessMessage(`Bikes organizadas na ${trailerName}!`);
+      
+      // Salva no localStorage para evitar duplicidade em cliques rápidos
+      const match = trailerName.match(/Carretinha (\d+)/);
+      if (match) {
+        localStorage.setItem(`trailer_seq_${localDateStr()}`, match[1]);
+      }
     } catch (err: any) {
       setError('Erro ao organizar carretinha: ' + err.message);
     } finally {
@@ -3453,9 +3459,16 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         trailerName
       }, 1, true).catch(() => {});
 
-      // Limpa cache
+      // Limpa cache e força sync
       clearCache('getMechanicsList');
       clearCache('sync');
+
+      // Limpa proteção otimista para as bikes finalizadas para sumirem da lista imediatamente
+      bikeIds.forEach(id => {
+        delete mechanicOptimisticRef.current[String(id)];
+      });
+      
+      refreshAll(true);
       
       setSuccessMessage(`Carretinha "${trailerName}" finalizada! ADM notificado para remanejamento.`);
     } catch (err: any) {
@@ -6038,6 +6051,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                   lastNumber = Math.max(lastNumber, maxActive);
                                 }
 
+                                // Também verifica localStorage (para o caso de criação offline/rápida)
+                                const lastUsedLocally = parseInt(localStorage.getItem(`trailer_seq_${localDateStr()}`) || '0');
+                                lastNumber = Math.max(lastNumber, lastUsedLocally);
+                                
                                 const next = lastNumber + 1;
                                 handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
                               } catch (err: any) {
