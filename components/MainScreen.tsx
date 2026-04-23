@@ -214,6 +214,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // --- UI State ---
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncAlert, setSyncAlert] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
   const gpsBypassRef = useRef(false);
@@ -1457,7 +1458,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
             const sheetsPromise = apiCall({
               action: 'finalizeCollectedBike', driverName, bikeNumber,
               finalStatus, finalObservation: finalObservation
-            }, 1, true).catch(e => console.warn('[Sheets] finalizeCollectedBike failed:', e));
+            }, 3, false).catch(e => {
+              console.error('[Sheets] finalizeCollectedBike FAILED definitively:', e);
+              setSyncAlert(`Falha ao registrar bike ${bikeNumber} no Sheets após várias tentativas. Verifique sua conexão.`);
+            });
 
             const timelinePromise = addDoc(collection(db, 'timeline_events'), {
               driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
@@ -1667,12 +1671,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 }).catch(() => {})
               ),
               persistDriverState(newRoute, newCollected),
-              apiCall({ action: 'acceptRequest', requestId, driverName }, 1, true)
+              apiCall({ action: 'acceptRequest', requestId, driverName })
             ]);
           } else {
             await Promise.all([
               persistDriverState(newRoute, newCollected),
-              apiCall({ action: 'acceptRequest', requestId, driverName }, 1, true)
+              apiCall({ action: 'acceptRequest', requestId, driverName })
             ]);
           }
         } catch (e) {
@@ -1712,7 +1716,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               status: 'RECUSADO', declinedBy: driverName, declinedAt: serverTimestamp()
             }).catch(e => console.warn('[Firebase] requests decline:', e.code));
           }
-          await apiCall({ action: 'declineRequest', requestId, driverName }, 1, true)
+          await apiCall({ action: 'declineRequest', requestId, driverName })
             .catch(e => console.warn('[Sheets] declineRequest:', e));
         } finally {
           isUpdatingStateRef.current = false;
@@ -1737,7 +1741,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     setIsLoading(true);
     try {
-      const result = await apiCall({ action: 'createRequest', patrimonio: details.bikeNumber, ocorrencia: details.reason, local: details.location, recipient: details.recipient }, 1, true);
+      const result = await apiCall({ 
+        action: 'createRequest', 
+        patrimonio: details.bikeNumber, 
+        ocorrencia: details.reason, 
+        local: details.location, 
+        recipient: details.recipient 
+      });
       if (result.success) { alert('Solicitação criada!'); setRequestModalOpen(false); refreshAll(true); }
       else throw new Error(result.error);
     } catch (err: any) {
@@ -2510,7 +2520,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         console.warn('[Firebase] mechanics_flow delete failed:', e);
       }
 
-      await apiCall({ action: 'markAsNotFound', bikeNumber: bikeId, mechanicName: driverName }, 1, true);
+      await apiCall({ action: 'markAsNotFound', bikeNumber: bikeId, mechanicName: driverName });
     } catch (err: any) {
       refreshAll(true); // revert on error
       console.error('Erro ao processar:', err);
@@ -3430,7 +3440,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       }
 
       // 3. Notificações e Logs (não-bloqueantes)
-      apiCall({ action: 'finalizeTrailer', trailerName }, 1, true).catch(() => {});
+      apiCall({ action: 'finalizeTrailer', trailerName }).catch(e => {
+        console.error('[Sheets] finalizeTrailer failed:', e);
+        setSyncAlert(`Falha ao registrar carretinha "${trailerName}" no Sheets. Dados salvos no Firebase.`);
+      });
       
       const notifyMsg = `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
 
@@ -5204,6 +5217,19 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
           <button onClick={onLogout} disabled={isLoading} title="Sair" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-red-600 disabled:opacity-50"><LogoutIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
         </div>
       </header>
+      
+      {syncAlert && (
+        <div className="mx-4 mt-2 p-3 bg-red-100 border-2 border-red-200 rounded-xl flex items-center gap-3 animate-pulse">
+          <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-xs font-black text-red-800 leading-tight">ERRO DE SINCRONIZAÇÃO</p>
+            <p className="text-[10px] text-red-600 font-bold">{syncAlert}</p>
+          </div>
+          <button onClick={() => setSyncAlert(null)} className="p-1 hover:bg-red-200 rounded-full">
+            <XIcon className="w-4 h-4 text-red-600" />
+          </button>
+        </div>
+      )}
 
       <main>
         {/* RESUMO MOTORISTA */}

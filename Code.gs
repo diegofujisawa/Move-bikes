@@ -947,7 +947,18 @@ function logReport(rowData, kmFinal, plate) {
         if (sameKey && Math.abs(now - rowTs) / 60000 < 10) return { success: true, message: 'Registro duplicado ignorado.' };
       }
     }
-    sheet.appendRow(rowData);
+    // Tenta registrar no Sheets com retentativa interna
+    let attempts = 0;
+    while (attempts < 3) {
+      try {
+        sheet.appendRow(rowData);
+        break;
+      } catch (e) {
+        attempts++;
+        if (attempts >= 3) throw e;
+        Utilities.sleep(1000 * attempts);
+      }
+    }
     try { updateAlertFromReport(patrimonio, status, rowData[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]); } catch (alertErr) { console.error('Erro ao atualizar alerta incremental:', alertErr); }
     if (patrimonio) {
       const cache = CacheService.getScriptCache();
