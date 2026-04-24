@@ -262,7 +262,7 @@ function doPost(e) {
       case 'getVehiclePlates':      response = { ...getVehiclePlates(), version: BACKEND_VERSION }; break;
       case 'login':                 response = { ...handleLogin(request.login, request.password, request.plate, request.kmInicial), version: BACKEND_VERSION }; break;
       case 'logout':                response = { ...handleLogout(request.userName), version: BACKEND_VERSION }; break;
-      case 'search':                response = { ...searchBike(request.bikeNumber), version: BACKEND_VERSION }; break;
+      case 'search':                response = { ...searchBike(request.bikeNumber, request.driverName), version: BACKEND_VERSION }; break;
       case 'debugSearch':           response = { ...debugSearch(request.bikeNumber), version: BACKEND_VERSION }; break;
       case 'getRequests':           response = { ...getRequests(request.driverName, request.category), version: BACKEND_VERSION }; break;
       case 'getRequestsHistory':    response = { ...getRequestsHistory(request.driverName, request.category), version: BACKEND_VERSION }; break;
@@ -873,7 +873,7 @@ function getChassiInfo(bikeNumber) {
   }
 }
 
-// Helper para identificar bikes que já tiveram baixa hoje
+// Helper para identificar bikes que já tiveram baixa hoje (agora retorna bike|motorista para permitir múltiplo recolhimento por motoristas diferentes)
 function getFinalizedBikesToday(limit = 1000) {
   const sheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
   const finalized = new Set();
@@ -881,25 +881,30 @@ function getFinalizedBikesToday(limit = 1000) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return finalized;
   const numCheck = Math.min(lastRow - 1, limit);
-  // Lê colunas: Timestamp (1), Patrimônio (2), Status (3)
-  const data = sheet.getRange(lastRow - numCheck + 1, 1, numCheck, 3).getValues();
+  // Lê colunas: Timestamp (1), Patrimônio (2), Status (3), Observação (4), Motorista (5)
+  const data = sheet.getRange(lastRow - numCheck + 1, 1, numCheck, 5).getValues();
   const todayStr = new Date().toLocaleDateString('pt-BR');
   const blockers = ['estação', 'estacao', 'recolhida', 'filial', 'vandalizada', 'remanejada', 'em posse', 'finalizada'];
   data.forEach(row => {
     const ts = row[0];
     const pat = String(row[1]).trim();
     const st = String(row[2]).trim().toLowerCase();
+    const driver = String(row[4] || '').trim().toLowerCase();
     if (!pat) return;
     const tsDate = ts instanceof Date ? ts : parseTimestamp(ts);
     if (tsDate && tsDate.toLocaleDateString('pt-BR') === todayStr && blockers.some(s => st.includes(s))) {
       finalized.add(pat);
       finalized.add(String(parseFloat(pat)));
+      if (driver) {
+        finalized.add(pat + '|' + driver);
+        finalized.add(String(parseFloat(pat)) + '|' + driver);
+      }
     }
   });
   return finalized;
 }
 
-function searchBike(bikeNumber) {
+function searchBike(bikeNumber, driverName) {
   if (!bikeNumber) return { success: false, error: 'Número da bicicleta não informado.' };
   const bikeStr = String(bikeNumber).trim();
   const bikeNum = parseFloat(bikeStr);
@@ -928,10 +933,14 @@ function searchBike(bikeNumber) {
       'Longitude': parseCoordinate(row[COLUMN_INDICES.BIKES.LONGITUDE - 1]),
       'ocorrencia': false
     };
-    const finalized = getFinalizedBikesToday(1000);
-    const bikeStrNorm = String(parseFloat(bikeStr) || bikeStr);
-    if (finalized.has(bikeStr) || finalized.has(bikeStrNorm)) {
-       return { success: false, error: `Bicicleta ${bikeStr} já registrada hoje. Evite duplicidade.` };
+    
+    if (driverName) {
+      const finalized = getFinalizedBikesToday(1000);
+      const dNorm = driverName.trim().toLowerCase();
+      const bikeStrNorm = String(parseFloat(bikeStr) || bikeStr);
+      if (finalized.has(bikeStr + '|' + dNorm) || finalized.has(bikeStrNorm + '|' + dNorm)) {
+         return { success: false, error: `Você já registrou a bicicleta ${bikeStr} hoje. Evite duplicidade.` };
+      }
     }
 
     const requestsSheet = getSpreadsheet().getSheetByName(REQUESTS_SHEET_NAME);
@@ -1121,11 +1130,12 @@ function getRequestsHistory(driverName, category) {
 function createRequest(patrimonio, ocorrencia, local, recipient) {
   if (!patrimonio || !ocorrencia || !local || !recipient) return { success: false, error: 'Todos os campos são obrigatórios.' };
   
-  // Bloqueio preventivo: evita criação de solicitação para bike já finalizada hoje
+  // Bloqueio preventivo: evita criação de solicitação para bike já finalizada hoje pelo mesmo motorista
   const finalized = getFinalizedBikesToday(500);
+  const rNorm = recipient.trim().toLowerCase();
   const pats = patrimonio.toString().split(',').map(s => s.trim()).filter(Boolean);
-  const alreadyDone = pats.filter(p => finalized.has(p) || finalized.has(String(parseFloat(p))));
-  if (alreadyDone.length > 0) return { success: false, error: `Bikes já finalizadas hoje: ${alreadyDone.join(', ')}. Não é necessário criar solicitação.` };
+  const alreadyDoneByRecipient = pats.filter(p => finalized.has(p + '|' + rNorm) || finalized.has(String(parseFloat(p)) + '|' + rNorm));
+  if (alreadyDoneByRecipient.length > 0) return { success: false, error: `Bikes já finalizadas hoje pelo motorista ${recipient}: ${alreadyDoneByRecipient.join(', ')}.` };
 
   const sheet = getSpreadsheet().getSheetByName(REQUESTS_SHEET_NAME);
   if (!sheet) throw new Error(`Planilha "${REQUESTS_SHEET_NAME}" não encontrada.`);
@@ -1190,10 +1200,11 @@ function acceptRequest(requestId, driverName) {
   const patrimonioRaw = (sheet.getRange(row, COLUMN_INDICES.REQUESTS.PATRIMONIO).getValue() || '').toString();
   const bikesToAdd = patrimonioRaw.split(',').map(s => s.trim()).filter(Boolean);
   
-  // Bloqueio definitivo: evita que bikes finalizadas retornem ao app via aceitação de solicitação
+  // Bloqueio definitivo: evita que bikes finalizadas retornem ao app via aceitação de solicitação (mesmo motorista)
   const finalized = getFinalizedBikesToday(500);
-  const alreadyDone = bikesToAdd.filter(b => finalized.has(b) || finalized.has(String(parseFloat(b))));
-  if (alreadyDone.length > 0) return { success: false, error: `Bikes já finalizadas hoje: ${alreadyDone.join(', ')}. Recuse esta solicitação.` };
+  const dNorm = driverName.trim().toLowerCase();
+  const alreadyDoneByMe = bikesToAdd.filter(b => finalized.has(b + '|' + dNorm) || finalized.has(String(parseFloat(b)) + '|' + dNorm));
+  if (alreadyDoneByMe.length > 0) return { success: false, error: `Você já finalizou estas bikes hoje: ${alreadyDoneByMe.join(', ')}. Recuse esta solicitação.` };
 
   const motivo = (sheet.getRange(row, COLUMN_INDICES.REQUESTS.OCORRENCIA).getValue() || '').toString().toUpperCase();
   const isTrailer = motivo.includes('CARRETINHA');

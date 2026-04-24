@@ -707,7 +707,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Se não tem local, tenta buscar com timeout para não travar o relatório
     const networkFetch = (async () => {
       try {
-        const res = await apiCall({ action: 'search', bikeNumber }, 0, true); // 0 retries para ser rápido
+        const res = await apiCall({ action: 'search', bikeNumber, driverName }, 0, true); // 0 retries para ser rápido
         if (res.success && res.data) {
           return {
             statusSistema: res.data['Status'] || '',
@@ -2272,7 +2272,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     if (cached) {
       setSearchedBike(cached);
       window.scrollTo({ top: 0, behavior: 'smooth' });
-      apiCall({ action: 'search', bikeNumber: term }, 1, true).then(r => {
+      apiCall({ action: 'search', bikeNumber: term, driverName }, 1, true).then(r => {
         if (r.success && r.data) {
           const s = { ...r.data, 'Patrimônio': String(r.data['Patrimônio']) };
           searchCacheRef.current[term] = s;
@@ -2285,7 +2285,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     setIsSearching(true);
     setError(null);
     try {
-      const result = await apiCall({ action: 'search', bikeNumber: term });
+      const result = await apiCall({ action: 'search', bikeNumber: term, driverName });
       if (result.success && result.data) {
         const s = { ...result.data, 'Patrimônio': String(result.data['Patrimônio']) };
         setSearchedBike(s);
