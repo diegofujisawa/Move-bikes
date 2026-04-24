@@ -1648,8 +1648,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       (async () => {
         try {
           if (isTrailer) {
-            const trailerLabel = title || 'Carretinha';
-
             await Promise.all([
               // carretinha: não grava no Firebase — aparece via Sheets (tipo nao_atendida)
               persistDriverState(newRoute, newCollected),

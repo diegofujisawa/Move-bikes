@@ -394,6 +394,8 @@ function generateDriverRoute(driverName, location, filters, maxBikes, rangeKm) {
     if (!stationsResult.success) return stationsResult;
     const allStations = stationsResult.data;
     const occupiedBikes = new Set();
+    let finalizedToday = new Set();
+
     try {
       const stateSheet = getSpreadsheet().getSheetByName(STATE_SHEET_NAME);
       if (stateSheet && stateSheet.getLastRow() > 1) {
@@ -405,7 +407,9 @@ function generateDriverRoute(driverName, location, filters, maxBikes, rangeKm) {
           collectedStr.split(',').forEach(b => { const t = b.trim(); if (t) occupiedBikes.add(t); });
         });
       }
-    } catch (e) { console.warn('generateDriverRoute: erro ao ler estados — ' + e.message); }
+      finalizedToday = getFinalizedBikesToday(500);
+    } catch (e) { console.warn('generateDriverRoute: erro ao ler ocupadas ou finalizadas — ' + e.message); }
+
     const now = new Date();
     const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60000);
     const filteredBikes = allBikes.filter(bike => {
@@ -413,6 +417,9 @@ function generateDriverRoute(driverName, location, filters, maxBikes, rangeKm) {
       if (occupiedBikes.has(pat)) return false;
       const patNoZeros = String(parseFloat(pat));
       if (patNoZeros !== 'NaN' && occupiedBikes.has(patNoZeros)) return false;
+      
+      // Bloqueia bikes baixadas hoje
+      if (finalizedToday.has(pat) || finalizedToday.has(patNoZeros)) return false;
       const lastInfo = parseTimestamp(bike.ultimaInfo);
       const isOffline = !lastInfo || lastInfo < thirtyMinutesAgo;
       if (filters.offline) { if (!isOffline) return false; } else { if (isOffline) return false; }
@@ -866,6 +873,32 @@ function getChassiInfo(bikeNumber) {
   }
 }
 
+// Helper para identificar bikes que já tiveram baixa hoje
+function getFinalizedBikesToday(limit = 1000) {
+  const sheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
+  const finalized = new Set();
+  if (!sheet) return finalized;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return finalized;
+  const numCheck = Math.min(lastRow - 1, limit);
+  // Lê colunas: Timestamp (1), Patrimônio (2), Status (3)
+  const data = sheet.getRange(lastRow - numCheck + 1, 1, numCheck, 3).getValues();
+  const todayStr = new Date().toLocaleDateString('pt-BR');
+  const blockers = ['estação', 'estacao', 'recolhida', 'filial', 'vandalizada', 'remanejada', 'em posse', 'finalizada'];
+  data.forEach(row => {
+    const ts = row[0];
+    const pat = String(row[1]).trim();
+    const st = String(row[2]).trim().toLowerCase();
+    if (!pat) return;
+    const tsDate = ts instanceof Date ? ts : parseTimestamp(ts);
+    if (tsDate && tsDate.toLocaleDateString('pt-BR') === todayStr && blockers.some(s => st.includes(s))) {
+      finalized.add(pat);
+      finalized.add(String(parseFloat(pat)));
+    }
+  });
+  return finalized;
+}
+
 function searchBike(bikeNumber) {
   if (!bikeNumber) return { success: false, error: 'Número da bicicleta não informado.' };
   const bikeStr = String(bikeNumber).trim();
@@ -895,6 +928,12 @@ function searchBike(bikeNumber) {
       'Longitude': parseCoordinate(row[COLUMN_INDICES.BIKES.LONGITUDE - 1]),
       'ocorrencia': false
     };
+    const finalized = getFinalizedBikesToday(1000);
+    const bikeStrNorm = String(parseFloat(bikeStr) || bikeStr);
+    if (finalized.has(bikeStr) || finalized.has(bikeStrNorm)) {
+       return { success: false, error: `Bicicleta ${bikeStr} já registrada hoje. Evite duplicidade.` };
+    }
+
     const requestsSheet = getSpreadsheet().getSheetByName(REQUESTS_SHEET_NAME);
     if (requestsSheet) {
       const lastRow = requestsSheet.getLastRow();
@@ -1081,6 +1120,13 @@ function getRequestsHistory(driverName, category) {
 
 function createRequest(patrimonio, ocorrencia, local, recipient) {
   if (!patrimonio || !ocorrencia || !local || !recipient) return { success: false, error: 'Todos os campos são obrigatórios.' };
+  
+  // Bloqueio preventivo: evita criação de solicitação para bike já finalizada hoje
+  const finalized = getFinalizedBikesToday(500);
+  const pats = patrimonio.toString().split(',').map(s => s.trim()).filter(Boolean);
+  const alreadyDone = pats.filter(p => finalized.has(p) || finalized.has(String(parseFloat(p))));
+  if (alreadyDone.length > 0) return { success: false, error: `Bikes já finalizadas hoje: ${alreadyDone.join(', ')}. Não é necessário criar solicitação.` };
+
   const sheet = getSpreadsheet().getSheetByName(REQUESTS_SHEET_NAME);
   if (!sheet) throw new Error(`Planilha "${REQUESTS_SHEET_NAME}" não encontrada.`);
   if (sheet.getLastRow() >= 2) {
@@ -1143,6 +1189,12 @@ function acceptRequest(requestId, driverName) {
   sheet.getRange(row, COLUMN_INDICES.REQUESTS.ACEITA_POR, 1, 3).setValues([[driverName, new Date(), STATUS.ACEITA]]);
   const patrimonioRaw = (sheet.getRange(row, COLUMN_INDICES.REQUESTS.PATRIMONIO).getValue() || '').toString();
   const bikesToAdd = patrimonioRaw.split(',').map(s => s.trim()).filter(Boolean);
+  
+  // Bloqueio definitivo: evita que bikes finalizadas retornem ao app via aceitação de solicitação
+  const finalized = getFinalizedBikesToday(500);
+  const alreadyDone = bikesToAdd.filter(b => finalized.has(b) || finalized.has(String(parseFloat(b))));
+  if (alreadyDone.length > 0) return { success: false, error: `Bikes já finalizadas hoje: ${alreadyDone.join(', ')}. Recuse esta solicitação.` };
+
   const motivo = (sheet.getRange(row, COLUMN_INDICES.REQUESTS.OCORRENCIA).getValue() || '').toString().toUpperCase();
   const isTrailer = motivo.includes('CARRETINHA');
   const stateResult = getDriverState(driverName);
@@ -2198,6 +2250,7 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
       });
 
       const driverFirstLast = {};
+      const occAlreadyMarked = {};
       reportsData.forEach(row => {
         const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
         if (!ts || ts < tlStart || ts > tlEnd) return;
@@ -2230,7 +2283,16 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
           // exclui carretinha, roteiro automático, via app
           // NÃO usa coluna J do Relatório — foi gravada com filtros incorretos no passado
           const isOcc = !!occLookup[normDriver(driverRaw) + '|' + pat];
-          timelines[driverKey].push({ tsMs: ts.getTime(), hour: ts.getHours(), min: ts.getMinutes(), type, bikeNumber: pat, observacao: obs, isOccurrence: isOcc });
+          // Restringe estrelas apenas para eventos de recolha ou não encontrada, e evita duplicidade por bike/dia
+          const occKey = normDriver(driverRaw) + '|' + pat;
+          let finalIsOcc = false;
+          if (isOcc && (type === 'recolhida' || type === 'filial' || type === 'nao_encontrada' || type === 'vandalizada')) {
+            if (!occAlreadyMarked[occKey]) {
+              finalIsOcc = true;
+              occAlreadyMarked[occKey] = true;
+            }
+          }
+          timelines[driverKey].push({ tsMs: ts.getTime(), hour: ts.getHours(), min: ts.getMinutes(), type, bikeNumber: pat, observacao: obs, isOccurrence: finalIsOcc });
         }
       });
       drivers.forEach(d => { const fl = driverFirstLast[d]; if (fl) timelineWindows[d] = { startMs: fl.firstMs, endMs: fl.lastMs }; });
