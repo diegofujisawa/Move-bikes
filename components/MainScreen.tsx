@@ -203,6 +203,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const isAdm = useMemo(() => normalizedCategory.includes('ADM'), [normalizedCategory]);
   const isMecanica = useMemo(() => normalizedCategory.includes('MECANICA') || normalizedCategory.includes('MECANICO'), [normalizedCategory]);
   const isTecnica  = useMemo(() => normalizedCategory.includes('TECNICA') || normalizedCategory.includes('TECNICO'), [normalizedCategory]);
+  const trailerBatteryLimit = isMecanica ? 80 : 85;
 
   // Helper para calculo de data de inicio do dia (usado em listeners)
   const getStartOfDayTs = useCallback(() => {
@@ -3236,12 +3237,12 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       if (prev.confirmedBikes.has(found.patrimonio)) {
         return { ...prev, lastError: null, lastScanned: `${bikeId} já confirmada ✓`, batteryFailed: null };
       }
-      // Valida bateria ≥ 85%
+      // Valida bateria ≥ {trailerBatteryLimit}%
       const bateriaVal = found.bateria !== undefined ? Number(found.bateria) : undefined;
       const bateriaPct = bateriaVal !== undefined
         ? (bateriaVal <= 1 && bateriaVal > 0 ? Math.round(bateriaVal * 100) : Math.round(bateriaVal))
         : undefined;
-      if (bateriaPct !== undefined && bateriaPct < 85) {
+      if (bateriaPct !== undefined && bateriaPct < trailerBatteryLimit) {
         return {
           ...prev,
           lastError: null,
@@ -4782,7 +4783,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                 <div>
                   <p className="text-xs font-bold uppercase opacity-80">Verificação de Segurança</p>
                   <h2 className="text-lg font-black">{trailerName}</h2>
-                  <p className="text-[10px] opacity-70 mt-0.5">QR Code + Bateria ≥ 85% + Comunicação &lt; 5 min</p>
+                  <p className="text-[10px] opacity-70 mt-0.5">QR Code + Bateria ≥ {trailerBatteryLimit}% + Comunicação &lt; 5 min</p>
                 </div>
                 <div className="text-right">
                   <p className="text-2xl font-black">{confirmedBikes.size}<span className="text-sm font-normal opacity-70">/{expectedBikes.length}</span></p>
@@ -4832,7 +4833,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                     <div className="mt-2 p-3 bg-orange-50 border-2 border-orange-400 rounded-lg">
                       <p className="text-xs font-black text-orange-700 text-center">🔋 Bateria insuficiente!</p>
                       <p className="text-[10px] text-orange-600 text-center mt-0.5">
-                        Bike <span className="font-black">{batteryFailed}</span>: {pct !== undefined ? `${pct}%` : 'sem dados'} — mínimo exigido: 85%
+                        Bike <span className="font-black">{batteryFailed}</span>: {pct !== undefined ? `${pct}%` : 'sem dados'} — mínimo exigido: {trailerBatteryLimit}%
                       </p>
                       <p className="text-[9px] text-orange-500 text-center mt-1 italic">Recarregue a bike e tente novamente, ou remova-a da carretinha.</p>
                     </div>
@@ -4874,8 +4875,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                               {bike.patrimonio}
                             </p>
                             {pct !== undefined && (
-                              <p className={`text-[9px] font-bold ${pct >= 85 ? 'text-green-600' : 'text-orange-600'}`}>
-                                🔋 {pct}% {pct < 85 ? '(insuf.)' : ''}
+                              <p className={`text-[9px] font-bold ${pct >= trailerBatteryLimit ? 'text-green-600' : 'text-orange-600'}`}>
+                                🔋 {pct}% {pct < trailerBatteryLimit ? '(insuf.)' : ''}
                               </p>
                             )}
                           </div>
@@ -5965,7 +5966,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                               {bike.tratativa && bike.tratativa !== 'MANUAL' && <span className="text-gray-400 flex-1 truncate text-[9px]">{bike.tratativa}</span>}
                               <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
                                 {bike.bateria !== undefined && (
-                                  <span className={`text-[10px] font-bold ${Number(formatBattery(bike.bateria)) < 85 ? 'text-red-500' : 'text-gray-500'}`}>🔋{formatBattery(bike.bateria)}%</span>
+                                  <span className={`text-[10px] font-bold ${Number(formatBattery(bike.bateria)) < trailerBatteryLimit ? 'text-red-500' : 'text-gray-500'}`}>🔋{formatBattery(bike.bateria)}%</span>
                                 )}
                                 {trailer !== 'Sem Carretinha' ? (
                                   <button onClick={async () => {

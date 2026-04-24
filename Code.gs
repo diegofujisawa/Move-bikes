@@ -18,7 +18,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.17-fix-localvar';
+const BACKEND_VERSION = '85.20-60min-block';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -206,7 +206,7 @@ function doGet(e) {
     else if (action === 'getDriverLocations') response = { ...getDriverLocations(), version: BACKEND_VERSION };
     else if (action === 'getStations')   response = { ...getStations(), version: BACKEND_VERSION };
     else if (action === 'getMotoristas') response = { ...getMotoristas(), version: BACKEND_VERSION };
-    else if (action === 'getAlerts')     response = { ...getAlerts(false), version: BACKEND_VERSION };
+    else if (action === 'getAlerts')     response = { ...getAlerts(e.parameter.forceScan === 'true'), version: BACKEND_VERSION };
     else if (action === 'getVandalized') response = { ...getVandalized(), version: BACKEND_VERSION };
     else if (action === 'getReporData')  response = { ...getReporData(), version: BACKEND_VERSION };
     else if (action === 'getVehiclePlates') response = { ...getVehiclePlates(), version: BACKEND_VERSION };
@@ -520,17 +520,21 @@ function handleSync(request) {
       : {};
 
     if (isAdm) {
-      if (alertsVersion && alertsVersion === 'v13') {
-        response.data.alertsVersion = 'v13';
-        response.data.alerts = null;
-      } else {
-        const alertsResult = getAlerts(false);
-        if (alertsResult.success) {
-          response.data.alerts = alertsResult.data || [];
-          response.data.alertsVersion = alertsResult.version || '';
+      // v85.19: Uso dinâmico de versão para evitar cache stale no client
+      const alertsResult = getAlerts(false);
+      if (alertsResult.success) {
+        const currentVersion = alertsResult.version || 'v15';
+        if (alertsVersion && alertsVersion === currentVersion) {
+          response.data.alertsVersion = currentVersion;
+          response.data.alerts = null; // Client já tem a versão mais recente
         } else {
-          console.error('Erro em getAlerts durante sync:', alertsResult.error);
+          response.data.alerts = alertsResult.data || [];
+          response.data.alertsVersion = currentVersion;
         }
+      } else {
+        console.error('Erro em getAlerts durante sync:', alertsResult.error);
+        response.data.alerts = [];
+        response.data.alertsVersion = '';
       }
       const vandalizedResult = getVandalized();
       if (!vandalizedResult.success) {
@@ -873,7 +877,7 @@ function getChassiInfo(bikeNumber) {
   }
 }
 
-// Helper para identificar bikes que já tiveram baixa hoje (agora retorna bike|motorista para permitir múltiplo recolhimento por motoristas diferentes)
+// Helper para identificar bikes que já tiveram baixa recentemente (60 min)
 function getFinalizedBikesToday(limit = 1000) {
   const sheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
   const finalized = new Set();
@@ -883,7 +887,7 @@ function getFinalizedBikesToday(limit = 1000) {
   const numCheck = Math.min(lastRow - 1, limit);
   // Lê colunas: Timestamp (1), Patrimônio (2), Status (3), Observação (4), Motorista (5)
   const data = sheet.getRange(lastRow - numCheck + 1, 1, numCheck, 5).getValues();
-  const todayStr = new Date().toLocaleDateString('pt-BR');
+  const now = new Date();
   const blockers = ['estação', 'estacao', 'recolhida', 'filial', 'vandalizada', 'remanejada', 'em posse', 'finalizada'];
   data.forEach(row => {
     const ts = row[0];
@@ -892,7 +896,8 @@ function getFinalizedBikesToday(limit = 1000) {
     const driver = String(row[4] || '').trim().toLowerCase();
     if (!pat) return;
     const tsDate = ts instanceof Date ? ts : parseTimestamp(ts);
-    if (tsDate && tsDate.toLocaleDateString('pt-BR') === todayStr && blockers.some(s => st.includes(s))) {
+    // v85.20: Bloqueio por 60 minutos ao invés de data
+    if (tsDate && (Math.abs(now - tsDate) / 60000 < 60) && blockers.some(s => st.includes(s))) {
       finalized.add(pat);
       finalized.add(String(parseFloat(pat)));
       if (driver) {
@@ -939,7 +944,7 @@ function searchBike(bikeNumber, driverName) {
       const dNorm = driverName.trim().toLowerCase();
       const bikeStrNorm = String(parseFloat(bikeStr) || bikeStr);
       if (finalized.has(bikeStr + '|' + dNorm) || finalized.has(bikeStrNorm + '|' + dNorm)) {
-         return { success: false, error: `Você já registrou a bicicleta ${bikeStr} hoje. Evite duplicidade.` };
+         return { success: false, error: `Você já registrou a bicicleta ${bikeStr} nos últimos 60 minutos. Evite duplicidade.` };
       }
     }
 
@@ -1001,7 +1006,7 @@ function logReport(rowData, kmFinal, plate) {
         const sameKey = row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1].toString().trim() === patrimonio
           && row[COLUMN_INDICES.REPORTS.STATUS - 1].toString().trim() === status
           && row[COLUMN_INDICES.REPORTS.MOTORISTA - 1].toString().trim() === motorista;
-        if (sameKey && Math.abs(now - rowTs) / 60000 < 10) return { success: true, message: 'Registro duplicado ignorado.' };
+        if (sameKey && Math.abs(now - rowTs) / 60000 < 60) return { success: true, message: 'Registro duplicado ignorado.' };
       }
     }
     sheet.appendRow(rowData);
@@ -1135,7 +1140,7 @@ function createRequest(patrimonio, ocorrencia, local, recipient) {
   const rNorm = recipient.trim().toLowerCase();
   const pats = patrimonio.toString().split(',').map(s => s.trim()).filter(Boolean);
   const alreadyDoneByRecipient = pats.filter(p => finalized.has(p + '|' + rNorm) || finalized.has(String(parseFloat(p)) + '|' + rNorm));
-  if (alreadyDoneByRecipient.length > 0) return { success: false, error: `Bikes já finalizadas hoje pelo motorista ${recipient}: ${alreadyDoneByRecipient.join(', ')}.` };
+  if (alreadyDoneByRecipient.length > 0) return { success: false, error: `Bikes já finalizadas recentemente pelo motorista ${recipient}: ${alreadyDoneByRecipient.join(', ')}.` };
 
   const sheet = getSpreadsheet().getSheetByName(REQUESTS_SHEET_NAME);
   if (!sheet) throw new Error(`Planilha "${REQUESTS_SHEET_NAME}" não encontrada.`);
@@ -1204,7 +1209,7 @@ function acceptRequest(requestId, driverName) {
   const finalized = getFinalizedBikesToday(500);
   const dNorm = driverName.trim().toLowerCase();
   const alreadyDoneByMe = bikesToAdd.filter(b => finalized.has(b + '|' + dNorm) || finalized.has(String(parseFloat(b)) + '|' + dNorm));
-  if (alreadyDoneByMe.length > 0) return { success: false, error: `Você já finalizou estas bikes hoje: ${alreadyDoneByMe.join(', ')}. Recuse esta solicitação.` };
+  if (alreadyDoneByMe.length > 0) return { success: false, error: `Você já finalizou estas bikes recentemente: ${alreadyDoneByMe.join(', ')}. Recuse esta solicitação.` };
 
   const motivo = (sheet.getRange(row, COLUMN_INDICES.REQUESTS.OCORRENCIA).getValue() || '').toString().toUpperCase();
   const isTrailer = motivo.includes('CARRETINHA');
@@ -1529,17 +1534,21 @@ function finalizeCollectedBike(request) {
 // =================================================================
 function getAlerts(forceScan = false) {
   const cache = CacheService.getScriptCache();
-  const cacheKey = 'alerts_data_v13';
-  const cached = cache.get(cacheKey);
-  if (cached) {
-    try {
-      const data = JSON.parse(cached);
-      if (Array.isArray(data)) {
-        console.log(`getAlerts: Retornando ${data.length} itens do cache (v13)`);
-        return { success: true, data: data, cached: true, version: 'v13' };
-      }
-    } catch (e) {}
+  const ALERTS_CACHE_VERSION = 'v15';
+  const cacheKey = 'alerts_data_' + ALERTS_CACHE_VERSION;
+  
+  if (!forceScan) {
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      try {
+        const data = JSON.parse(cached);
+        if (Array.isArray(data)) {
+          return { success: true, data: data, cached: true, version: ALERTS_CACHE_VERSION };
+        }
+      } catch (e) {}
+    }
   }
+
   try {
     const ss = getSpreadsheet();
     let alertsSheet = ss.getSheetByName(ALERTS_SHEET_NAME) || ss.getSheetByName('Alertas') || ss.getSheetByName('Alerta');
@@ -1553,26 +1562,64 @@ function getAlerts(forceScan = false) {
     if (!alertsSheet) {
       alertsSheet = getOrCreateSheet(ALERTS_SHEET_NAME, ['Patrimônio', 'Check 1', 'Check 2', 'Check 3', 'Situação', 'Encontrada Por', 'Data Encontrada']);
     }
+    
     let lastRowAlerts = alertsSheet.getLastRow();
     let alertsData = [];
     if (lastRowAlerts > 1) {
       alertsData = alertsSheet.getRange(2, 1, lastRowAlerts - 1, 7).getValues();
     }
+
+    // SEMPRE forçamos um index fresco se estivermos reconstruindo a lista de alertas
+    // para garantir que bikes marcadas como Roubada no Sheets sumam imediatamente.
+    const bikeIdx = getBikeIndex(true); 
+
     const alerts = alertsData.map((row, idx) => {
+      const patrimonio = String(row[0] || '').trim();
+      if (!patrimonio || patrimonio === '0') return null;
+      
       const sit = String(row[4] || '').trim().toLowerCase();
+      
+      // Status terminais que devem SUMIR da lista
+      const terminalAlertStatuses = ['roubada', 'vandalizada', 'perdida', 'furtada', 'leiloada', 'sucateada'];
+      if (terminalAlertStatuses.indexOf(sit) !== -1) return null;
+
+      // Filtro de processamento: só as que estão em aberto (Pendente ou Localizada)
       if (sit === 'pendente' || sit === 'localizada' || sit === STATUS.PENDENTE.toLowerCase() || sit === STATUS.LOCALIZADA.toLowerCase()) {
-        return {
-          id: idx + 2,
-          patrimonio: String(row[0] || '').trim(),
-          check1: row[1], check2: row[2], check3: row[3],
-          situacao: row[4]
-        };
+        
+        let isTerminalInBase = false;
+        try {
+          const bikeRow = bikeIdx[patrimonio];
+          if (bikeRow) {
+            const realStatus = String(bikeRow[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim().toLowerCase();
+            // Se na base principal (Bicicletas) o status for terminal, remove do alerta
+            if (terminalAlertStatuses.indexOf(realStatus) !== -1) {
+              isTerminalInBase = true;
+              
+              // Sincroniza a aba Alertas com o status terminal para evitar re-processamento
+              try {
+                const targetRow = idx + 2;
+                alertsSheet.getRange(targetRow, 5).setValue(realStatus.charAt(0).toUpperCase() + realStatus.slice(1));
+              } catch (e) {}
+            }
+          }
+        } catch (e) {
+          console.error('Erro ao verificar status real:', e);
+        }
+
+        if (!isTerminalInBase) {
+          return {
+            id: idx + 2,
+            patrimonio: patrimonio,
+            check1: row[1], check2: row[2], check3: row[3],
+            situacao: row[4]
+          };
+        }
       }
       return null;
     }).filter(Boolean);
+
     try { cache.put(cacheKey, JSON.stringify(alerts), 600); } catch (e) {}
-    console.log(`getAlerts (sem scan): ${alerts.length} alertas da aba.`);
-    return { success: true, data: alerts, version: 'v13', count: alerts.length };
+    return { success: true, data: alerts, version: ALERTS_CACHE_VERSION, count: alerts.length };
   } catch (e) {
     console.error('Erro em getAlerts:', e);
     return { success: false, error: 'Erro ao processar alertas: ' + e.message };
@@ -1584,8 +1631,12 @@ function updateAlertFromReport(patrimonio, status, timestamp) {
   const st = status.toString().toLowerCase().trim();
   const pat = patrimonio.toString().trim();
   const isMissing = st === 'não encontrada' || st === 'nao encontrada';
-  const isFound = st.includes('remanejada') || st.includes('estação') || st.includes('estacao') || st.includes('filial') || st.includes('vandalizada') || st.includes('recolhida') || st.includes('mecanica') || st.includes('manutenção') || st.includes('manutencao') || st.includes('tecnica');
-  if (!isMissing && !isFound) return;
+  
+  // v85.18: Separação de encontrados (remanejáveis) e terminais (Roubada/Vandalizada/Perdida)
+  const isTerminal = st === 'roubada' || st === 'vandalizada' || st === 'perdida';
+  const isFound = !isTerminal && (st.includes('remanejada') || st.includes('estação') || st.includes('estacao') || st.includes('filial') || st.includes('recolhida') || st.includes('mecanica') || st.includes('manutenção') || st.includes('manutencao') || st.includes('tecnica'));
+  
+  if (!isMissing && !isFound && !isTerminal) return;
   try {
     const ss = getSpreadsheet();
     let alertsSheet = ss.getSheetByName(ALERTS_SHEET_NAME) || ss.getSheetByName('Alertas') || ss.getSheetByName('Alerta');
@@ -1614,15 +1665,22 @@ function updateAlertFromReport(patrimonio, status, timestamp) {
           else if (!rowData[3]) alertsSheet.getRange(foundIdx + 2, 4).setValue(ts);
         }
       }
-    } else if (isFound) {
+    } else if (isFound || isTerminal) {
       if (foundIdx !== -1) {
         const sit = String(data[foundIdx][4]).trim().toLowerCase();
-        if (sit === STATUS.PENDENTE.toLowerCase() || sit === 'pendente') {
-          alertsSheet.getRange(foundIdx + 2, 5).setValue(STATUS.LOCALIZADA);
+        if (sit === STATUS.PENDENTE.toLowerCase() || sit === 'pendente' || sit === STATUS.LOCALIZADA.toLowerCase()) {
+          if (isTerminal) {
+            alertsSheet.getRange(foundIdx + 2, 5).setValue(st.charAt(0).toUpperCase() + st.slice(1));
+          } else {
+            alertsSheet.getRange(foundIdx + 2, 5).setValue(STATUS.LOCALIZADA);
+          }
         }
       }
     }
-    CacheService.getScriptCache().remove('alerts_data_v13');
+    const cache = CacheService.getScriptCache();
+    cache.remove('alerts_data_v13');
+    cache.remove('alerts_data_v14');
+    cache.remove('alerts_data_v15');
   } catch (e) {
     console.error('Erro em updateAlertFromReport:', e);
   }
