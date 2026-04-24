@@ -2131,62 +2131,72 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
       }
     });
     const pendingCounts = {};
-    const occLookup = {}; // motorista_lower|patrimonio → true (apenas ocorrências reais)
+    const occLookup = {}; // motorista_lower|patrimonio → true
     drivers.forEach(d => pendingCounts[d] = 0);
     const lastRowReq = requestsSheet.getLastRow();
-    if (lastRowReq > 1) {
-      requestsSheet.getRange(2, 1, lastRowReq - 1, requestsSheet.getLastColumn()).getValues().forEach(row => {
-        const status    = (row[COLUMN_INDICES.REQUESTS.SITUACAO - 1] || '').toLowerCase();
-        const recipient = (row[COLUMN_INDICES.REQUESTS.DESTINATARIO - 1] || '').toString().trim().toLowerCase();
-        const declined  = (row[COLUMN_INDICES.REQUESTS.RECUSADA_POR - 1] || '').toString().split(',').map(s => s.trim().toLowerCase());
+    const reqData = lastRowReq > 1 ? requestsSheet.getRange(2, 1, lastRowReq - 1, requestsSheet.getLastColumn()).getValues() : [];
 
-        // 1. Conta solicitações pendentes
-        if (status === 'pendente') {
-          drivers.forEach(d => {
-            const dNorm = normDriver(d);
-            const recipientNorm = normDriver(recipient);
-            const declinedNorm = declined.map(s => normDriver(s));
-            if ((recipient === 'todos' || recipientNorm === dNorm) && !declinedNorm.includes(dNorm)) pendingCounts[d]++;
-          });
-        }
+    reqData.forEach(row => {
+      const status    = (row[COLUMN_INDICES.REQUESTS.SITUACAO - 1] || '').toLowerCase();
+      const recipient = (row[COLUMN_INDICES.REQUESTS.DESTINATARIO - 1] || '').toString().trim().toLowerCase();
+      const declined  = (row[COLUMN_INDICES.REQUESTS.RECUSADA_POR - 1] || '').toString().split(',').map(s => s.trim().toLowerCase());
 
-        // 2. Mapeia ocorrências reais para a timeline (exclui roteiros e carretinhas)
-        // Usa janela ampla (30 dias) pois o filtro de data real é feito pelo tsMs do evento
-        // no Relatório, que já está restrito a tlStart/tlEnd na montagem da timeline.
-        const acceptedBy   = (row[COLUMN_INDICES.REQUESTS.ACEITA_POR  - 1] || '').toString().trim();
-        const acceptedDate = row[COLUMN_INDICES.REQUESTS.ACEITA_DATA   - 1];
-        if (acceptedBy && acceptedDate && (status === 'aceita' || status === 'finalizada')) {
-          let tsAcc = parseTimestamp(acceptedDate);
-          // Se aceita_data veio sem horário (00:00:00), usa o timestamp da solicitação
-          if (tsAcc && tsAcc.getHours() === 0 && tsAcc.getMinutes() === 0 && tsAcc.getSeconds() === 0) {
-            const tsReq = parseTimestamp(row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1]);
-            if (tsReq) tsAcc = tsReq;
-          }
-          if (tsAcc) { // sem restrição de data — o filtro temporal é feito pela timeline
-            const loc = (row[COLUMN_INDICES.REQUESTS.LOCAL - 1] || '').toString().toLowerCase();
-            const occCol = (row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '').toString().toLowerCase();
-            const dest = (row[COLUMN_INDICES.REQUESTS.DESTINATARIO - 1] || '').toString().toLowerCase();
-            const isCarretinha = occCol.includes('carretinha') || loc.includes('carretinha') || dest.includes('carretinha');
-            const isRoteiro = occCol === 'roteiro gerado'
-              || loc.includes('roteiro autom') // cobre "roteiro automático" e "roteiro automatico"
-              || loc.includes('criado via roteiro')
-              || loc.includes('via roteiro app')
-              || loc.includes('via app')
-              || loc.includes('roteiro app');
-            if (!isCarretinha && !isRoteiro) {
-              const pats = (row[COLUMN_INDICES.REQUESTS.PATRIMONIO - 1] || '').toString().trim().split(',').map(s => s.trim()).filter(Boolean);
-              pats.forEach(p => { occLookup[acceptedBy.toLowerCase() + '|' + normPat(p)] = true; });
-            }
-          }
-        }
-      });
-    }
+      // 1. Conta solicitações pendentes
+      if (status === 'pendente') {
+        drivers.forEach(d => {
+          const dNorm = normDriver(d);
+          const recipientNorm = normDriver(recipient);
+          const declinedNorm = declined.map(s => normDriver(s));
+          if ((recipient === 'todos' || recipientNorm === dNorm) && !declinedNorm.includes(dNorm)) pendingCounts[d]++;
+        });
+      }
+    });
+
     const timelines = {};
     const timelineWindows = {};
     drivers.forEach(d => { timelines[d] = []; });
     if (timeRange === 'day' || timeRange === '-1' || timelineDate) {
       const tlStart = timelineDate ? timelineFilterDate : filterDate;
       const tlEnd   = timelineDate ? timelineEndDate   : endDate;
+
+      // 2. Mapeia ocorrências reais para a timeline (exclui roteiros e carretinhas)
+      // AGORA RESTRITO À JANELA tlStart..tlEnd para coincidir com o dashboard
+      reqData.forEach(row => {
+        const acceptedBy   = (row[COLUMN_INDICES.REQUESTS.ACEITA_POR  - 1] || '').toString().trim();
+        const acceptedDate = row[COLUMN_INDICES.REQUESTS.ACEITA_DATA   - 1];
+        const status       = (row[COLUMN_INDICES.REQUESTS.SITUACAO     - 1] || '').toString().trim().toLowerCase();
+
+        if (acceptedBy && acceptedDate && (status === 'aceita' || status === 'finalizada')) {
+          let tsAcc = parseTimestamp(acceptedDate);
+          if (tsAcc && tsAcc.getHours() === 0 && tsAcc.getMinutes() === 0 && tsAcc.getSeconds() === 0) {
+            const tsReq = parseTimestamp(row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1]);
+            if (tsReq) tsAcc = tsReq;
+          }
+
+          if (tsAcc && tsAcc >= tlStart && tsAcc <= tlEnd) {
+            const loc = (row[COLUMN_INDICES.REQUESTS.LOCAL - 1] || '').toString().toLowerCase();
+            const occCol = (row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '').toString().toLowerCase();
+            const dest = (row[COLUMN_INDICES.REQUESTS.DESTINATARIO - 1] || '').toString().toLowerCase();
+            
+            const isCarretinha = occCol.includes('carretinha') || loc.includes('carretinha') || dest.includes('carretinha');
+            const isRoteiro = occCol.includes('roteiro gerado') 
+              || loc.includes('roteiro autom') 
+              || loc.includes('criado via roteiro')
+              || loc.includes('via roteiro app')
+              || loc.includes('via app')
+              || loc.includes('roteiro app')
+              || loc.includes('app');
+
+            if (!isCarretinha && !isRoteiro) {
+              const pats = (row[COLUMN_INDICES.REQUESTS.PATRIMONIO - 1] || '').toString().trim().split(',').map(s => s.trim()).filter(Boolean);
+              pats.forEach(p => { 
+                occLookup[normDriver(acceptedBy) + '|' + normPat(p)] = true; 
+              });
+            }
+          }
+        }
+      });
+
       const driverFirstLast = {};
       reportsData.forEach(row => {
         const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
@@ -2219,7 +2229,7 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
           // O occLookup aplica os mesmos filtros do Dashboard Analítico:
           // exclui carretinha, roteiro automático, via app
           // NÃO usa coluna J do Relatório — foi gravada com filtros incorretos no passado
-          const isOcc = !!occLookup[driverRaw.toLowerCase() + '|' + pat];
+          const isOcc = !!occLookup[normDriver(driverRaw) + '|' + pat];
           timelines[driverKey].push({ tsMs: ts.getTime(), hour: ts.getHours(), min: ts.getMinutes(), type, bikeNumber: pat, observacao: obs, isOccurrence: isOcc });
         }
       });
