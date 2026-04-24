@@ -288,7 +288,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   // --- Dados ADM ---
   const [driversSummary, setDriversSummary] = useState<any[]>([]);
-  const [firebaseDriverStats, setFirebaseDriverStats] = useState<Record<string, {recolhidas: number, remanejada: number, naoEncontrada: number}>>({});
   const [trailersHistory, setTrailersHistory] = useState<any[]>([]);
   const [firebaseTimelineEvents, setFirebaseTimelineEvents] = useState<Record<string, Array<{tsMs: number, type: string, bikeNumber?: string}>>>({});
   const [timelineModal, setTimelineModal] = useState<{driver: string, events: any[], clusters: any[], startMs: number, endMs: number} | null>(null);
@@ -892,7 +891,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
             tsMs: ts.getTime(),
             type: data.type || 'em_posse',
             bikeNumber: data.bikeNumber || '',
-            observacao: data.observacao || ''
+            observacao: data.observacao || '',
+            isOccurrence: !!data.isOccurrence
           });
         });
         // Preserva eventos anteriores — mescla com novos
@@ -983,7 +983,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Mantemos o listener apenas para o próprio motorista ver seus dados instantâneos.
     // Listener reports REMOVIDO — stats via Sheets sync (12s) é suficiente
     // Economiza: ~30 leituras iniciais + 1 leitura por finalização
-    let unsubReports = () => {};
+    const unsubReports = () => {};
 
     return () => { unsubRequests(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); unsubReports(); };
   }, [driverName, isAdm, timelineDate, getStartOfDayTs]);
@@ -1021,7 +1021,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
     
     return () => unsubBikes();
-  }, [driverName, routeBikesKey]); // routeBikes removido — redundante com routeBikesKey
+  }, [driverName, routeBikesKey, routeBikes]); // routeBikesKey garante estabilidade, routeBikes satisfaz o linter
 
   // =================================================================
   // GARANTIA DE UNICIDADE
@@ -1291,13 +1291,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               status: 'Não encontrada', responsavel: null, ultimaAtualizacao: serverTimestamp()
             }, { merge: true }).catch(err => console.warn('[Firebase] bikes write:', err.code));
 
-            const timelinePromise = addDoc(collection(db, 'timeline_events'), {
-              driverName, bikeNumber, type: 'nao_encontrada',
-              timestamp: serverTimestamp(),
-              date: localDateStr(),
-              isOccurrence: !!routeBikesDetails[bikeNumber]?.ocorrencia || !!searchedBike?.ocorrencia,
-              observacao: 'Bicicleta não encontrada no local'
-            }).catch(e => console.warn('[Firebase] timeline write failed:', e));
+            const timelinePromise = Promise.resolve(); // nao_encontrada vem do Sheets
 
             const sheetsPromise = apiCall({
               action: 'finalizeCollectedBike', driverName, bikeNumber,
@@ -1463,13 +1457,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               setSyncAlert(`Falha ao registrar bike ${bikeNumber} no Sheets após várias tentativas. Verifique sua conexão.`);
             });
 
-            const timelinePromise = addDoc(collection(db, 'timeline_events'), {
-              driverName, bikeNumber, type: finalStatus === 'Estação' ? 'estacao' : 'filial',
-              timestamp: serverTimestamp(),
-              date: localDateStr(),
-              isOccurrence: isOccurrence,
-              observacao: finalObservation
-            }).catch(e => console.warn('[Firebase] timeline write failed:', e));
+            const timelinePromise = Promise.resolve(); // estacao/filial vêm do Sheets
 
             const persistPromise = persistDriverState(newRoute, newCollected);
 
@@ -1550,9 +1538,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const alreadyInPosse = bikesToAdd.filter(b => collectedBikes.includes(b));
     if (alreadyInPosse.length > 0) { alert(`Bikes já em sua posse: ${alreadyInPosse.join(', ')}`); return; }
 
-    const isTrailer = (reason || '').toUpperCase().includes('CARRETINHA') || (title || '').toUpperCase().includes('CARRETINHA');
-    const isRoute = (title || '').toLowerCase().includes('roteiro app') || (reason || '').toLowerCase() === 'roteiro';
-    const isPickupRequest = !isTrailer && !isRoute && !(title || '').toLowerCase().includes('app');
+    const lowerReason = (reason || '').toLowerCase();
+    const lowerTitle = (title || '').toLowerCase();
+    const isTrailer = lowerReason.includes('carretinha') || lowerTitle.includes('carretinha');
+    const isRoute = lowerTitle.includes('roteiro') || lowerReason.includes('roteiro') || lowerReason.includes('app') || lowerTitle.includes('app') || lowerTitle.includes('carretinha');
+    const isPickupRequest = !isTrailer && !isRoute;
 
     isUpdatingStateRef.current = true;
     setIsLoading(true);
@@ -1661,15 +1651,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             const trailerLabel = title || 'Carretinha';
 
             await Promise.all([
-              ...bikesToAdd.map(id => 
-                addDoc(collection(db, 'timeline_events'), {
-                  driverName, bikeNumber: id,
-                  type: 'carretinha',
-                  observacao: trailerLabel,
-                  timestamp: serverTimestamp(),
-                  date: localDateStr()
-                }).catch(() => {})
-              ),
+              // carretinha: não grava no Firebase — aparece via Sheets (tipo nao_atendida)
               persistDriverState(newRoute, newCollected),
               apiCall({ action: 'acceptRequest', requestId, driverName })
             ]);
@@ -3472,11 +3454,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         trailerName
       }, 1, true).catch(() => {});
 
-      // Limpa cache e força sync
-      clearCache('getMechanicsList');
-      clearCache('sync');
+      // Filtra as bikes da carretinha localmente para sumirem da lista imediatamente
+      setMechanicsList(prev => prev.filter(b => b.carretinha !== trailerName));
 
-      // Limpa proteção otimista para as bikes finalizadas para sumirem da lista imediatamente
+      // Limpa proteção otimista
       bikeIds.forEach(id => {
         delete mechanicOptimisticRef.current[String(id)];
       });
@@ -5247,12 +5228,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
               </div>
             </div>
             {driversSummary.filter(d => d.name.toLowerCase() === driverName.toLowerCase()).map((driver, i) => {
-              const isToday = timelineDate === localDateStr() && summaryTimeRange === 'day';
-              const fbStats = isToday ? firebaseDriverStats[driver.name] : null;
-              
-              const recolhidas = fbStats ? fbStats.recolhidas : (driver.stats?.recolhidas || 0);
-              const remanejada = fbStats ? fbStats.remanejada : (driver.stats?.remanejada || 0);
-              const naoEncontrada = fbStats ? fbStats.naoEncontrada : (driver.stats?.naoEncontrada || 0);
+              const recolhidas = driver.stats?.recolhidas || 0;
+              const remanejada = driver.stats?.remanejada || 0;
+              const naoEncontrada = driver.stats?.naoEncontrada || 0;
               const total = recolhidas + remanejada;
 
               return (
@@ -6046,46 +6024,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                             ))}
 
                             <button onClick={async () => {
-                              // Sequência diária estrita: 1→2→3→4→...
-                              // Agora busca do histórico no Firestore para garantir sincronia entre dispositivos
                               setIsLoading(true);
                               try {
-                                const today = localDateStr();
-                                const { getDocs: _gd, query: _q, where: _w, collection: _col, orderBy: _ob, limit: _lim } = await import('firebase/firestore');
-                                
-                                // Busca a última carretinha liberada hoje
-                                const q = _q(_col(db, 'trailers_history'), _w('date', '==', today), _ob('timestamp', 'desc'), _lim(1));
-                                const snap = await _gd(q);
-                                
-                                let lastNumber = 0;
-                                if (!snap.empty) {
-                                  const lastTrailer = snap.docs[0].data().trailerName;
-                                  const match = lastTrailer.match(/Carretinha (\d+)/);
-                                  if (match) lastNumber = parseInt(match[1]) || 0;
-                                }
-
-                                // Também verifica se há carretinhas ativas no mechanicsList que ainda não foram para o histórico
-                                const activeTrailerNames = activeEntries
-                                  .filter(([t]) => t !== 'Sem Carretinha')
-                                  .map(([t]) => {
-                                    const m = t.match(/Carretinha (\d+)/);
-                                    return m ? parseInt(m[1]) : 0;
-                                  });
-                                
-                                if (activeTrailerNames.length > 0) {
-                                  const maxActive = Math.max(...activeTrailerNames);
-                                  lastNumber = Math.max(lastNumber, maxActive);
-                                }
-
-                                // Também verifica localStorage (para o caso de criação offline/rápida)
-                                const lastUsedLocally = parseInt(localStorage.getItem(`trailer_seq_${localDateStr()}`) || '0');
-                                lastNumber = Math.max(lastNumber, lastUsedLocally);
-                                
-                                const next = lastNumber + 1;
+                                const r = await apiCall({ action: 'getNextTrailerNumber' });
+                                const next = r.success ? r.next : 1;
                                 handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
                               } catch (err: any) {
                                 console.error('Erro ao calcular sequência de carretinha:', err);
-                                // Fallback para o comportamento anterior se falhar
                                 const lastUsed = parseInt(localStorage.getItem(`trailer_seq_${localDateStr()}`) || '0');
                                 handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${lastUsed + 1}`);
                               } finally {
@@ -6419,18 +6364,22 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                               ...e,
                               type: e.type === 'filial' ? 'recolhida' : e.type
                             }));
-                            // Eventos Firebase (em_posse) disponíveis para a data selecionada
-                            const fbEvents = (firebaseTimelineEvents[driver.name] || []).map((e: any) => ({
-                              tsMs: e.tsMs, hour: new Date(e.tsMs).getHours(),
-                              min: new Date(e.tsMs).getMinutes(), 
-                              type: e.type === 'filial' ? 'recolhida' : e.type, 
-                              bikeNumber: e.bikeNumber,
-                              observacao: e.observacao,
-                              isOccurrence: e.isOccurrence
-                            }));
+                            // fbEvents: apenas 'em_posse' — único evento não registrado no Sheets
+                            // Estação/Recolhida/Não encontrada vêm do Sheets com isOccurrence correto via occLookup
+                            const fbEvents = (firebaseTimelineEvents[driver.name] || [])
+                              .filter((e: any) => e.type === 'em_posse')
+                              .map((e: any) => ({
+                                tsMs: e.tsMs, hour: new Date(e.tsMs).getHours(),
+                                min: new Date(e.tsMs).getMinutes(),
+                                type: 'em_posse',
+                                bikeNumber: e.bikeNumber,
+                                observacao: e.observacao || '',
+                                isOccurrence: !!e.isOccurrence
+                              }));
                             const merged = [...sheetsEvents];
-                            fbEvents.forEach(fe => {
-                              const isDup = sheetsEvents.some(se => se.type === fe.type && Math.abs(se.tsMs - fe.tsMs) < 2 * 60 * 1000);
+                            fbEvents.forEach((fe: any) => {
+                              // Dedup por bike + janela de 2min
+                              const isDup = sheetsEvents.some((se: any) => se.bikeNumber === fe.bikeNumber && Math.abs(se.tsMs - fe.tsMs) < 2 * 60 * 1000);
                               if (!isDup) merged.push(fe);
                             });
                             const events = merged.sort((a, b) => a.tsMs - b.tsMs);
@@ -6558,12 +6507,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           })()}
                           <div className="grid grid-cols-5 gap-1.5 mb-3">
                             {(() => {
-                              const isToday = timelineDate === localDateStr() && summaryTimeRange === 'day';
-                              const fbStats = isToday ? firebaseDriverStats[driver.name] : null;
-                              
-                              const recolhidas = fbStats ? fbStats.recolhidas : (driver.stats?.recolhidas || 0);
-                              const remanejada = fbStats ? fbStats.remanejada : (driver.stats?.remanejada || 0);
-                              const naoEncontrada = fbStats ? fbStats.naoEncontrada : (driver.stats?.naoEncontrada || 0);
+                              const recolhidas = driver.stats?.recolhidas || 0;
+                              const remanejada = driver.stats?.remanejada || 0;
+                              const naoEncontrada = driver.stats?.naoEncontrada || 0;
                               const total = recolhidas + remanejada;
 
                               return [
@@ -7488,7 +7434,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                       <div className="flex justify-between items-start">
                         <div className="flex flex-col">
                           <div className="flex items-center gap-2">
-                            <p className="font-mono text-gray-800 font-bold text-lg">{bike}</p>
+                            {details?.ocorrencia ? (
+                              <div className="w-12 h-12 rounded-full border-2 border-yellow-500 bg-yellow-50 flex items-center justify-center shadow-sm animate-pulse flex-shrink-0">
+                                <p className="font-mono text-gray-900 font-black text-sm">{bike}</p>
+                              </div>
+                            ) : (
+                              <p className="font-mono text-gray-800 font-bold text-lg">{bike}</p>
+                            )}
                             {details?.battery !== undefined && (
                               <div className="flex items-center gap-1.5">
                                 <div className="flex items-center justify-center w-8 h-8 rounded-full border-2 border-blue-500 text-[9px] font-bold text-blue-600 bg-white shadow-sm flex-shrink-0">{formatBattery(details.battery)}%</div>

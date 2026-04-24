@@ -38,7 +38,6 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
   const [searchTerm, setSearchTerm] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editData, setEditData] = useState<Partial<FirebaseReport>>({});
   const [isSyncing, setIsSyncing] = useState(false);
   const [selectedDate, setSelectedDate] = useState(localDateStr());
 
@@ -95,7 +94,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
   useEffect(() => {
     if (!isOpen) return;
     fetchFromSheets(selectedDate);
-  }, [isOpen, selectedDate]);
+  }, [isOpen, selectedDate, fetchFromSheets]);
 
   // =================================================================
   // Adicionar registro manual — ainda grava no Sheets via logReport
@@ -129,7 +128,8 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
       setNewReport({ patrimonio: '', status: '', observacao: '', motorista: '', type: 'Manual' });
       setIsAdding(false);
       await fetchFromSheets(selectedDate);
-    } catch (error) {
+    } catch (err: any) {
+      console.error(err);
       alert('Erro ao adicionar registro.');
     } finally {
       setIsLoading(false);
@@ -144,17 +144,16 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
       return;
     }
     setEditingId(report.id || null);
-    setEditData({ ...report });
   };
 
-  const handleCancelEdit = () => { setEditingId(null); setEditData({}); };
+  const handleCancelEdit = () => { setEditingId(null); };
 
   const handleSaveEdit = async () => {
     alert('Edição de registros será implementada em breve.');
     setEditingId(null);
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async () => {
     alert('Exclusão de registros do Sheets deve ser feita diretamente na planilha.');
   };
 
@@ -349,7 +348,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
                           ) : (
                             <>
                               <button onClick={() => handleStartEdit(report)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg" title="Editar"><EditIcon className="w-4 h-4" /></button>
-                              <button onClick={() => report.id && handleDelete(report.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Excluir"><TrashIcon className="w-4 h-4" /></button>
+                              <button onClick={handleDelete} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Excluir"><TrashIcon className="w-4 h-4" /></button>
                             </>
                           )}
                         </div>
