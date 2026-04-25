@@ -504,8 +504,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }
       } else {
         // Está no Firebase. 
-        // Prioridade 1: Se o status do Firebase for ATIVO, ele prevalece sobre o servidor.
-        if (activeStatuses.includes(fbBike.status)) {
+        const fbStatus = fbBike.status || '';
+        const sStatus = sBike.status || '';
+        
+        // EXCEÇÃO: Se o servidor (Sheets) diz 'Aguardando Manutenção' e o Firebase ainda diz 'Alterar Status',
+        // o servidor prevalece, pois a bike já teve seu status mestre alterado para Manutenção na aba Bicicletas.
+        const isMasterMaintenance = sStatus === 'Aguardando Manutenção' && fbStatus === 'Alterar Status';
+
+        // Prioridade 1: Se o status do Firebase for ATIVO, ele prevalece sobre o servidor (exceto para o caso mestre acima).
+        if (activeStatuses.includes(fbStatus) && !isMasterMaintenance) {
           result.push({
             ...fbBike,
             // Prioridade para bateria e carregamento LIVE, depois servidor (Sheets), depois Firebase
@@ -514,17 +521,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
             dataEntrada: fbBike.dataEntrada?.toDate?.() || fbBike.dataEntrada || new Date(),
           });
         } 
-        // Prioridade 2: Se o status do Firebase NÃO for ativo (ex: 'Remanejada' ou 'Finalizada')
-        // mas o servidor diz 'Alterar Status' (novo registro no Relatório), o servidor prevalece.
-        else if (sBike.status === 'Alterar Status') {
-          result.push({
-            ...sBike,
-            bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : sBike.bateria,
-            carregamento: live?.['Carregando'] !== undefined ? live['Carregando'] : sBike.carregamento
-          });
-        }
-        // Caso contrário, se o status do servidor for válido (ex: 'Não encontrada'), mantém ele
-        else if (validMechanicsStatuses.includes(sBike.status)) {
+        // Prioridade 2: Se o status do Firebase NÃO for ativo ou se for a exceção de Manutenção
+        else if (isMasterMaintenance || sStatus === 'Alterar Status' || validMechanicsStatuses.includes(sStatus)) {
           result.push({
             ...sBike,
             bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : sBike.bateria,

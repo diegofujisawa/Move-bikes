@@ -2881,7 +2881,7 @@ function getMechanicsList() {
           const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
           if (!lastStatusByBike[pat] || tsMs >= lastStatusByBike[pat].tsMs) lastStatusByBike[pat] = { tsMs, status };
           const statusSistema = (row[COLUMN_INDICES.REPORTS.STATUS_SISTEMA - 1] || '').toString().trim().toLowerCase();
-          const isInitial = /recolhida|vandalizad|filial|recolher|vandalismo|roubada|recuperada|manuten[çc]ão|oficina/.test(status) || /manuten[çc]ão/.test(statusSistema);
+          const isInitial = /recolhida|vandalizad|filial|recolher|vandalismo|manuten[çc]ão|oficina/.test(status) || /manuten[çc]ão/.test(statusSistema);
           if (isInitial) {
             if (!reportEntries[pat] || tsMs >= reportEntries[pat].tsMs) {
               const prev = reportEntries[pat] || {};
@@ -2928,10 +2928,14 @@ function getMechanicsList() {
     const info = bikeInfoMap[pat] || {};
     const isMechActive = mechData && (mechData.status === 'Aguardando Manutenção' || mechData.status === 'Em Manutenção' || mechData.status === 'Reserva' || mechData.status === 'Aguardando Técnica' || mechData.status === 'Em Técnica');
     const statusLow = entry.status.toLowerCase();
-    const isReportInitial = /recolhida|vandalizad|filial|recolher|vandalismo|roubada|recuperada|manuten[çc]ão|oficina/.test(statusLow);
+    const isReportInitial = /recolhida|vandalizad|filial|recolher|vandalismo|manuten[çc]ão|oficina/.test(statusLow);
     if (mechData && (mechData.tsMs >= entry.tsMs || (isMechActive && isReportInitial))) {
       if (mechData.status === 'Remanejada') return;
-      bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: mechData.status, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: mechData.manual, motorista: entry.motorista || '', observacao: entry.observacao || '' };
+      let displayStatus = mechData.status;
+      if (displayStatus === 'Alterar Status' && info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina'))) {
+        displayStatus = 'Aguardando Manutenção';
+      }
+      bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: mechData.manual, motorista: entry.motorista || '', observacao: entry.observacao || '' };
     } else {
       let finalStatus = 'Alterar Status';
       // Se identificarmos no sheets aba Bicicletas que o status é Manutenção, pula Alterar Status
@@ -2944,7 +2948,11 @@ function getMechanicsList() {
   Object.entries(mechanicsStatus).forEach(([pat, mechData]) => {
     if (bikeMap[pat]) return;
     const info = bikeInfoMap[pat] || {};
-    bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: mechData.status, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: true };
+    let displayStatus = mechData.status;
+    if (displayStatus === 'Alterar Status' && info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina'))) {
+      displayStatus = 'Aguardando Manutenção';
+    }
+    bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: true };
   });
   const result = Object.values(bikeMap).filter(b => b.status !== 'Remanejada');
   try { cache.put(mechCacheKey, JSON.stringify(result), 60); } catch(e) {}
