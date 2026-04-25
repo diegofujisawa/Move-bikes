@@ -553,8 +553,8 @@ function handleSync(request) {
       // para garantir sincronia entre contador (pendingCounts) e lista de notificações
       const toCache = JSON.parse(JSON.stringify(response));
       delete toCache.data.requests;
-      // v85.22: Reduz cache para motoristas para 12s para garantir frescor após ações
-      const ttl = isAdm ? 45 : 12;
+      // v85.23: Reduz cache para motoristas para 3s para garantir frescor após ações e evitar persistência de bikes entregues
+      const ttl = isAdm ? 45 : 3;
       cache.put(cacheKey, JSON.stringify(toCache), ttl);
     } catch (e) {}
 
@@ -869,7 +869,7 @@ function getChassiInfo(bikeNumber) {
 }
 
 // Helper para identificar bikes que já tiveram baixa recentemente (60 min)
-function getFinalizedBikesToday(limit = 1000) {
+function getFinalizedBikesToday(limit = 1000, customBlockers = null) {
   const sheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
   const finalized = new Set();
   if (!sheet) return finalized;
@@ -879,7 +879,7 @@ function getFinalizedBikesToday(limit = 1000) {
   // Lê colunas: Timestamp (1), Patrimônio (2), Status (3), Observação (4), Motorista (5)
   const data = sheet.getRange(lastRow - numCheck + 1, 1, numCheck, 5).getValues();
   const now = new Date();
-  const blockers = ['estação', 'estacao', 'recolhida', 'filial', 'vandalizada', 'remanejada', 'em posse', 'finalizada'];
+  const blockers = customBlockers || ['estação', 'estacao', 'recolhida', 'filial', 'vandalizada', 'remanejada', 'em posse', 'finalizada'];
   data.forEach(row => {
     const ts = row[0];
     const pat = String(row[1]).trim();
@@ -887,7 +887,6 @@ function getFinalizedBikesToday(limit = 1000) {
     const driver = String(row[4] || '').trim().toLowerCase();
     if (!pat) return;
     const tsDate = ts instanceof Date ? ts : parseTimestamp(ts);
-    // v85.20: Bloqueio por 60 minutos ao invés de data
     if (tsDate && (Math.abs(now - tsDate) / 60000 < 60) && blockers.some(s => st.includes(s))) {
       finalized.add(pat);
       finalized.add(String(parseFloat(pat)));
@@ -1330,16 +1329,24 @@ function getDriverState(driverName, providedSheet) {
   if (!sheet) return { success: true, data: { routeBikes: [], collectedBikes: [] } };
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return { success: true, data: { routeBikes: [], collectedBikes: [] } };
+  
+  // v85.23: Filtra bikes entregues recentemente (60 min) para garantir que não retornem ao app
+  const deliveredRecently = getFinalizedBikesToday(500, ['estação', 'estacao', 'filial', 'vandalizada', 'remanejada', 'mecanica', 'manutenção', 'técnica', 'recuperada', 'encontrada']);
   const normTarget = normalizeName(driverName);
   const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  
   for (let i = 0; i < data.length; i++) {
     if (normalizeName(data[i][COLUMN_INDICES.STATE.MOTORISTA - 1]) === normTarget) {
+      let route     = (data[i][COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
+      let collected = (data[i][COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
+      
+      // Filtra bikes que tiveram baixa no relatório recentemente
+      route = route.filter(b => !deliveredRecently.has(b));
+      collected = collected.filter(b => !deliveredRecently.has(b));
+
       return {
         success: true,
-        data: {
-          routeBikes:    (data[i][COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean),
-          collectedBikes:(data[i][COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean)
-        }
+        data: { routeBikes: route, collectedBikes: collected }
       };
     }
   }
@@ -1517,7 +1524,7 @@ function finalizeCollectedBike(request) {
     const bikeDetails  = bikeResult.data;
     routeBikes     = routeBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
     collectedBikes = collectedBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
-    const reportStatus = finalStatus === 'Filial' ? 'Recolhida' : finalStatus;
+    const reportStatus = finalStatus === 'Filial' ? 'Recolhida (Filial)' : finalStatus;
     const rowData = new Array(10).fill('');
     rowData[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]  = new Date();
     rowData[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] = bikeNumber;
@@ -2260,13 +2267,17 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
     const lastRowSt = stateSheet.getLastRow();
     const stateData = lastRowSt > 1 ? stateSheet.getRange(2, 1, lastRowSt - 1, stateSheet.getLastColumn()).getValues() : [];
     const realTime = {};
+    const deliveredRecently = getFinalizedBikesToday(500, ['estação', 'estacao', 'filial', 'vandalizada', 'remanejada', 'mecanica', 'manutenção', 'técnica', 'recuperada', 'encontrada']);
     stateData.forEach(row => {
       const driver = row[COLUMN_INDICES.STATE.MOTORISTA - 1];
       if (drivers.includes(driver)) {
-        realTime[driver] = {
-          route:     (row[COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean),
-          collected: (row[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean)
-        };
+        let route     = (row[COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
+        let collected = (row[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
+        
+        route = route.filter(b => !deliveredRecently.has(b));
+        collected = collected.filter(b => !deliveredRecently.has(b));
+
+        realTime[driver] = { route, collected };
       }
     });
     const pendingCounts = {};
@@ -2928,18 +2939,20 @@ function getMechanicsList() {
     const info = bikeInfoMap[pat] || {};
     const isMechActive = mechData && (mechData.status === 'Aguardando Manutenção' || mechData.status === 'Em Manutenção' || mechData.status === 'Reserva' || mechData.status === 'Aguardando Técnica' || mechData.status === 'Em Técnica');
     const statusLow = entry.status.toLowerCase();
-    const isReportInitial = /recolhida|vandalizad|filial|recolher|vandalismo|manuten[çc]ão|oficina/.test(statusLow);
-    if (mechData && (mechData.tsMs >= entry.tsMs || (isMechActive && isReportInitial))) {
+    const isMaintenanceReport = /manuten[çc]ão|oficina/.test(statusLow);
+    const isReportInitial = /recolhida|vandalizad|filial|recolher|vandalismo/.test(statusLow);
+    
+    if (mechData && (mechData.tsMs >= entry.tsMs || (isMechActive && (isReportInitial || isMaintenanceReport)))) {
       if (mechData.status === 'Remanejada') return;
       let displayStatus = mechData.status;
-      if (displayStatus === 'Alterar Status' && info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina'))) {
+      if (displayStatus === 'Alterar Status' && (isMaintenanceReport || (info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina'))))) {
         displayStatus = 'Aguardando Manutenção';
       }
       bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: mechData.manual, motorista: entry.motorista || '', observacao: entry.observacao || '' };
     } else {
       let finalStatus = 'Alterar Status';
-      // Se identificarmos no sheets aba Bicicletas que o status é Manutenção, pula Alterar Status
-      if (info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina'))) {
+      // Se for um reporte de manutenção ou se o status no sistema já for Manutenção, pula 'Alterar Status'
+      if (isMaintenanceReport || (info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina')))) {
         finalStatus = 'Aguardando Manutenção';
       }
       bikeMap[pat] = { row: -1, patrimonio: pat, status: finalStatus, dataEntrada: new Date(entry.tsMs), mecanico: '', tratativa: '', dataFinalizacao: '', carretinha: '', bateria: info.bateria, carregamento: info.carregamento, motorista: entry.motorista || '', observacao: entry.observacao || '', manual: false };
