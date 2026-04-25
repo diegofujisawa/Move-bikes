@@ -1,24 +1,13 @@
 // =================================================================
 // SCRIPT DE BACKEND - APLICATIVO DE REGISTRO DE BICICLETAS
-// Versão: 85.7-analytical-fix
-// Otimizações aplicadas (v85.6):
-//   - handleSync: cache aumentado de 8s → 45s
-//   - getMechanicsList: cache 60s adicionado + scan Relatório 10000 → 1000 linhas
-//   - getAlerts: forceScan desativado (lê só aba Alertas pré-computada)
-//   - getAlerts: cache aumentado de 300s → 600s
-//   - getVandalized: cache aumentado de 30s → 120s
-//   - getChangeStatusData: cache aumentado de 30s → 120s
-//   - getBikeStatuses: cache aumentado de 5s → 30s
-// Correções aplicadas (v85.7):
-//   - getAdminAlerts: função stub adicionada (evitava erro em runtime no handleSync)
-//   - getAnalyticalDashboardData: lógica de solicitações corrigida
-//     * Enviadas = solicitações aceitas pelo motorista no período (por patrimônio)
-//     * Atendidas = cruzamento real com Relatorio (motorista aceitou E finalizou)
-//     * Garante atendidas <= enviadas via Math.min
+// Versão: 85.22-persistence-fix
+// Otimizações aplicadas (v85.22):
+//   - FinalizeRouteBike agora usa LockService e salva estado do motorista.
+//   - Frontend persiste metadados de carência no localStorage.
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.20-60min-block';
+const BACKEND_VERSION = '85.22-state-stability';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -564,7 +553,9 @@ function handleSync(request) {
       // para garantir sincronia entre contador (pendingCounts) e lista de notificações
       const toCache = JSON.parse(JSON.stringify(response));
       delete toCache.data.requests;
-      cache.put(cacheKey, JSON.stringify(toCache), 45);
+      // v85.22: Reduz cache para motoristas para 12s para garantir frescor após ações
+      const ttl = isAdm ? 45 : 12;
+      cache.put(cacheKey, JSON.stringify(toCache), ttl);
     } catch (e) {}
 
     return response;
@@ -1356,65 +1347,76 @@ function getDriverState(driverName, providedSheet) {
 }
 
 function updateDriverState(driverName, routeBikes, collectedBikes) {
+  const lock = LockService.getScriptLock();
   try {
-    const sheet = getSpreadsheet().getSheetByName(STATE_SHEET_NAME);
-    if (!sheet) throw new Error(`Planilha "${STATE_SHEET_NAME}" não encontrada.`);
-    const lastRow = sheet.getLastRow();
-    const lastCol = sheet.getLastColumn() || 4;
-    const routeStr = Array.isArray(routeBikes) ? [...new Set(routeBikes.map(b => String(b).trim()))].filter(Boolean).join(', ') : '';
-    const collectedStr = Array.isArray(collectedBikes) ? [...new Set(collectedBikes.map(b => String(b).trim()))].filter(Boolean).join(', ') : '';
-    const allBikes = [...new Set([
-      ...(Array.isArray(routeBikes) ? routeBikes.map(b => String(b).trim()).filter(Boolean) : []),
-      ...(Array.isArray(collectedBikes) ? collectedBikes.map(b => String(b).trim()).filter(Boolean) : [])
-    ])];
-    const normTarget = normalizeName(driverName);
-    if (lastRow < 2) {
-      const newRow = new Array(lastCol).fill('');
-      newRow[COLUMN_INDICES.STATE.MOTORISTA - 1] = driverName;
-      newRow[COLUMN_INDICES.STATE.ROTEIRO - 1]   = routeStr;
-      newRow[COLUMN_INDICES.STATE.RECOLHIDAS - 1]= collectedStr;
-      sheet.appendRow(newRow);
-      return { success: true };
-    }
-    const allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
-    const dataRows = allData.slice(1);
-    const driverColIdx    = COLUMN_INDICES.STATE.MOTORISTA - 1;
-    const routeColIdx     = COLUMN_INDICES.STATE.ROTEIRO - 1;
-    const collectedColIdx = COLUMN_INDICES.STATE.RECOLHIDAS - 1;
-    let driverFound = false, changed = false;
-    for (let i = 0; i < dataRows.length; i++) {
-      const currentNorm = normalizeName(dataRows[i][driverColIdx]);
-      if (currentNorm === normTarget) {
-        if (dataRows[i][routeColIdx] !== routeStr || dataRows[i][collectedColIdx] !== collectedStr) {
-          dataRows[i][routeColIdx] = routeStr;
-          dataRows[i][collectedColIdx] = collectedStr;
-          changed = true;
-        }
-        driverFound = true;
-      } else if (allBikes.length > 0) {
-        let otherRoute     = String(dataRows[i][routeColIdx] || '').split(',').map(s => s.trim()).filter(Boolean);
-        let otherCollected = String(dataRows[i][collectedColIdx] || '').split(',').map(s => s.trim()).filter(Boolean);
-        const before = otherRoute.length + otherCollected.length;
-        allBikes.forEach(bike => { otherRoute = otherRoute.filter(b => b !== bike); otherCollected = otherCollected.filter(b => b !== bike); });
-        if (otherRoute.length + otherCollected.length !== before) {
-          dataRows[i][routeColIdx] = otherRoute.join(', ');
-          dataRows[i][collectedColIdx] = otherCollected.join(', ');
-          changed = true;
-        }
-      }
-    }
-    if (!driverFound) {
-      const newRow = new Array(allData[0].length).fill('');
-      newRow[driverColIdx] = driverName; newRow[routeColIdx] = routeStr; newRow[collectedColIdx] = collectedStr;
-      sheet.appendRow(newRow);
-    } else if (changed) {
-      sheet.getRange(2, 1, dataRows.length, allData[0].length).setValues(dataRows);
-    }
-    CacheService.getScriptCache().remove('bike_statuses');
-    return { success: true };
+    lock.waitLock(15000);
+    return _updateDriverStateInternal(driverName, routeBikes, collectedBikes);
   } catch (e) {
     return { success: false, error: e.message };
+  } finally {
+    lock.releaseLock();
   }
+}
+
+function _updateDriverStateInternal(driverName, routeBikes, collectedBikes) {
+  const sheet = getSpreadsheet().getSheetByName(STATE_SHEET_NAME);
+  if (!sheet) throw new Error(`Planilha "${STATE_SHEET_NAME}" não encontrada.`);
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn() || 4;
+  const routeStr = Array.isArray(routeBikes) ? [...new Set(routeBikes.map(b => String(b).trim()))].filter(Boolean).sort().join(', ') : '';
+  const collectedStr = Array.isArray(collectedBikes) ? [...new Set(collectedBikes.map(b => String(b).trim()))].filter(Boolean).sort().join(', ') : '';
+  const allBikes = [...new Set([
+    ...(Array.isArray(routeBikes) ? routeBikes.map(b => String(b).trim()).filter(Boolean) : []),
+    ...(Array.isArray(collectedBikes) ? collectedBikes.map(b => String(b).trim()).filter(Boolean) : [])
+  ])];
+  const normTarget = normalizeName(driverName);
+  if (lastRow < 2) {
+    const newRow = new Array(lastCol).fill('');
+    newRow[COLUMN_INDICES.STATE.MOTORISTA - 1] = driverName;
+    newRow[COLUMN_INDICES.STATE.ROTEIRO - 1]   = routeStr;
+    newRow[COLUMN_INDICES.STATE.RECOLHIDAS - 1]= collectedStr;
+    sheet.appendRow(newRow);
+    return { success: true };
+  }
+  const allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  const dataRows = allData.slice(1);
+  const driverColIdx    = COLUMN_INDICES.STATE.MOTORISTA - 1;
+  const routeColIdx     = COLUMN_INDICES.STATE.ROTEIRO - 1;
+  const collectedColIdx = COLUMN_INDICES.STATE.RECOLHIDAS - 1;
+  let driverFound = false, changed = false;
+  for (let i = 0; i < dataRows.length; i++) {
+    const currentNorm = normalizeName(dataRows[i][driverColIdx]);
+    if (currentNorm === normTarget) {
+      if (String(dataRows[i][routeColIdx]).trim() !== String(routeStr).trim() || String(dataRows[i][collectedColIdx]).trim() !== String(collectedStr).trim()) {
+        dataRows[i][routeColIdx] = routeStr;
+        dataRows[i][collectedColIdx] = collectedStr;
+        changed = true;
+      }
+      driverFound = true;
+    } else if (allBikes.length > 0) {
+      let otherRoute     = String(dataRows[i][routeColIdx] || '').split(',').map(s => s.trim()).filter(Boolean);
+      let otherCollected = String(dataRows[i][collectedColIdx] || '').split(',').map(s => s.trim()).filter(Boolean);
+      const before = otherRoute.length + otherCollected.length;
+      allBikes.forEach(bike => { 
+        otherRoute = otherRoute.filter(b => b !== bike); 
+        otherCollected = otherCollected.filter(b => b !== bike); 
+      });
+      if (otherRoute.length + otherCollected.length !== before) {
+        dataRows[i][routeColIdx] = otherRoute.sort().join(', ');
+        dataRows[i][collectedColIdx] = otherCollected.sort().join(', ');
+        changed = true;
+      }
+    }
+  }
+  if (!driverFound) {
+    const newRow = new Array(allData[0].length).fill('');
+    newRow[driverColIdx] = driverName; newRow[routeColIdx] = routeStr; newRow[collectedColIdx] = collectedStr;
+    sheet.appendRow(newRow);
+  } else if (changed) {
+    sheet.getRange(2, 1, dataRows.length, allData[0].length).setValues(dataRows);
+  }
+  CacheService.getScriptCache().remove('bike_statuses');
+  return { success: true };
 }
 
 function clearDriverRoute(driverName) {
@@ -1471,7 +1473,9 @@ function getAllPatrimonioNumbers() {
 // --- FINALIZAÇÃO DE BIKES ---
 // =================================================================
 function finalizeRouteBike(request) {
+  const lock = LockService.getScriptLock();
   try {
+    lock.waitLock(15000);
     const { driverName, bikeNumber, finalStatus, finalObservation } = request;
     const stateResult = getDriverState(driverName);
     let routeBikes    = stateResult.success ? stateResult.data.routeBikes : [];
@@ -1479,21 +1483,31 @@ function finalizeRouteBike(request) {
     const bikeResult  = searchBike(bikeNumber);
     if (!bikeResult.success) throw new Error(`Bicicleta ${bikeNumber} não encontrada.`);
     const bikeDetails = bikeResult.data;
+    
     routeBikes = routeBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
     collectedBikes = collectedBikes.filter(b => String(b).trim() !== String(bikeNumber).trim());
     if (finalStatus === 'Recolhida') collectedBikes.push(bikeNumber);
+    
+    // Atualiza o estado do motorista na planilha
+    _updateDriverStateInternal(driverName, routeBikes, collectedBikes);
+
     const statusLower = finalStatus.toLowerCase();
     if (statusLower.includes('recolhida') || statusLower.includes('vandalizada') || statusLower.includes('filial')) addToMechanics(bikeNumber);
+
     const rowData = [new Date(), bikeNumber, finalStatus, finalObservation, driverName,
       bikeDetails['Status'], bikeDetails['Bateria'], bikeDetails['Trava'], bikeDetails['Localidade']];
     return logReport(rowData);
   } catch (e) {
     return { success: false, error: e.message };
+  } finally {
+    lock.releaseLock();
   }
 }
 
 function finalizeCollectedBike(request) {
+  const lock = LockService.getScriptLock();
   try {
+    lock.waitLock(20000); // Espera um pouco mais pois envolve múltiplas operações
     const { driverName, bikeNumber, finalStatus, finalObservation } = request;
     const stateResult  = getDriverState(driverName);
     let routeBikes     = stateResult.success ? stateResult.data.routeBikes : [];
@@ -1522,10 +1536,14 @@ function finalizeCollectedBike(request) {
     if (finalStatus !== 'Carretinha') reportResult = logReport(rowData);
     const statusLower = finalStatus.toLowerCase();
     if (statusLower.includes('filial') || statusLower.includes('vandalizada') || statusLower.includes('recolhida')) addToMechanics(bikeNumber);
-    updateDriverState(driverName, routeBikes, collectedBikes);
+    
+    // Usa versão interna pois já detemos o lock aqui em finalizeCollectedBike
+    _updateDriverStateInternal(driverName, routeBikes, collectedBikes);
     return { ...reportResult, bikeDetails };
   } catch (e) {
     return { success: false, error: e.message };
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -2824,7 +2842,8 @@ function getMechanicsList() {
       else if (typeof bateria === 'string' && bateria.includes('%')) bateria = parseInt(bateria.replace('%', ''));
       const carregamentoRaw = (row[COLUMN_INDICES.BIKES.CARREGAMENTO - 1] || '').toString().trim();
       const carregamento = carregamentoRaw.toLowerCase() === 'carregando' ? 'Carregando' : (carregamentoRaw ? 'Não carregando' : '');
-      const info = { bateria, carregamento };
+      const statusBicicletas = (row[COLUMN_INDICES.BIKES.STATUS - 1] || '').toString().trim().toLowerCase();
+      const info = { bateria, carregamento, statusBicicletas };
       bikeInfoMap[pat] = info;
       const patSemZeros = pat.replace(/^0+/, '');
       if (patSemZeros !== pat) bikeInfoMap[patSemZeros] = info;
@@ -2914,7 +2933,12 @@ function getMechanicsList() {
       if (mechData.status === 'Remanejada') return;
       bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: mechData.status, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: mechData.manual, motorista: entry.motorista || '', observacao: entry.observacao || '' };
     } else {
-      bikeMap[pat] = { row: -1, patrimonio: pat, status: 'Alterar Status', dataEntrada: new Date(entry.tsMs), mecanico: '', tratativa: '', dataFinalizacao: '', carretinha: '', bateria: info.bateria, carregamento: info.carregamento, motorista: entry.motorista || '', observacao: entry.observacao || '', manual: false };
+      let finalStatus = 'Alterar Status';
+      // Se identificarmos no sheets aba Bicicletas que o status é Manutenção, pula Alterar Status
+      if (info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina'))) {
+        finalStatus = 'Aguardando Manutenção';
+      }
+      bikeMap[pat] = { row: -1, patrimonio: pat, status: finalStatus, dataEntrada: new Date(entry.tsMs), mecanico: '', tratativa: '', dataFinalizacao: '', carretinha: '', bateria: info.bateria, carregamento: info.carregamento, motorista: entry.motorista || '', observacao: entry.observacao || '', manual: false };
     }
   });
   Object.entries(mechanicsStatus).forEach(([pat, mechData]) => {

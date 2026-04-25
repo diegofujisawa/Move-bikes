@@ -60,7 +60,7 @@ import { migrateDataToFirebase } from '../migrationService';
 
 // Janela de proteção após ação do motorista (ms).
 // Durante esse período, o sync do Sheets não sobrescreve o estado local.
-const DRIVER_ACTION_GRACE_MS = 45000; // 45 segundos — maior margem para latência do Sheets
+const DRIVER_ACTION_GRACE_MS = 120000; // 120 segundos — maior margem para latência do Sheets e evitar retorno de bikes finalizadas
 
 interface MainScreenProps {
   driverName: string;
@@ -189,6 +189,11 @@ testConnection();
 const localDateStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+
+const normalizeName = (name: string) => {
+  if (!name) return '';
+  return name.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 };
 
 // =================================================================
@@ -408,8 +413,25 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const processingBikesRef = useRef<Set<string>>(new Set());
 
   const markBikeHandled = useCallback((bikeNumber: string) => {
-    recentlyHandledBikesRef.current.set(String(bikeNumber), Date.now());
-  }, []);
+    const now = Date.now();
+    const bikeId = String(bikeNumber);
+    recentlyHandledBikesRef.current.set(bikeId, now);
+    // Persiste no localStorage
+    try {
+      const metaKey = `driver_meta_${normalizeName(driverName)}`;
+      const meta = JSON.parse(localStorage.getItem(metaKey) || '{}');
+      if (!meta.recentlyHandled) meta.recentlyHandled = {};
+      meta.recentlyHandled[bikeId] = now;
+      
+      // Limpeza de itens antigos (> 10 min) para não explodir o localStorage
+      const tenMinAgo = now - 600000;
+      Object.keys(meta.recentlyHandled).forEach(id => {
+        if (meta.recentlyHandled[id] < tenMinAgo) delete meta.recentlyHandled[id];
+      });
+      
+      localStorage.setItem(metaKey, JSON.stringify(meta));
+    } catch {}
+  }, [driverName]);
 
   // Ref para refreshAll — evita dependência circular com persistDriverState
   const refreshAllRef = useRef<((force?: boolean) => Promise<void>) | null>(null);
@@ -601,7 +623,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
    * Durante DRIVER_ACTION_GRACE_MS, o sync do Sheets não sobrescreve.
    */
   const markDriverAction = () => {
-    lastDriverActionAt.current = Date.now();
+    const now = Date.now();
+    lastDriverActionAt.current = now;
+    // Persiste no localStorage para durar após reloads
+    try {
+      const metaKey = `driver_meta_${normalizeName(driverName)}`;
+      const meta = JSON.parse(localStorage.getItem(metaKey) || '{}');
+      meta.lastDriverActionAt = now;
+      localStorage.setItem(metaKey, JSON.stringify(meta));
+    } catch {}
   };
 
   /**
@@ -657,11 +687,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
    * Grava o estado do motorista no Firebase e envia para Sheets em paralelo.
    * Após Sheets confirmar, dispara sync imediato via ref (sem dependência circular).
    */
-  const normalizeName = (name: string) => {
-    if (!name) return '';
-    return name.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  };
-
   const persistDriverState = useCallback(async (
     newRoute: string[],
     newCollected: string[]
@@ -677,7 +702,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
       sheetsSync: false,
     }, { merge: true }).catch(e => console.warn('[Firebase] users write:', e.code));
 
-    // 2. Sheets em paralelo — fonte de verdade para estado
+    // 2. Local Cache Update — essencial para evitar bikes retornando após reload/crash
+    const cacheKey = `cached_main_data_${driverName}_${category}_${localDateStr()}`;
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      try {
+        const d = JSON.parse(cached);
+        if (!d.driverState) d.driverState = {};
+        d.driverState.routeBikes = dedupRoute;
+        d.driverState.collectedBikes = dedupCollected;
+        localStorage.setItem(cacheKey, JSON.stringify(d));
+      } catch (e) { console.warn('[Cache] Erro ao atualizar cache local:', e); }
+    }
+
+    // 3. Sheets em paralelo — fonte de verdade para estado
     return apiCall({
       action: 'updateDriverState',
       driverName,
@@ -689,7 +727,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       console.warn('[Sheets] updateDriverState falhou:', e);
       throw e;
     });
-  }, [driverName]);
+  }, [driverName, category]);
 
   const fetchBikeDetailsForReport = async (bikeNumber: string, timeoutMs = 5000) => {
     // Tenta usar dados locais se disponíveis (evita API call extra se já pesquisou)
@@ -4119,6 +4157,29 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
   useEffect(() => {
     const today = localDateStr();
     const cacheKey = `cached_main_data_${driverName}_${category}_${today}`;
+    const metaKey = `driver_meta_${normalizeName(driverName)}`;
+
+    // 1. Restaura Metadados (Ações Recentes) para manter o período de carência após reload
+    try {
+      const metaStr = localStorage.getItem(metaKey);
+      if (metaStr) {
+        const meta = JSON.parse(metaStr);
+        if (meta.lastDriverActionAt) {
+          lastDriverActionAt.current = meta.lastDriverActionAt;
+        }
+        if (meta.recentlyHandled) {
+          const now = Date.now();
+          const tenMinAgo = now - 600000;
+          Object.entries(meta.recentlyHandled).forEach(([id, ts]) => {
+            if ((ts as number) > tenMinAgo) {
+              recentlyHandledBikesRef.current.set(id, ts as number);
+            }
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[Session] Erro ao restaurar metadados:', e);
+    }
     
     // Limpeza de caches antigos deste usuário
     const prefix = `cached_main_data_${driverName}_${category}_`;

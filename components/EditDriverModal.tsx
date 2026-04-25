@@ -32,22 +32,36 @@ const EditDriverModal: React.FC<EditDriverModalProps> = ({ isOpen, onClose, driv
     if (!isOpen || !driver) return null;
 
     const handleAddBike = () => {
-        const bike = newBike.trim();
-        if (!bike) return;
+        const input = newBike.trim();
+        if (!input) return;
 
-        if (activeTab === 'route') {
-            // Não adiciona ao roteiro se já estiver no roteiro ou já estiver em posse
-            if (!routeBikes.includes(bike) && !collectedBikes.includes(bike)) {
-                setRouteBikes([...routeBikes, bike]);
-            } else if (collectedBikes.includes(bike)) {
-                alert(`A bicicleta ${bike} já está em posse do motorista.`);
+        // Suporta adicionar múltiplas bikes separadas por vírgula
+        const bikesToAdd = input.split(',').map(b => b.trim()).filter(b => b !== '');
+        
+        if (bikesToAdd.length === 0) return;
+
+        let updatedRoute = [...routeBikes];
+        const updatedCollected = [...collectedBikes];
+        let wasAdded = false;
+
+        bikesToAdd.forEach(bike => {
+            if (activeTab === 'route') {
+                if (!updatedRoute.includes(bike) && !updatedCollected.includes(bike)) {
+                    updatedRoute.push(bike);
+                    wasAdded = true;
+                }
+            } else {
+                if (!updatedCollected.includes(bike)) {
+                    updatedCollected.push(bike);
+                    updatedRoute = updatedRoute.filter(b => b !== bike);
+                    wasAdded = true;
+                }
             }
-        } else {
-            // Se adicionar em posse, remove do roteiro se estiver lá
-            if (!collectedBikes.includes(bike)) {
-                setCollectedBikes([...collectedBikes, bike]);
-                setRouteBikes(routeBikes.filter(b => b !== bike));
-            }
+        });
+
+        if (wasAdded) {
+            setRouteBikes(updatedRoute);
+            setCollectedBikes(updatedCollected);
         }
         setNewBike('');
     };
