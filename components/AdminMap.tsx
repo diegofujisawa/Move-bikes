@@ -246,9 +246,6 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   }, []);
 
   useEffect(() => {
-    if (!mapRef.current) return;
-    const map = mapRef.current;
-    
     // Listener para o fluxo de bikes (posições em tempo real do Firebase)
     // Filtra apenas bikes atualizadas nas últimas 24h para performance
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -256,7 +253,11 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
       collection(db, 'bikes'),
       where('ultimaAtualizacao', '>=', Timestamp.fromDate(oneDayAgo))
     );
+
     const unsubscribeBikes = onSnapshot(qBikes, (snapshot) => {
+      const map = mapRef.current;
+      if (!map) return; // Se o mapa não estiver pronto, espera a próxima atualização
+
       const currentBikes = new Set<string>();
       
       snapshot.forEach((docSnap) => {
@@ -309,6 +310,9 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
           delete bikeMarkersRef.current[id];
         }
       });
+    }, (err) => {
+      console.error('[Mapa] Erro listener bikes:', err);
+      // Não bloqueia o mapa se o listener de bikes falhar (ex: falta de índice)
     });
 
     // Listener para motoristas (já existente)
