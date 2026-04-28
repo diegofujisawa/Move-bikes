@@ -7,7 +7,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.22-state-stability';
+const BACKEND_VERSION = '85.31-multi-sheet-sync';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -2872,53 +2872,81 @@ function getMechanicsList() {
   } catch(e) { console.error('getMechanicsList - erro ao ler bikes:', e); }
   let reportEntries = {};
   let lastStatusByBike = {};
-  const reportCacheKey = 'mechanics_report_scan_v6';
-  let reportCached = cache.get(reportCacheKey);
-  if (reportCached) {
-    try {
-      const parsed = JSON.parse(reportCached);
-      reportEntries = parsed.reportEntries;
-      lastStatusByBike = parsed.lastStatusByBike;
-    } catch (e) { reportCached = null; }
-  }
-  if (!reportCached) {
-    const EXIT_STATUSES = ['estação', 'estacao', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'remanejada', 'recuperada', 'encontrada', 'localizada', 'reserva', 'ativa', 'lançada', 'estoque'];
-    try {
-      const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório');
-      if (reportSheet && reportSheet.getLastRow() > 1) {
-        const lastRow = reportSheet.getLastRow();
-        const rowsToRead = Math.min(lastRow - 1, 1000);
-        const reportData = reportSheet.getRange(lastRow - rowsToRead + 1, 1, rowsToRead, 10).getValues();
-        reportData.forEach((row, idx) => {
-          const rawTs = row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1];
-          const tsMsBase = toMs(rawTs);
-          if (!tsMsBase || tsMsBase < CUTOFF_MS) return;
-          const tsMs = tsMsBase + (idx / 1000000);
-          const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
-          if (!pat) return;
-          const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
-          if (!status) return;
-          const observacao = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
-          const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
-          if (!lastStatusByBike[pat] || tsMs >= lastStatusByBike[pat].tsMs) lastStatusByBike[pat] = { tsMs, status };
-          const statusSistema = (row[COLUMN_INDICES.REPORTS.STATUS_SISTEMA - 1] || '').toString().trim().toLowerCase();
-          const isInitial = (/recolhida|vandalizad|filial|recolher|vandalismo/.test(status) || /manuten[çc]ão/.test(status) || /oficina/.test(status)) && !status.includes('ação mecânica') && !status.includes('remanejada');
-          if (isInitial) {
-            if (!reportEntries[pat] || tsMs >= reportEntries[pat].tsMs) {
-              const prev = reportEntries[pat] || {};
-              reportEntries[pat] = { tsMs, status, motorista: motorista || prev.motorista || '', observacao: observacao || prev.observacao || '' };
+    const reportCached = cache.get(reportCacheKey);
+    if (reportCached) {
+      try {
+        const parsed = JSON.parse(reportCached);
+        reportEntries = parsed.reportEntries;
+        lastStatusByBike = parsed.lastStatusByBike;
+      } catch (e) { reportCached = null; }
+    }
+    if (!reportCached) {
+      const EXIT_STATUSES = ['estação', 'estacao', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'remanejada', 'recuperada', 'encontrada', 'localizada', 'reserva', 'ativa', 'lançada', 'estoque', '[carretinha]', 'carretinha'];
+      try {
+        const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório');
+        if (reportSheet && reportSheet.getLastRow() > 1) {
+          const lastRow = reportSheet.getLastRow();
+          const rowsToRead = Math.min(lastRow - 1, 1000);
+          const reportData = reportSheet.getRange(lastRow - rowsToRead + 1, 1, rowsToRead, 10).getValues();
+          reportData.forEach((row, idx) => {
+            const rawTs = row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1];
+            const tsMsBase = toMs(rawTs);
+            if (!tsMsBase || tsMsBase < CUTOFF_MS) return;
+            const tsMs = tsMsBase + (idx / 1000000);
+            const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
+            if (!pat) return;
+            const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
+            if (!status) return;
+            const observacao = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
+            const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
+            if (!lastStatusByBike[pat] || tsMs >= lastStatusByBike[pat].tsMs) lastStatusByBike[pat] = { tsMs, status };
+            const isInitial = (/recolhida|vandalizad|filial|recolher|vandalismo/.test(status) || /manuten[çc]ão/.test(status) || /oficina/.test(status)) && !status.includes('ação mecânica') && !status.includes('remanejada');
+            if (isInitial) {
+              if (!reportEntries[pat] || tsMs >= reportEntries[pat].tsMs) {
+                const prev = reportEntries[pat] || {};
+                reportEntries[pat] = { tsMs, status, motorista: motorista || prev.motorista || '', observacao: observacao || prev.observacao || '' };
+              }
             }
+          });
+        }
+        
+        // v85.31: Scan Solicitação para sinais de saída (carretinha, remaneja via ADM)
+        try {
+          const reqSheet = ss.getSheetByName(REQUESTS_SHEET_NAME);
+          if (reqSheet && reqSheet.getLastRow() > 1) {
+             const lastRowReq = reqSheet.getLastRow();
+             const rowsReq = Math.min(lastRowReq - 1, 500);
+             const reqData = reqSheet.getRange(lastRowReq - rowsReq + 1, 1, rowsReq, 8).getValues();
+             reqData.forEach((row, idx) => {
+               const tsMs = toMs(row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1]);
+               if (!tsMs || tsMs < CUTOFF_MS) return;
+               const pIdStr = String(row[COLUMN_INDICES.REQUESTS.PATRIMONIO - 1] || '').trim();
+               const status = (row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '').toString().toLowerCase();
+               const situacao = (row[COLUMN_INDICES.REQUESTS.SITUACAO - 1] || '').toString().toLowerCase();
+               
+               const pats = pIdStr.split(',').map(s => s.trim().replace(/^0+/, ''));
+               pats.forEach(pat => {
+                 if (!pat) return;
+                 // Entradas em Solicitação com [carretinha] ou Finalizada/Aceita são sinais de que a bike foi tratada
+                 if (situacao === 'finalizada' || situacao === 'aceita' || status.includes('carretinha')) {
+                    if (!lastStatusByBike[pat] || tsMs >= lastStatusByBike[pat].tsMs) {
+                       lastStatusByBike[pat] = { tsMs, status };
+                    }
+                 }
+               });
+             });
           }
-        });
+        } catch(e) {}
+
         Object.keys(reportEntries).forEach(pat => {
           const last = lastStatusByBike[pat];
+          if (!last) return;
           const isExit = EXIT_STATUSES.some(s => last.status.includes(s));
-          if (last && isExit && last.tsMs > reportEntries[pat].tsMs) delete reportEntries[pat];
+          if (isExit && last.tsMs > reportEntries[pat].tsMs) delete reportEntries[pat];
         });
         cache.put(reportCacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 5);
-      }
-    } catch (e) { console.error('getMechanicsList - erro ao ler relatório:', e); }
-  }
+      } catch (e) { console.error('getMechanicsList - erro ao ler relatório:', e); }
+    }
     const mechanicsStatus = {};
     if (sheet) {
       const mechValues = sheet.getDataRange().getValues();
