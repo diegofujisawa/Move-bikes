@@ -297,6 +297,7 @@ function doPost(e) {
       case 'removeFromTrailer':     response = { ...removeFromTrailer(request.bikeNumber, request.targetStatus), version: BACKEND_VERSION }; break;
       case 'sendToTechnical':       response = { ...sendToTechnical(request.bikeNumber, request.mechanicName), version: BACKEND_VERSION }; break;
       case 'getTechnicaList':       response = { ...getTechnicaList(), version: BACKEND_VERSION }; break;
+      case 'getNextTrailerNumber':  response = { ...getNextTrailerNumber(), version: BACKEND_VERSION }; break;
       case 'getChassiInfo':         response = { ...getChassiInfo(request.bikeNumber), version: BACKEND_VERSION }; break;
       case 'confirmTechnicaReceipt':response = { ...confirmTechnicaReceipt(request.bikeNumber, request.technicianName), version: BACKEND_VERSION }; break;
       case 'finalizeTechnicaRepair':response = { ...finalizeTechnicaRepair(request.bikeNumber, request.technicianName, request.treatment), version: BACKEND_VERSION }; break;
@@ -2918,30 +2919,43 @@ function getMechanicsList() {
       }
     } catch (e) { console.error('getMechanicsList - erro ao ler relatório:', e); }
   }
-  const mechanicsStatus = {};
-  if (sheet) {
-    const mechValues = sheet.getDataRange().getValues();
-    for (let i = mechValues.length - 1; i >= 1; i--) {
-      const row = mechValues[i];
-      const pat = String(row[COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
-      if (!pat) continue;
-      const status = (row[COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
-      const tratativa = (row[COLUMN_INDICES.MECHANICS.TRATATIVA - 1] || '').toString().trim();
-      const tsEnt = toMs(row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
-      const tsFin = toMs(row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1]);
-      const tsMs = Math.max(tsEnt || 0, tsFin || 0) || null;
-      if (mechanicsStatus[pat]) continue;
-      if (status === 'Remanejada') {
-        if (tsMs !== null && tsMs < CUTOFF_MS) continue;
-        mechanicsStatus[pat] = { row: i + 1, status, tsMs: tsMs || 0, dataEntrada: row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1], mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1], tratativa, dataFinalizacao: row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1], carretinha: row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1], manual: false };
-        continue;
+    const mechanicsStatus = {};
+    if (sheet) {
+      const mechValues = sheet.getDataRange().getValues();
+      for (let i = mechValues.length - 1; i >= 1; i--) {
+        const row = mechValues[i];
+        const pat = String(row[COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
+        if (!pat) continue;
+        const status = (row[COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
+        const tratativa = (row[COLUMN_INDICES.MECHANICS.TRATATIVA - 1] || '').toString().trim();
+        const tsEntRaw = row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1];
+        const tsFinRaw = row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1];
+        const tsEnt = toMs(tsEntRaw);
+        const tsFin = toMs(tsFinRaw);
+        
+        // v85.30: if status is Remanejada and was set today, consider tsMs as latest possible time if no time provided
+        let tsMs = Math.max(tsEnt || 0, tsFin || 0) || null;
+        if (tsMs && status === 'Remanejada') {
+           // Se a data finalização for hoje mas sem hora, consideramos o fim do dia para evitar conflitos com reportes do mesmo dia
+           const d = new Date(tsMs);
+           if (d.getHours() === 0 && d.getMinutes() === 0 && d.getSeconds() === 0) {
+             d.setHours(23, 59, 59, 999);
+             tsMs = d.getTime();
+           }
+        }
+
+        if (mechanicsStatus[pat]) continue;
+        if (status === 'Remanejada') {
+          if (tsMs !== null && tsMs < CUTOFF_MS) continue;
+          mechanicsStatus[pat] = { row: i + 1, status, tsMs: tsMs || 0, dataEntrada: tsEntRaw, mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1], tratativa, dataFinalizacao: tsFinRaw, carretinha: row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1], manual: false };
+          continue;
+        }
+        const isActiveStatus = (status === 'Aguardando Manutenção' || status === 'Em Manutenção' || status === 'Reserva' || status === 'Aguardando Técnica' || status === 'Em Técnica');
+        if (!isActiveStatus && tsMs !== null && tsMs < CUTOFF_MS) continue;
+        if (tsMs === null && !isActiveStatus) continue;
+        mechanicsStatus[pat] = { row: i + 1, status, tsMs: tsMs || 0, dataEntrada: tsEntRaw, mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1], tratativa, dataFinalizacao: tsFinRaw, carretinha: row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1], manual: tratativa.toUpperCase() === 'MANUAL' };
       }
-      const isActiveStatus = (status === 'Aguardando Manutenção' || status === 'Em Manutenção' || status === 'Reserva' || status === 'Aguardando Técnica' || status === 'Em Técnica');
-      if (!isActiveStatus && tsMs !== null && tsMs < CUTOFF_MS) continue;
-      if (tsMs === null && !isActiveStatus) continue;
-      mechanicsStatus[pat] = { row: i + 1, status, tsMs: tsMs || 0, dataEntrada: row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1], mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1], tratativa, dataFinalizacao: row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1], carretinha: row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1], manual: tratativa.toUpperCase() === 'MANUAL' };
     }
-  }
   const bikeMap = {};
   const clearedProperties = PropertiesService.getScriptProperties().getProperties();
   const clearTimeMap = {};
@@ -3276,6 +3290,8 @@ function clearAlterarStatus(bikes) {
       if (!pat) return;
       
       newClearProps['MECH_CLEAR_' + pat] = now.getTime().toString();
+      
+      let handled = false;
       if (item.row && item.row > 1) {
         const rowData = data[item.row - 1];
         if (rowData) {
@@ -3285,10 +3301,14 @@ function clearAlterarStatus(bikes) {
             sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(now); 
             cleared++; 
           }
+          handled = true;
         }
-      } else {
-        // Para bikes sem linha (vindo apenas do Relatório), não adicionamos linha na Mecânica.
-        // A persistência via ScriptProperties garantirá que não voltem à lista.
+      }
+      
+      if (!handled) {
+        // v85.30: Se a bike não estava na mecânica, adicionamos como Remanejada para persistência silenciosa
+        // (Sem logar no Relatorio para evitar 'lixo' conforme pedido)
+        sheet.appendRow([item.patrimonio, 'Remanejada', now, 'SISTEMA', 'LIMPAR_LISTA', now, '']);
         cleared++;
       }
     });
@@ -3463,4 +3483,29 @@ function _clearMechanicsCache() {
   cache.remove('change_status_data_48h');
   cache.remove('change_status_data_72h');
   cache.remove('change_status_data_week');
+}
+
+/**
+ * Retorna o próximo número de carretinha (1-4) de forma sequencial persistente.
+ */
+function getNextTrailerNumber() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+    const lastDate = props.getProperty('LAST_TRAILER_DATE');
+    
+    let lastNum;
+    if (lastDate !== today) {
+      lastNum = 0; // Reset for new day
+      props.setProperty('LAST_TRAILER_DATE', today);
+    } else {
+      lastNum = parseInt(props.getProperty('LAST_TRAILER_NUM') || '0', 10);
+    }
+    
+    let nextNum = (lastNum % 4) + 1;
+    props.setProperty('LAST_TRAILER_NUM', nextNum.toString());
+    return { success: true, next: nextNum };
+  } catch (e) {
+    return { success: false, error: 'Erro ao gerar número de carretinha: ' + e.message, next: 1 };
+  }
 }

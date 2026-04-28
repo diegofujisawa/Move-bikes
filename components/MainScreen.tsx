@@ -3097,6 +3097,20 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
         const res = await apiCall({ action: 'organizeTrailer', bikeNumbers: action.bikes, trailerName: action.trailerName }, 1, true);
         if (!res.success) throw new Error(res.error || 'Erro ao aprovar carretinha.');
+
+        // v85.30: Para carretinhas, não remove da lista de pendentes até ser enviada para o motorista.
+        // Apenas marca como ativada para exibição no card.
+        try {
+          await updateDoc(doc(db, 'pending_actions', action.id), {
+            activatedBy: driverName,
+            activatedAt: serverTimestamp()
+          });
+          setSuccessMessage('Carretinha ativada!');
+          refreshAll(true);
+          return; // Interrompe aqui para não descer para o update status: 'approved' geral
+        } catch (e) {
+          handleFirestoreError(e, OperationType.UPDATE, `pending_actions/${action.id}`);
+        }
       }
 
       try {
@@ -5646,10 +5660,20 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                 </div>
 
                 {(() => {
-                  const items = mechanicsList.filter(b => 
-                    (b.status === 'Alterar Status' || b.status === 'Não encontrada') &&
-                    (!mechanicSearchTerm || String(b.patrimonio || '').includes(mechanicSearchTerm))
+                  const bikesInPendingActions = new Set(
+                    pendingActions
+                      .filter(a => a.type === 'trailer_validation' || a.type === 'alterar_status_lote')
+                      .flatMap(a => a.bikes || [])
+                      .map(p => String(p).trim().replace(/^0+/, ''))
                   );
+
+                  const items = mechanicsList.filter(b => {
+                    const pat = String(b.patrimonio || '').trim().replace(/^0+/, '');
+                    const isPending = bikesInPendingActions.has(pat);
+                    return (b.status === 'Alterar Status' || b.status === 'Não encontrada') &&
+                           !isPending &&
+                           (!mechanicSearchTerm || String(b.patrimonio || '').includes(mechanicSearchTerm));
+                  });
                   return items.length > 0 ? (
                     <div className="space-y-2">
                       {items.map((bike, i) => {
@@ -6017,8 +6041,17 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                 handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
                               } catch (err: any) {
                                 console.error('Erro ao calcular sequência de carretinha:', err);
-                                const lastUsed = parseInt(localStorage.getItem(`trailer_seq_${localDateStr()}`) || '0');
-                                handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${lastUsed + 1}`);
+                                const todayStr = localDateStr();
+                                const lastDate = localStorage.getItem('trailer_seq_date');
+                                let lastUsed = 0;
+                                if (lastDate === todayStr) {
+                                  lastUsed = parseInt(localStorage.getItem('trailer_seq_last') || '0');
+                                } else {
+                                  localStorage.setItem('trailer_seq_date', todayStr);
+                                }
+                                const nextLocal = (lastUsed % 4) + 1;
+                                localStorage.setItem('trailer_seq_last', nextLocal.toString());
+                                handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${nextLocal}`);
                               } finally {
                                 setIsLoading(false);
                               }
@@ -6686,13 +6719,20 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                   {action.timestamp?.toDate?.()?.toLocaleString('pt-BR')}
                                 </span>
                               </div>
-                              <p className="text-sm font-black text-gray-800">
-                                {action.type === 'alterar_status_lote'
-                                  ? `${action.bikes?.length || 0} bike(s) — ${action.mechanicName}`
-                                  : action.type === 'status_change'
-                                  ? `Bike ${action.bikeNumber}`
-                                  : `Carretinha: ${action.trailerName}`}
-                              </p>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="text-sm font-black text-gray-800 leading-none">
+                                  {action.type === 'alterar_status_lote'
+                                    ? `${action.bikes?.length || 0} bike(s) — ${action.mechanicName}`
+                                    : action.type === 'status_change'
+                                    ? `Bike ${action.bikeNumber}`
+                                    : `Carretinha: ${action.trailerName}`}
+                                </p>
+                                {action.activatedBy && (
+                                  <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-[8px] font-black uppercase rounded border border-green-200">
+                                    Ativado por: {action.activatedBy}
+                                  </span>
+                                )}
+                              </div>
                               <p className="text-[10px] text-gray-500 font-bold uppercase">
                                 Solicitado por: <span className="text-blue-600">{action.mechanicName}</span>
                               </p>
@@ -6714,9 +6754,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                                 )}
                                 <button
                                   onClick={() => handleApproveAction(action)}
-                                  disabled={isLoading}
-                                  className="p-2 bg-green-50 text-green-600 rounded-lg border border-green-100 hover:bg-green-100 transition-colors"
-                                  title="Aprovar"
+                                  disabled={isLoading || (action.type === 'trailer_validation' && !!action.activatedBy)}
+                                  className={`p-2 rounded-lg border transition-colors ${
+                                    action.type === 'trailer_validation' && action.activatedBy
+                                      ? 'bg-green-600 text-white border-green-700 opacity-50 cursor-not-allowed'
+                                      : 'bg-green-50 text-green-600 border-green-100 hover:bg-green-100'
+                                  }`}
+                                  title={action.type === 'trailer_validation' ? 'Ativado' : 'Aprovar'}
                                 >
                                   <CheckCircleIcon className="w-5 h-5" />
                                 </button>
