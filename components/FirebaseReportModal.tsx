@@ -38,7 +38,6 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
   const [searchTerm, setSearchTerm] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
   const [selectedDate, setSelectedDate] = useState(localDateStr());
 
   // Filters
@@ -157,11 +156,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
     alert('Exclusão de registros do Sheets deve ser feita diretamente na planilha.');
   };
 
-  const handleSyncWithSheets = async () => {
-    setIsSyncing(true);
-    await fetchFromSheets(selectedDate);
-    setIsSyncing(false);
-  };
+
 
   // =================================================================
   // Filtros
@@ -278,12 +273,7 @@ const FirebaseReportModal: React.FC<FirebaseReportModalProps> = ({ isOpen, onClo
               Novo Registro
             </button>
 
-            <button onClick={handleSyncWithSheets} disabled={isSyncing || isLoading}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-all active:scale-95 disabled:bg-gray-400"
-              title="Recarregar dados da planilha">
-              <RefreshIcon className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-              Atualizar
-            </button>
+
           </div>
         </div>
 

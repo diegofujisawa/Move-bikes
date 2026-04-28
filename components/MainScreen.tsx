@@ -4,7 +4,7 @@ import {
   LogoutIcon, PlusIcon, PlusPlusIcon, MapIcon, SheetIcon, SearchIcon,
   AlertIcon, CalendarIcon, CarIcon, XIcon, BicycleIcon, MovingIcon,
   UserIcon, AlertTriangleIcon, QrCodeIcon, TrailerIcon, SwitchIcon,
-  RefreshIcon, DatabaseIcon, CheckCircleIcon, DocumentTextIcon, HistoryIcon,
+  DatabaseIcon, CheckCircleIcon, DocumentTextIcon, HistoryIcon,
   SteeringWheelIcon, SirenIcon, ZapIcon
 } from './icons';
 import { 
@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
-import { signInWithPopup, GoogleAuthProvider, signInAnonymously } from 'firebase/auth';
+
 import {
   collection, onSnapshot, doc, updateDoc, addDoc, getDocs, deleteDoc,
   serverTimestamp, setDoc, query, where, limit, getDocFromServer, getDoc,
@@ -37,7 +37,7 @@ import FirebaseReportModal from './FirebaseReportModal';
 import { AnalyticalDashboard } from './AnalyticalDashboard';
 import { apiCall, apiGetCall, clearCache } from '../api';
 import { User } from '../types';
-import { migrateDataToFirebase } from '../migrationService';
+
 
 // =================================================================
 // REGRA DE SINCRONIZAÇÃO
@@ -229,8 +229,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const syncFailCountRef = useRef(0); // só exibe erro após 3 falhas consecutivas
   const [lastSyncTime, setLastSyncTime] = useState(new Date().toLocaleTimeString());
   const [backendVersion, setBackendVersion] = useState<string | null>(null);
-  const [isMigrating, setIsMigrating] = useState(false);
-  const [migrationMessage, setMigrationMessage] = useState<{ text: string, type: 'success' | 'error' | 'info' } | null>(null);
+
 
   // --- Dados principais ---
   const [routeBikes, setRouteBikes] = useState<string[]>([]);
@@ -3656,48 +3655,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     }; 
   }, []);
 
-  const [isMigrationConfirmOpen, setIsMigrationConfirmOpen] = useState(false);
 
-  // =================================================================
-  // MIGRAÇÃO
-  // =================================================================
-  const handleMigrate = async () => {
-    console.log('[Migration] handleMigrate triggered. User:', auth.currentUser?.email, 'Category:', category);
-    setIsMigrationConfirmOpen(false);
-    
-    setMigrationMessage({ text: 'Autenticando...', type: 'info' });
-    setIsMigrating(true);
-    try {
-      if (!auth.currentUser) {
-        console.log('[Migration] No user found, attempting sign in...');
-        try {
-          await signInWithPopup(auth, new GoogleAuthProvider());
-        } catch (popupErr: any) {
-          console.warn('[Migration] Google Sign-In failed, trying anonymous...', popupErr);
-          await signInAnonymously(auth);
-        }
-        // Aguarda 2 segundos para o token ser propagado para o Firestore
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
-      
-      console.log('[Migration] Starting data export and migration...');
-      setMigrationMessage({ text: 'Migrando dados (isso pode demorar)...', type: 'info' });
-      const result = await migrateDataToFirebase(category);
-      
-      console.log('[Migration] Result:', result);
-      const userEmail = auth.currentUser?.email || 'Nenhum usuário logado';
-      setMigrationMessage(result.success
-        ? { text: `Migração concluída! Total: ${result.total} registros.`, type: 'success' }
-        : { text: `Erro (${userEmail}): ` + result.error, type: 'error' });
-    } catch (err: any) {
-      console.error('[Migration] Catch error:', err);
-      const userEmail = auth.currentUser?.email || 'Nenhum usuário logado';
-      setMigrationMessage({ text: `Erro (${userEmail}): ` + err.message, type: 'error' });
-    } finally {
-      setIsMigrating(false);
-      setTimeout(() => setMigrationMessage(null), 15000);
-    }
-  };
 
   // =================================================================
   // SUMMARY / ALERTAS / SCHEDULE (dados auxiliares)
@@ -3755,10 +3713,18 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
   const handleConfirmFound = async (alertId: number) => {
     if (!window.confirm('Confirmar que esta bicicleta foi encontrada?')) return;
     setIsLoading(true);
+    // Otimista: remove do estado local imediatamente
+    setAlerts(prev => prev.filter(a => (a.id || a.patrimonio) !== alertId));
     try {
       const r = await apiCall({ action: 'confirmBikeFound', alertId, driverName });
-      if (r.success) { fetchAlerts(); alert('Bicicleta marcada como encontrada!'); }
-      else throw new Error(r.error);
+      if (r.success) { 
+        fetchAlerts(true); 
+      }
+      else {
+        // Reverte se falhar
+        fetchAlerts(true);
+        throw new Error(r.error); 
+      }
     } catch (err: any) { alert('Erro: ' + err.message); }
     finally { setIsLoading(false); }
   };
@@ -3766,10 +3732,17 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
   const handleConfirmVandalizedFound = async (alertId: number) => {
     if (!window.confirm('Confirmar que esta bicicleta foi encontrada?')) return;
     setIsLoading(true);
+    // Otimista: remove do estado local imediatamente
+    setVandalizedBikes(prev => prev.filter(b => (b.id || b.patrimonio) !== alertId));
     try {
       const r = await apiCall({ action: 'confirmVandalizedFound', alertId, driverName });
-      if (r.success) { refreshAll(true); alert('Bicicleta vandalizada marcada como encontrada!'); }
-      else throw new Error(r.error);
+      if (r.success) { 
+        refreshAll(true); 
+      }
+      else {
+        refreshAll(true);
+        throw new Error(r.error); 
+      }
     } catch (err: any) { alert('Erro: ' + err.message); }
     finally { setIsLoading(false); }
   };
@@ -4027,7 +4000,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             summaryTimeRange,
             statusTimeRange,
             timelineDate,
-            alertsVersion, // ✅ Passa versão atual para o backend pular getAlerts se nada mudou
+            alertsVersion,
+            force,
           }, 3, true)
         ];
 
@@ -4750,52 +4724,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       </div>
 
       <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg w-full max-w-4xl mx-auto animate-fade-in-down">
-      {migrationMessage && (
-        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-[10000] p-4 rounded-lg shadow-2xl border flex items-center gap-3 ${
-          migrationMessage.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
-          migrationMessage.type === 'error'   ? 'bg-red-50 border-red-200 text-red-800' :
-                                                'bg-blue-50 border-blue-200 text-blue-800'}`}>
-          {migrationMessage.type === 'success' ? <CheckCircleIcon className="w-5 h-5" /> :
-           migrationMessage.type === 'error'   ? <AlertTriangleIcon className="w-5 h-5" /> :
-                                                 <RefreshIcon className="w-5 h-5 animate-spin" />}
-          <p className="text-sm font-medium">{migrationMessage.text}</p>
-          <button onClick={() => setMigrationMessage(null)} className="ml-2 opacity-50 hover:opacity-100"><XIcon className="w-4 h-4" /></button>
-        </div>
-      )}
 
 
 
-      {/* Modal de Confirmação Migração */}
-      {isMigrationConfirmOpen && (
-        <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 animate-scale-in">
-            <div className="flex flex-col items-center text-center">
-              <div className="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mb-4">
-                <DatabaseIcon className="w-8 h-8 text-orange-600" />
-              </div>
-              <h3 className="text-xl font-bold text-gray-900 mb-2">Migrar para Firebase</h3>
-              <p className="text-gray-600 mb-6">
-                Deseja iniciar a migração de todas as abas da planilha para o Firebase? 
-                Isso pode levar alguns minutos e estabelecerá o Firebase como fonte de dados.
-              </p>
-              <div className="grid grid-cols-2 gap-3 w-full">
-                <button
-                  onClick={() => setIsMigrationConfirmOpen(false)}
-                  className="py-3 bg-gray-100 text-gray-700 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all"
-                >
-                  Cancelar
-                </button>
-                <button
-                  onClick={handleMigrate}
-                  className="py-3 bg-orange-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-orange-200 hover:bg-orange-700 active:scale-95 transition-all"
-                >
-                  Confirmar
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+
+
 
       {/* Modal de Confirmação "Zerar Lista" */}
       {isZerarListaConfirmOpen && (
@@ -5205,12 +5138,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
           </div>
         </div>
         <div className="flex items-center flex-wrap gap-1 mt-4 sm:mt-0">
-          {isAdm && (
-            <button onClick={() => setIsMigrationConfirmOpen(true)} disabled={isMigrating} title="Migrar para Firebase"
-              className={`p-1.5 sm:p-2 rounded-full transition-colors ${isMigrating ? 'text-orange-500 animate-spin' : 'text-gray-500 hover:bg-gray-100 hover:text-orange-600'}`}>
-              <DatabaseIcon className="w-6 h-6 sm:w-7 sm:h-7" />
-            </button>
-          )}
+
           {!isMecanica && !isTecnica && <>
             <button onClick={() => { setPrefilledBikeNumber(undefined); setRequestModalOpen(true); }} disabled={isLoading} title="Nova Solicitação" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
             <button onClick={() => setRouteModalOpen(true)} disabled={isLoading} title="Criar Roteiro" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><PlusPlusIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>

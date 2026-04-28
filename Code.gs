@@ -457,10 +457,10 @@ function generateDriverRoute(driverName, location, filters, maxBikes, rangeKm) {
 // --- SINCRONIZAÇÃO UNIFICADA ---
 // =================================================================
 function handleSync(request) {
-  const { driverName, category, summaryTimeRange, statusTimeRange, timelineDate, alertsVersion } = request;
+  const { driverName, category, summaryTimeRange, statusTimeRange, timelineDate, alertsVersion, force } = request;
   const cacheKey = `handleSync_${driverName || 'all'}_${category || 'all'}_${summaryTimeRange || 'day'}_${statusTimeRange || 'day'}_${timelineDate || 'none'}`;
   const cache = CacheService.getScriptCache();
-  const cached = cache.get(cacheKey);
+  const cached = force ? null : cache.get(cacheKey);
   if (cached) {
     try {
       const parsed = JSON.parse(cached);
@@ -554,7 +554,8 @@ function handleSync(request) {
       const toCache = JSON.parse(JSON.stringify(response));
       delete toCache.data.requests;
       // v85.23: Reduz cache para motoristas para 3s para garantir frescor após ações e evitar persistência de bikes entregues
-      const ttl = isAdm ? 45 : 3;
+      // v85.24: Reduzimos cache de ADM para 12s para evitar lag em ações de confirmação
+      const ttl = isAdm ? 12 : 3;
       cache.put(cacheKey, JSON.stringify(toCache), ttl);
     } catch (e) {}
 
@@ -1702,10 +1703,7 @@ function updateAlertFromReport(patrimonio, status, timestamp) {
         }
       }
     }
-    const cache = CacheService.getScriptCache();
-    cache.remove('alerts_data_v13');
-    cache.remove('alerts_data_v14');
-    cache.remove('alerts_data_v15');
+    _clearAlertsCache();
   } catch (e) {
     console.error('Erro em updateAlertFromReport:', e);
   }
@@ -1729,11 +1727,21 @@ function confirmBikeFound(alertId, driverName) {
       newRow[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = 'Bike recuperada via sistema de alertas';
       reportSheet.appendRow(newRow);
     }
-    CacheService.getScriptCache().remove('alerts_data_v13');
+    _clearAlertsCache();
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
   }
+}
+
+/**
+ * Helpler para limpar caches de alertas (v13, v14, v15 etc)
+ */
+function _clearAlertsCache() {
+  const cache = CacheService.getScriptCache();
+  cache.remove('alerts_data_v13');
+  cache.remove('alerts_data_v14');
+  cache.remove('alerts_data_v15');
 }
 
 function updateVandalizedSheet(patrimonio, rowData) {
@@ -2835,6 +2843,7 @@ function getMechanicsList() {
   const cache = CacheService.getScriptCache();
   const mechCacheKey = 'mechanics_list_v1';
   const mechCached = cache.get(mechCacheKey);
+  // v85.24: Reduzimos frescor de cache para garantir scan constante
   if (mechCached) { try { return { success: true, data: JSON.parse(mechCached), cached: true }; } catch(e) {} }
   const ss = getSpreadsheet();
   let sheet = ss.getSheetByName(MECHANICS_SHEET_NAME);
@@ -2872,7 +2881,7 @@ function getMechanicsList() {
     } catch (e) { reportCached = null; }
   }
   if (!reportCached) {
-    const EXIT_STATUSES = ['estação', 'estacao', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'remanejada', 'recuperada', 'encontrada', 'localizada'];
+    const EXIT_STATUSES = ['estação', 'estacao', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'remanejada', 'recuperada', 'encontrada', 'localizada', 'reserva', 'ativa', 'lançada', 'estoque'];
     try {
       const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório');
       if (reportSheet && reportSheet.getLastRow() > 1) {
@@ -2892,7 +2901,7 @@ function getMechanicsList() {
           const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
           if (!lastStatusByBike[pat] || tsMs >= lastStatusByBike[pat].tsMs) lastStatusByBike[pat] = { tsMs, status };
           const statusSistema = (row[COLUMN_INDICES.REPORTS.STATUS_SISTEMA - 1] || '').toString().trim().toLowerCase();
-          const isInitial = /recolhida|vandalizad|filial|recolher|vandalismo|manuten[çc]ão|oficina/.test(status) || /manuten[çc]ão/.test(statusSistema);
+          const isInitial = (/recolhida|vandalizad|filial|recolher|vandalismo/.test(status) || /manuten[çc]ão/.test(status) || /oficina/.test(status)) && !status.includes('ação mecânica') && !status.includes('remanejada');
           if (isInitial) {
             if (!reportEntries[pat] || tsMs >= reportEntries[pat].tsMs) {
               const prev = reportEntries[pat] || {};
@@ -2905,7 +2914,7 @@ function getMechanicsList() {
           const isExit = EXIT_STATUSES.some(s => last.status.includes(s));
           if (last && isExit && last.tsMs > reportEntries[pat].tsMs) delete reportEntries[pat];
         });
-        cache.put(reportCacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 60);
+        cache.put(reportCacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 5);
       }
     } catch (e) { console.error('getMechanicsList - erro ao ler relatório:', e); }
   }
@@ -2934,7 +2943,19 @@ function getMechanicsList() {
     }
   }
   const bikeMap = {};
+  const clearedProperties = PropertiesService.getScriptProperties().getProperties();
+  const clearTimeMap = {};
+  Object.keys(clearedProperties).forEach(key => {
+    if (key.indexOf('MECH_CLEAR_') === 0) {
+      clearTimeMap[key.substring(11)] = parseInt(clearedProperties[key], 10);
+    }
+  });
+
   Object.entries(reportEntries).forEach(([pat, entry]) => {
+    // v85.26: Ignora reportes se a bike foi propositalmente limpa da lista após o reporte
+    const lastClearTs = clearTimeMap[pat] || 0;
+    if (entry.tsMs <= lastClearTs) return;
+
     const mechData = mechanicsStatus[pat];
     const info = bikeInfoMap[pat] || {};
     const isMechActive = mechData && (mechData.status === 'Aguardando Manutenção' || mechData.status === 'Em Manutenção' || mechData.status === 'Reserva' || mechData.status === 'Aguardando Técnica' || mechData.status === 'Em Técnica');
@@ -2945,16 +2966,20 @@ function getMechanicsList() {
     if (mechData && (mechData.tsMs >= entry.tsMs || (isMechActive && (isReportInitial || isMaintenanceReport)))) {
       if (mechData.status === 'Remanejada') return;
       let displayStatus = mechData.status;
-      if (displayStatus === 'Alterar Status' && (isMaintenanceReport || (info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina'))))) {
-        displayStatus = 'Aguardando Manutenção';
+      // v85.24: Se status no sistema for manutenção, força Aguardando Manutenção mesmo que esteja em outro estado ativo
+      if ((isMaintenanceReport || (info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina'))))) {
+        if (displayStatus === 'Alterar Status') displayStatus = 'Aguardando Manutenção';
       }
       bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: mechData.manual, motorista: entry.motorista || '', observacao: entry.observacao || '' };
     } else {
       let finalStatus = 'Alterar Status';
+      const isSystemMaintenance = info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina') || info.statusBicicletas.includes('reparodr') || info.statusBicicletas.includes('aguardando'));
+      
       // Se for um reporte de manutenção ou se o status no sistema já for Manutenção, pula 'Alterar Status'
-      if (isMaintenanceReport || (info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina')))) {
+      if (isMaintenanceReport || isSystemMaintenance) {
         finalStatus = 'Aguardando Manutenção';
       }
+
       bikeMap[pat] = { row: -1, patrimonio: pat, status: finalStatus, dataEntrada: new Date(entry.tsMs), mecanico: '', tratativa: '', dataFinalizacao: '', carretinha: '', bateria: info.bateria, carregamento: info.carregamento, motorista: entry.motorista || '', observacao: entry.observacao || '', manual: false };
     }
   });
@@ -2968,7 +2993,7 @@ function getMechanicsList() {
     bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: true };
   });
   const result = Object.values(bikeMap).filter(b => b.status !== 'Remanejada');
-  try { cache.put(mechCacheKey, JSON.stringify(result), 60); } catch(e) {}
+  try { cache.put(mechCacheKey, JSON.stringify(result), 5); } catch(e) {}
   return { success: true, data: result };
 }
 
@@ -3237,25 +3262,40 @@ function clearAlterarStatus(bikes) {
     const data = sheet.getDataRange().getValues();
     let cleared = 0;
     const now = new Date();
+    const clearedProperties = PropertiesService.getScriptProperties().getProperties();
+    const clearTimeMap = {};
+    Object.keys(clearedProperties).forEach(key => {
+      if (key.indexOf('MECH_CLEAR_') === 0) {
+        clearTimeMap[key.substring(11)] = parseInt(clearedProperties[key], 10);
+      }
+    });
+
+    const newClearProps = {};
     bikes.forEach(item => {
       const pat = String(item.patrimonio || '').trim().replace(/^0+/, '');
       if (!pat) return;
+      
+      newClearProps['MECH_CLEAR_' + pat] = now.getTime().toString();
       if (item.row && item.row > 1) {
         const rowData = data[item.row - 1];
         if (rowData) {
           const currentStatus = String(rowData[COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
-          if (currentStatus !== 'Remanejada') { sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada'); sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(new Date()); cleared++; }
+          if (currentStatus !== 'Remanejada') { 
+            sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada'); 
+            sheet.getRange(item.row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(now); 
+            cleared++; 
+          }
         }
       } else {
-        let alreadyExists = false;
-        for (let i = 1; i < data.length; i++) {
-          const rowPat = String(data[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
-          const rowStatus = String(data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
-          if (rowPat === pat && rowStatus !== 'Remanejada') { sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada'); alreadyExists = true; cleared++; break; }
-        }
-        if (!alreadyExists) { sheet.appendRow([item.patrimonio, 'Remanejada', now, '', 'LIMPAR_LISTA', now, '']); cleared++; }
+        // Para bikes sem linha (vindo apenas do Relatório), não adicionamos linha na Mecânica.
+        // A persistência via ScriptProperties garantirá que não voltem à lista.
+        cleared++;
       }
     });
+
+    if (Object.keys(newClearProps).length > 0) {
+      PropertiesService.getScriptProperties().setProperties(newClearProps);
+    }
     _clearMechanicsCache();
     return { success: true, cleared };
   } catch (e) { return { success: false, error: 'Erro ao limpar lista: ' + e.message }; }
@@ -3343,12 +3383,22 @@ function finalizeTrailer(trailerName) {
     const rowStatus = (data[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').toString().trim();
     const rowTrailer = String(data[i][COLUMN_INDICES.MECHANICS.CARRETINHA - 1] || '').trim();
     const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
-    if (rowTrailer === String(trailerName) && rowStatus === 'Reserva' && !processedBikes.has(rowPat)) {
+        if (rowTrailer === String(trailerName) && rowStatus === 'Reserva' && !processedBikes.has(rowPat)) {
       if (tsMs && tsMs < CUTOFF_MS) continue;
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue('Remanejada');
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(new Date());
       processedBikes.add(rowPat);
       count++;
+      
+      // v85.24: Loga no relatório para suspender reporte de manutenção
+      try {
+        const rowDataLog = new Array(10).fill('');
+        rowDataLog[COLUMN_INDICES.REPORTS.TIMESTAMP - 1] = new Date();
+        rowDataLog[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] = rowPat;
+        rowDataLog[COLUMN_INDICES.REPORTS.STATUS - 1] = 'Remanejada (Carretinha)';
+        rowDataLog[COLUMN_INDICES.REPORTS.MOTORISTA - 1] = finalizedBy || 'SISTEMA';
+        logReport(rowDataLog);
+      } catch(e) {}
     }
   }
   _clearMechanicsCache();
