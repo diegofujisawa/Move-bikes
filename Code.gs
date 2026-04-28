@@ -2161,6 +2161,39 @@ function getChangeStatusData(timeRange = '24h', providedSheets = null) {
     else                             { cutoffDate.setDate(now.getDate() - 1); }
     const lastRow = reportSheet.getLastRow();
     if (lastRow < 2) return { success: true, data: { vandalizadas: [], filial: [] } };
+
+    // v85.35: Busca bikes que já estão na mecânica ou organizadas para excluir da lista de pendentes
+    const mechSheet = getSpreadsheet().getSheetByName(MECHANICS_SHEET_NAME);
+    const inMechanics = new Set();
+    const nowMs = Date.now();
+    if (mechSheet && mechSheet.getLastRow() > 1) {
+      const mechData = mechSheet.getDataRange().getValues();
+      for (let i = 1; i < mechData.length; i++) {
+        const pat = String(mechData[i][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1]).trim().replace(/^0+/, '');
+        const st = String(mechData[i][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim().toLowerCase();
+        const tsEnt = toMs(mechData[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+        const tsFin = toMs(mechData[i][COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1]);
+        const lastUpdateMs = Math.max(tsEnt || 0, tsFin || 0);
+
+        const isActive = !['finalizada', 'remanejada', 'consertada', 'ativo', 'ativa'].includes(st);
+        const isRecent = (nowMs - lastUpdateMs) < (18 * 60 * 60 * 1000); // 18h para cobrir trocas de turno
+
+        if (pat && (isActive || isRecent)) inMechanics.add(pat);
+      }
+    }
+
+    // Também bloqueia se o status atual no sistema já for Manutenção
+    try {
+      const bikeIndex = getBikeIndex();
+      Object.keys(bikeIndex).forEach(pat => {
+        const row = bikeIndex[pat];
+        const status = String(row[COLUMN_INDICES.BIKES.STATUS - 1] || '').trim().toLowerCase();
+        if (status.includes('manutenção') || status.includes('manutencao')) {
+          inMechanics.add(pat.replace(/^0+/, ''));
+        }
+      });
+    } catch (e) {}
+
     const actualRows = Math.min(lastRow - 1, rowsToRead);
     const data = reportSheet.getRange(lastRow - actualRows + 1, 1, actualRows, 6).getValues();
     const lastReports = {};
@@ -2173,7 +2206,7 @@ function getChangeStatusData(timeRange = '24h', providedSheets = null) {
       const statusLower = status.toLowerCase();
       const observacao  = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
       const isStatusChange = ['recolhida','vandalizada','filial','oficina','recolher','vandalismo'].some(s => statusLower.includes(s));
-      const isRecovery     = ['ativo','manutenção','manutencao'].some(s => statusLower.includes(s));
+      const isRecovery     = ['ativo','manutenção','manutencao','remanejada','consertada'].some(s => statusLower.includes(s));
       const isStation      = stationNames.includes(statusLower) || statusLower === 'estação' || statusLower === 'estacao';
       const effectiveStatus= isStation ? (statusLower === 'estação' || statusLower === 'estacao' ? observacao.toLowerCase() : statusLower) : statusLower;
       const current = lastReports[patrimonio];
@@ -2187,7 +2220,7 @@ function getChangeStatusData(timeRange = '24h', providedSheets = null) {
     const vandalizadas = [], filial = [];
     Object.keys(lastReports).forEach(patrimonio => {
       const r = lastReports[patrimonio];
-      if (r.isRecovery) return;
+      if (r.isRecovery || inMechanics.has(patrimonio)) return;
       const item = { patrimonio, observation: r.observation || '' };
       if (r.status.includes('vandalizada') || r.status.includes('vandalismo')) vandalizadas.push(item);
       else if (r.status.includes('filial') || r.status.includes('recolhida') || r.status.includes('recolher')) filial.push(item);
