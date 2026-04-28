@@ -7,7 +7,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.31-multi-sheet-sync';
+const BACKEND_VERSION = '85.32-mechanics-fixes';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -2943,7 +2943,8 @@ function getMechanicsList() {
   } catch(e) { console.error('getMechanicsList - erro ao ler bikes:', e); }
   let reportEntries = {};
   let lastStatusByBike = {};
-    const reportCached = cache.get(reportCacheKey);
+  const reportCacheKey = 'mechanics_report_scan_v8';  // v85.32: declaração corrigida
+  const reportCached = cache.get(reportCacheKey);
     if (reportCached) {
       try {
         const parsed = JSON.parse(reportCached);
@@ -2952,7 +2953,7 @@ function getMechanicsList() {
       } catch (e) { reportCached = null; }
     }
     if (!reportCached) {
-      const EXIT_STATUSES = ['estação', 'estacao', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'remanejada', 'recuperada', 'encontrada', 'localizada', 'reserva', 'ativa', 'lançada', 'estoque', '[carretinha]', 'carretinha'];
+      const EXIT_STATUSES = ['estação', 'estacao', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'remanejada', 'recuperada', 'encontrada', 'localizada', 'ativa', 'lançada', 'estoque', '[carretinha]', 'carretinha']; // v85.32: 'reserva' removido — bikes em Reserva devem permanecer na lista
       try {
         const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório');
         if (reportSheet && reportSheet.getLastRow() > 1) {
@@ -3076,7 +3077,10 @@ function getMechanicsList() {
     const isMaintenanceReport = /manuten[çc]ão|oficina/.test(statusLow);
     const isReportInitial = /recolhida|vandalizad|filial|recolher|vandalismo/.test(statusLow);
     
-    if (mechData && (mechData.tsMs >= entry.tsMs || (isMechActive && (isReportInitial || isMaintenanceReport)))) {
+    // v85.32: Reserva tem prioridade — mesmo que haja recolhida mais recente,
+    // a bike em Reserva não deve voltar para Alterar Status
+    const isMechReserva = mechData && mechData.status === 'Reserva';
+    if (mechData && (mechData.tsMs >= entry.tsMs || isMechActive || isMechReserva)) {
       if (mechData.status === 'Remanejada') return;
       let displayStatus = mechData.status;
       // v85.24: Se status no sistema for manutenção, força Aguardando Manutenção mesmo que esteja em outro estado ativo
@@ -3515,7 +3519,7 @@ function finalizeTrailer(trailerName) {
         rowDataLog[COLUMN_INDICES.REPORTS.TIMESTAMP - 1] = new Date();
         rowDataLog[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] = rowPat;
         rowDataLog[COLUMN_INDICES.REPORTS.STATUS - 1] = 'Remanejada (Carretinha)';
-        rowDataLog[COLUMN_INDICES.REPORTS.MOTORISTA - 1] = finalizedBy || 'SISTEMA';
+        rowDataLog[COLUMN_INDICES.REPORTS.MOTORISTA - 1] = 'SISTEMA'; // v85.32: finalizedBy removida (não declarada)
         logReport(rowDataLog);
       } catch(e) {}
     }
