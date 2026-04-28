@@ -43,6 +43,7 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<{ [key: string]: L.Marker }>({});
+  const bikeMarkersRef = useRef<{ [key: string]: L.Marker }>({});
   const pathsRef = useRef<{ [key: string]: L.Polyline }>({});
 
   // Posições alvo (do Firebase) e posições atuais (animadas)
@@ -245,16 +246,80 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
   }, []);
 
   useEffect(() => {
-    // ✅ Otimizado: Só busca posições dos últimos 120 minutos para economizar leituras
-    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    if (!mapRef.current) return;
+    const map = mapRef.current;
+    
+    // Listener para o fluxo de bikes (posições em tempo real do Firebase)
+    // Filtra apenas bikes atualizadas nas últimas 24h para performance
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const qBikes = query(
+      collection(db, 'bikes'),
+      where('ultimaAtualizacao', '>=', Timestamp.fromDate(oneDayAgo))
+    );
+    const unsubscribeBikes = onSnapshot(qBikes, (snapshot) => {
+      const currentBikes = new Set<string>();
+      
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        const patrimonio = data.patrimonio || docSnap.id;
+        const lat = normalizeCoord(Number(data.latitude));
+        const lng = normalizeCoord(Number(data.longitude));
+        
+        if (isNaN(lat) || isNaN(lng) || lat === 0 || lng === 0) return;
+        
+        currentBikes.add(patrimonio);
+        
+        const status = (data.status || '').toString();
+        const isOccurrence = status.toLowerCase().includes('ocorrência') || data.ocorrencia === true;
+        const battery = data.bateria !== undefined ? data.bateria : '??';
+        
+        // Estilo diferente para bikes de ocorrência (amarelo com pulso)
+        const bikeIcon = L.divIcon({
+          className: '',
+          html: `<div class="${isOccurrence ? 'animate-pulse' : ''}" style="
+            width: 10px; height: 10px;
+            background: ${isOccurrence ? '#eab308' : '#3b82f6'};
+            border: 2px solid white;
+            border-radius: 50%;
+            box-shadow: 0 0 0 ${isOccurrence ? '3px rgba(234, 179, 8, 0.4)' : '1px rgba(0,0,0,0.2)'};
+          "></div>`,
+          iconSize: [10, 10],
+          iconAnchor: [5, 5],
+        });
 
-    const q = query(
+        if (bikeMarkersRef.current[patrimonio]) {
+          bikeMarkersRef.current[patrimonio].setLatLng([lat, lng]);
+          bikeMarkersRef.current[patrimonio].setIcon(bikeIcon);
+        } else {
+          const marker = L.marker([lat, lng], { icon: bikeIcon }).addTo(map);
+          bikeMarkersRef.current[patrimonio] = marker;
+        }
+
+        const tooltipMsg = `Bike ${patrimonio} (${battery}%)<br/>${status}`;
+        bikeMarkersRef.current[patrimonio].bindTooltip(tooltipMsg, {
+          direction: 'top',
+          className: 'bg-white text-gray-800 text-[9px] font-bold p-1 rounded shadow-sm border border-gray-100'
+        });
+      });
+
+      // Remove bikes que sumiram
+      Object.keys(bikeMarkersRef.current).forEach(id => {
+        if (!currentBikes.has(id)) {
+          map.removeLayer(bikeMarkersRef.current[id]);
+          delete bikeMarkersRef.current[id];
+        }
+      });
+    });
+
+    // Listener para motoristas (já existente)
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const qLocs = query(
       collection(db, 'locations'),
       where('timestamp', '>=', Timestamp.fromDate(twoHoursAgo))
     );
 
-    const unsubscribe = onSnapshot(
-      q,
+    const unsubscribeLocs = onSnapshot(
+      qLocs,
       (snapshot) => {
         const locs: any[] = [];
         const now = Date.now();
@@ -292,13 +357,15 @@ const AdminMap: React.FC<AdminMapProps> = ({ onLogout, onClose }) => {
     );
 
     return () => {
-      unsubscribe();
+      unsubscribeBikes();
+      unsubscribeLocs();
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
       }
       markersRef.current = {};
+      bikeMarkersRef.current = {};
       animStatesRef.current = {};
       targetLocsRef.current = {};
       hasCenteredRef.current = false;

@@ -1577,7 +1577,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const lowerReason = (reason || '').toLowerCase();
     const lowerTitle = (title || '').toLowerCase();
     const isTrailer = lowerReason.includes('carretinha') || lowerTitle.includes('carretinha');
-    const isRoute = lowerTitle.includes('roteiro') || lowerReason.includes('roteiro') || lowerReason.includes('app') || lowerTitle.includes('app') || lowerTitle.includes('carretinha');
+    // v85.32: isRoute identifica apenas roteiros automáticos massivos do Sheets. 
+    // Solicitações manuais ou via App de uma única bike (recolhas) são tratadas como Ocorrência.
+    const isRoute = lowerTitle.includes('roteiro gerado') || lowerReason.includes('roteiro gerado');
     const isPickupRequest = !isTrailer && !isRoute;
 
     isUpdatingStateRef.current = true;
@@ -1619,13 +1621,23 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setCollectedBikesDetails(prev => {
           const next = { ...prev };
           bikesToAdd.forEach(id => {
-            // Se já era ocorrência, mantém. Senão, define como false para carretinha (conforme pedido de apenas Solicitação de recolha)
-            next[id] = { ...next[id], ocorrencia: !!next[id]?.ocorrencia || isPickupRequest };
-            if (next[id].initialLat === null && title) {
+            const existing = next[id] || {};
+            // v85.32: Garante inicialização e marca como ocorrência se for pedido direto
+            next[id] = { 
+              ...existing, 
+              ocorrencia: !!existing.ocorrencia || isPickupRequest 
+            };
+            
+            if (title) {
               const m = title.match(/(-?\d+[.,]\d+)\s*[,;]\s*(-?\d+[.,]\d+)/);
               if (m) {
-                next[id].initialLat = parseFloat(m[1].replace(',', '.'));
-                next[id].initialLng = parseFloat(m[2].replace(',', '.'));
+                const lat = parseFloat(m[1].replace(',', '.'));
+                const lng = parseFloat(m[2].replace(',', '.'));
+                // v85.32: Inicializa coordenadas para histórico se disponíveis
+                next[id].initialLat = lat;
+                next[id].initialLng = lng;
+                next[id].currentLat = lat;
+                next[id].currentLng = lng;
               }
             }
           });
@@ -1654,13 +1666,23 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setRouteBikesDetails(prev => {
           const next = { ...prev };
           bikesToAdd.forEach(id => {
-            // Define como ocorrência apenas se for uma Solicitação de recolha (não vindo de Roteiro/App)
-            next[id] = { ...next[id], ocorrencia: !!next[id]?.ocorrencia || isPickupRequest };
-            if (next[id].initialLat === null && title) {
+            const existing = next[id] || {};
+            // v85.32: Garante inicialização correta e marca como ocorrência se for um pedido de recolha
+            next[id] = { 
+              ...existing, 
+              ocorrencia: !!existing.ocorrencia || isPickupRequest 
+            };
+            
+            if (title) {
               const m = title.match(/(-?\d+[.,]\d+)\s*[,;]\s*(-?\d+[.,]\d+)/);
               if (m) {
-                next[id].initialLat = parseFloat(m[1].replace(',', '.'));
-                next[id].initialLng = parseFloat(m[2].replace(',', '.'));
+                const lat = parseFloat(m[1].replace(',', '.'));
+                const lng = parseFloat(m[2].replace(',', '.'));
+                // v85.32: Sempre inicializa coordenadas se disponíveis para mostrar distância no roteiro
+                next[id].initialLat = lat;
+                next[id].initialLng = lng;
+                next[id].currentLat = lat;
+                next[id].currentLng = lng;
               }
             }
           });
@@ -7514,16 +7536,19 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                             ) : (
                               <p className="font-mono text-gray-800 font-bold text-lg">{bike}</p>
                             )}
-                            {details?.battery !== undefined && (
-                              <div className="flex items-center gap-1.5">
-                                <div className="flex items-center justify-center w-8 h-8 rounded-full border-2 border-blue-500 text-[9px] font-bold text-blue-600 bg-white shadow-sm flex-shrink-0">{formatBattery(details.battery)}%</div>
-                                {(details?.status || details?.Status || details?.statusSistema || details?.situacao || bikeConflicts[bike]?.status || 'N/A') && (
-                                  <span className="text-[10px] font-bold bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full uppercase truncate max-w-[100px]" title={String(details?.status || details?.Status || details?.statusSistema || details?.situacao || bikeConflicts[bike]?.status || 'N/A')}>
-                                    {String(details?.status || details?.Status || details?.statusSistema || details?.situacao || bikeConflicts[bike]?.status || 'N/A')}
-                                  </span>
-                                )}
+                            <div className="flex items-center gap-1.5">
+                              <div className="flex items-center justify-center w-8 h-8 rounded-full border-2 border-blue-500 text-[9px] font-bold text-blue-600 bg-white shadow-sm flex-shrink-0">
+                                {details?.battery !== undefined ? `${formatBattery(details.battery)}%` : '??%'}
                               </div>
-                            )}
+                              {(() => {
+                                const st = details?.status || details?.Status || details?.statusSistema || details?.situacao || bikeConflicts[bike]?.status || 'Em Rota';
+                                return (
+                                  <span className="text-[10px] font-bold bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full uppercase truncate max-w-[100px]" title={String(st)}>
+                                    {String(st)}
+                                  </span>
+                                );
+                              })()}
+                            </div>
                             {renderConflictIcon(bike)}
                             {moved > 10 && (
                               <div className="flex items-center gap-0.5 text-orange-500 animate-pulse">
@@ -7564,16 +7589,19 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                   <li key={`route-${bike}-${i}`} className="p-3 bg-white border rounded-md flex flex-col sm:flex-row justify-between items-center gap-2">
                     <div className="flex items-center gap-3">
                       <p className="font-mono text-gray-800 font-bold text-lg">{bike}</p>
-                      {collectedBikesDetails[bike]?.battery !== undefined && (
-                        <div className="flex items-center gap-1.5">
-                          <div className="flex items-center justify-center w-10 h-10 rounded-full border-2 border-blue-500 text-[10px] font-bold text-blue-600 bg-white shadow-sm flex-shrink-0">{formatBattery(collectedBikesDetails[bike].battery)}%</div>
-                          {(collectedBikesDetails[bike]?.status || collectedBikesDetails[bike]?.Status || collectedBikesDetails[bike]?.statusSistema || collectedBikesDetails[bike]?.situacao || bikeConflicts[bike]?.status || 'N/A') && (
-                            <span className="text-[10px] font-bold bg-green-100 text-green-700 px-2 py-0.5 rounded-full uppercase truncate max-w-[100px]" title={String(collectedBikesDetails[bike]?.status || collectedBikesDetails[bike]?.Status || collectedBikesDetails[bike]?.statusSistema || collectedBikesDetails[bike]?.situacao || bikeConflicts[bike]?.status || 'N/A')}>
-                              {String(collectedBikesDetails[bike]?.status || collectedBikesDetails[bike]?.Status || collectedBikesDetails[bike]?.statusSistema || collectedBikesDetails[bike]?.situacao || bikeConflicts[bike]?.status || 'N/A')}
-                            </span>
-                          )}
+                      <div className="flex items-center gap-1.5">
+                        <div className="flex items-center justify-center w-8 h-8 rounded-full border-2 border-blue-500 text-[9px] font-bold text-blue-600 bg-white shadow-sm flex-shrink-0">
+                          {collectedBikesDetails[bike]?.battery !== undefined ? `${formatBattery(collectedBikesDetails[bike].battery)}%` : '??%'}
                         </div>
-                      )}
+                        {(() => {
+                          const st = collectedBikesDetails[bike]?.status || collectedBikesDetails[bike]?.Status || collectedBikesDetails[bike]?.statusSistema || collectedBikesDetails[bike]?.situacao || bikeConflicts[bike]?.status || 'Recolhida';
+                          return (
+                            <span className="text-[10px] font-bold bg-green-100 text-green-700 px-2 py-0.5 rounded-full uppercase truncate max-w-[100px]" title={String(st)}>
+                              {String(st)}
+                            </span>
+                          );
+                        })()}
+                      </div>
                     </div>
                     <div className="grid grid-cols-3 gap-2 w-full max-w-[240px]">
                       <button onClick={() => handleCollectedBikeAction(bike, 'Enviada para Estação')} disabled={isLoading || processingBikes.has(bike)} className="px-2 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 active:scale-95 text-xs disabled:bg-gray-400">Estação</button>
