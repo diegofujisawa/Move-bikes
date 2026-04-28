@@ -3113,18 +3113,21 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         }
       }
 
-      try {
-        await updateDoc(doc(db, 'pending_actions', action.id), {
+      // v85.31: Suporte a remoção em massa se ids estiver presente
+      const idsToMark = action.ids || [action.id];
+      await Promise.all(idsToMark.map(id => 
+        updateDoc(doc(db, 'pending_actions', id), {
           status: 'approved',
           approvedBy: driverName,
           approvedAt: serverTimestamp()
-        });
-      } catch (e) {
-        handleFirestoreError(e, OperationType.UPDATE, `pending_actions/${action.id}`);
-      }
+        })
+      ));
+
       // Reseta ref do lote se era o doc aprovado
-      if (action.type === 'alterar_status_lote' && alterarStatusDocRef.current === action.id) {
-        alterarStatusDocRef.current = null;
+      if (action.type === 'alterar_status_lote') {
+        idsToMark.forEach(id => {
+          if (alterarStatusDocRef.current === id) alterarStatusDocRef.current = null;
+        });
       }
       setSuccessMessage('Confirmado! Bikes entram na mecânica.');
       refreshAll(true);
@@ -6690,7 +6693,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                     <div className="flex items-center gap-2 bg-white p-1 rounded-lg border shadow-sm">
                       <span className="text-[10px] font-bold text-gray-400 uppercase ml-2">Pendentes:</span>
                       <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-[10px] font-black rounded-full">
-                        {pendingActions.length}
+                        {(() => {
+                          const statusLoteCount = new Set(pendingActions.filter(a => a.type === 'alterar_status_lote').map(a => a.mechanicName || 'MECANICO')).size;
+                          const otherCount = pendingActions.filter(a => a.type !== 'alterar_status_lote').length;
+                          return statusLoteCount + otherCount;
+                        })()}
                       </span>
                     </div>
                   </div>
@@ -6700,8 +6707,44 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                       <div className="flex justify-center py-8">
                         <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
                       </div>
-                    ) : pendingActions.length > 0 ? (
-                      pendingActions.map((action) => (
+                    ) : pendingActions.length > 0 ? (() => {
+                      const statusLoteActions = pendingActions.filter(a => a.type === 'alterar_status_lote');
+                      const otherActions = pendingActions.filter(a => a.type !== 'alterar_status_lote');
+                      
+                      const groupedStatusLote: any[] = [];
+                      const mechanicMap: { [key: string]: any } = {};
+
+                      statusLoteActions.forEach(action => {
+                        const key = action.mechanicName || 'MECANICO';
+                        if (!mechanicMap[key]) {
+                          mechanicMap[key] = { 
+                            ...action, 
+                            bikes: [...(action.bikes || [])], 
+                            ids: [action.id],
+                            isGrouped: true
+                          };
+                          groupedStatusLote.push(mechanicMap[key]);
+                        } else {
+                          // Merge bikes uniquely
+                          const newBikes = [...action.bikes || []];
+                          const existingBikes = new Set(mechanicMap[key].bikes);
+                          newBikes.forEach(b => existingBikes.add(b));
+                          mechanicMap[key].bikes = Array.from(existingBikes);
+                          mechanicMap[key].ids.push(action.id);
+                          // Use the latest timestamp for the grouped action
+                          if (action.timestamp?.seconds > (mechanicMap[key].timestamp?.seconds || 0)) {
+                            mechanicMap[key].timestamp = action.timestamp;
+                          }
+                        }
+                      });
+
+                      const finalActions = [...otherActions, ...groupedStatusLote].sort((a,b) => {
+                        const timeA = a.timestamp?.seconds || 0;
+                        const timeB = b.timestamp?.seconds || 0;
+                        return timeB - timeA;
+                      });
+
+                      return finalActions.map((action) => (
                         <div key={action.id} className="bg-white p-4 rounded-xl border shadow-sm hover:shadow-md transition-shadow">
                           <div className="flex justify-between items-start mb-3">
                             <div>
@@ -6831,7 +6874,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           )}
                         </div>
                       ))
-                    ) : (
+                    })() : (
                       <div className="py-12 text-center bg-gray-50 rounded-xl border border-dashed">
                         <BicycleIcon className="w-12 h-12 text-gray-200 mx-auto mb-3" />
                         <p className="text-sm text-gray-400 font-bold uppercase">Nenhuma ação pendente no momento</p>
