@@ -662,6 +662,22 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setCollectedBikes(prev => {
       const prevStr = [...prev].sort().join(',');
       const nextStr = [...finalCollected].sort().join(',');
+      
+      // v85.42: Registra Em Posse para novas bikes detectadas via Sheets (ADM/Sync)
+      if (prevStr !== nextStr) {
+        const added = finalCollected.filter(id => !prev.includes(id));
+        added.forEach(id => {
+          addDoc(collection(db, 'timeline_events'), {
+            driverName,
+            bikeNumber: id,
+            type: 'em_posse',
+            timestamp: serverTimestamp(),
+            date: localDateStr(),
+            observacao: 'Sync: Atribuído via Planilha'
+          }).catch(e => console.warn('[Timeline] Erro no sync Posse:', e));
+        });
+      }
+
       return prevStr === nextStr ? prev : finalCollected;
     });
 
@@ -1705,6 +1721,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
       // Background
       (async () => {
         try {
+          // v85.39: Registra na Linha do Tempo a aceitação da Carretinha ou Pedido (Em Posse)
+          await Promise.all(bikesToAdd.map(id => 
+            addDoc(collection(db, 'timeline_events'), {
+              driverName,
+              bikeNumber: id,
+              type: 'em_posse',
+              timestamp: serverTimestamp(),
+              date: localDateStr(),
+              observacao: `Aceite: ${title || 'Solicitação'}`
+            }).catch(e => console.warn('[Timeline] Erro no aceite:', e))
+          ));
+
           if (isTrailer) {
             await Promise.all([
               // carretinha: não grava no Firebase — aparece via Sheets (tipo nao_atendida)
@@ -3547,12 +3575,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
   const handleUpdateDriverState = async (targetDriver: string, route: string[], collected: string[]) => {
     setIsLoading(true);
     try {
-      // Detecta bikes removidas da posse pelo ADM
+      // Detecta alterções na posse pelo ADM para registro na Linha do Tempo
       if (editingDriver) {
         const currentCollected = (editingDriver.realTime?.collected || []).map(String);
         const newCollected = (collected || []).map(String);
-        const removedBikes = currentCollected.filter(b => !newCollected.includes(b));
         
+        // 1. Detecta bikes removidas
+        const removedBikes = currentCollected.filter(b => !newCollected.includes(b));
         removedBikes.forEach(bikeNumber => {
           addDoc(collection(db, 'timeline_events'), {
             driverName: targetDriver,
@@ -3562,6 +3591,19 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             date: localDateStr(),
             observacao: `Removido por: ${driverName}`
           }).catch(err => console.warn('[Timeline] Erro ao registrar remoção:', err));
+        });
+
+        // 2. Detecta bikes adicionadas (v85.39)
+        const addedBikes = newCollected.filter(b => !currentCollected.includes(b));
+        addedBikes.forEach(bikeNumber => {
+          addDoc(collection(db, 'timeline_events'), {
+            driverName: targetDriver,
+            bikeNumber,
+            type: 'em_posse',
+            timestamp: serverTimestamp(),
+            date: localDateStr(),
+            observacao: `Atribuído por ADM (${driverName})` // v85.50: Deployment Stable Heartbeat
+          }).catch(err => console.warn('[Timeline] Erro ao registrar atribuição:', err));
         });
       }
 
@@ -6408,14 +6450,14 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                               ...e,
                               type: e.type === 'filial' ? 'recolhida' : e.type
                             }));
-                            // fbEvents: apenas 'em_posse' — único evento não registrado no Sheets
+                            // fbEvents: 'em_posse' e 'removida_por_adm' — eventos exclusivos Firebase
                             // Estação/Recolhida/Não encontrada vêm do Sheets com isOccurrence correto via occLookup
                             const fbEvents = (firebaseTimelineEvents[driver.name] || [])
-                              .filter((e: any) => e.type === 'em_posse')
+                              .filter((e: any) => e.type === 'em_posse' || e.type === 'removida_por_adm')
                               .map((e: any) => ({
                                 tsMs: e.tsMs, hour: new Date(e.tsMs).getHours(),
                                 min: new Date(e.tsMs).getMinutes(),
-                                type: 'em_posse',
+                                type: e.type,
                                 bikeNumber: e.bikeNumber,
                                 observacao: e.observacao || '',
                                 isOccurrence: !!e.isOccurrence

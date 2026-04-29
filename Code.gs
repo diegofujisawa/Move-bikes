@@ -7,7 +7,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.38-cache-manutencao-fix';
+const BACKEND_VERSION = '85.51-idempotency-fix';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -87,6 +87,30 @@ const COLUMN_INDICES = {
 // --- LAZY SINGLETON: SpreadsheetApp ---
 // =================================================================
 let _ss = null;
+function updateBikeStatusInMainSheet(bikeNumber, newStatus) {
+  if (!bikeNumber || !newStatus) return;
+  try {
+    const ss = getSpreadsheet();
+    const sheet = ss.getSheetByName(BIKES_SHEET_NAME);
+    if (!sheet) return;
+    const bikeStr = String(bikeNumber).trim();
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    
+    // Usa TextFinder para ser mais eficiente que loop
+    const finder = sheet.getRange(2, COLUMN_INDICES.BIKES.PATRIMONIO, lastRow - 1, 1).createTextFinder(bikeStr).matchEntireCell(true);
+    const range = finder.findNext();
+    if (range) {
+      sheet.getRange(range.getRow(), COLUMN_INDICES.BIKES.STATUS).setValue(newStatus);
+      // Limpa caches relacionados
+      const cache = CacheService.getScriptCache();
+      cache.remove('bikes_index_v2');
+      cache.remove('bike_statuses');
+    }
+  } catch (e) {
+    console.error('Erro em updateBikeStatusInMainSheet:', e);
+  }
+}
 function getSpreadsheet() {
   if (!_ss) {
     const id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')
@@ -175,13 +199,16 @@ function getOrCreateSheet(sheetName, headers) {
 // =================================================================
 // --- IDEMPOTENCY KEY ---
 // =================================================================
-function isAlreadyProcessed(key) {
+function hasBeenProcessed(key) {
   if (!key) return false;
   const cache = CacheService.getScriptCache();
-  const cacheKey = 'idem_' + key;
-  if (cache.get(cacheKey)) return true;
-  cache.put(cacheKey, '1', 300);
-  return false;
+  return cache.get('idempotency_' + key) === '1';
+}
+
+function markAsProcessed(key) {
+  if (!key) return;
+  const cache = CacheService.getScriptCache();
+  cache.put('idempotency_' + key, '1', 600);
 }
 
 // =================================================================
@@ -217,7 +244,7 @@ function doPost(e) {
   try {
     request = JSON.parse(e.postData.contents);
     const action = (request.action || '').toString().trim();
-    if (request.idempotencyKey && action !== 'login' && isAlreadyProcessed(request.idempotencyKey)) {
+    if (request.idempotencyKey && action !== 'login' && hasBeenProcessed(request.idempotencyKey)) {
       return ContentService.createTextOutput(JSON.stringify({
         success: true, deduplicated: true, version: BACKEND_VERSION
       })).setMimeType(ContentService.MimeType.JSON);
@@ -312,6 +339,9 @@ function doPost(e) {
       default: response = { success: false, error: 'Ação desconhecida: ' + action, version: BACKEND_VERSION }; break;
     }
     if (lockAcquired) lock.releaseLock();
+    if (response.success && request.idempotencyKey) {
+      markAsProcessed(request.idempotencyKey);
+    }
     return ContentService.createTextOutput(JSON.stringify(response)).setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
     Logger.log('ERRO FATAL no doPost. Payload: ' + (e.postData ? e.postData.contents : 'N/A') + '. Erro: ' + error.message + ' Stack: ' + error.stack);
@@ -998,6 +1028,7 @@ function logReport(rowData, kmFinal, plate) {
       }
     }
     sheet.appendRow(rowData);
+    try { updateBikeStatusInMainSheet(patrimonio, status); } catch (e) { console.error('Erro ao atualizar status na planilha principal:', e); }
     try { updateAlertFromReport(patrimonio, status, rowData[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]); } catch (alertErr) { console.error('Erro ao atualizar alerta incremental:', alertErr); }
     if (patrimonio) {
       const cache = CacheService.getScriptCache();
@@ -1449,22 +1480,35 @@ function clearDriverRoute(driverName) {
 }
 
 function updateBikeAssignment(bikeNumber, driverName) {
-  const sheet = getSpreadsheet().getSheetByName(STATE_SHEET_NAME);
-  if (!sheet) return { success: true };
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return { success: true };
-  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
-  for (let i = 0; i < data.length; i++) {
-    const currentDriver = data[i][COLUMN_INDICES.STATE.MOTORISTA - 1];
-    let collected = (data[i][COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
-    const idx = collected.indexOf(bikeNumber.toString());
-    if (currentDriver.toLowerCase() === (driverName || '').toLowerCase()) {
-      if (idx === -1) { collected.push(bikeNumber.toString()); sheet.getRange(i + 2, COLUMN_INDICES.STATE.RECOLHIDAS).setValue(collected.join(', ')); }
-    } else {
-      if (idx !== -1) { collected.splice(idx, 1); sheet.getRange(i + 2, COLUMN_INDICES.STATE.RECOLHIDAS).setValue(collected.join(', ')); }
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const ss = getSpreadsheet();
+    
+    // ATUALIZA STATUS NA PLANILHA PRINCIPAL
+    updateBikeStatusInMainSheet(bikeNumber, `Recolhida por ${driverName}`);
+
+    const sheet = ss.getSheetByName(STATE_SHEET_NAME);
+    if (!sheet) return { success: true };
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { success: true };
+    const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+    for (let i = 0; i < data.length; i++) {
+      const currentDriver = data[i][COLUMN_INDICES.STATE.MOTORISTA - 1];
+      let collected = (data[i][COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
+      const idx = collected.indexOf(bikeNumber.toString());
+      if (currentDriver.toLowerCase() === (driverName || '').toLowerCase()) {
+        if (idx === -1) { collected.push(bikeNumber.toString()); sheet.getRange(i + 2, COLUMN_INDICES.STATE.RECOLHIDAS).setValue(collected.join(', ')); }
+      } else {
+        if (idx !== -1) { collected.splice(idx, 1); sheet.getRange(i + 2, COLUMN_INDICES.STATE.RECOLHIDAS).setValue(collected.join(', ')); }
+      }
     }
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  } finally {
+    lock.releaseLock();
   }
-  return { success: true };
 }
 
 function getAllPatrimonioNumbers() {
@@ -2952,7 +2996,7 @@ function getMechanicsList() {
       const carregamento = carregamentoRaw.toLowerCase() === 'carregando' ? 'Carregando' : (carregamentoRaw ? 'Não carregando' : '');
       const statusBicicletas = (row[COLUMN_INDICES.BIKES.STATUS - 1] || '').toString().trim().toLowerCase();
       // v85.34: Normalizar status para facilitar checagens - Incluindo variantes e garantindo remoção de acentos se necessário
-      const isSystemMaintenance = /manuten|oficina|reparodr|aguardando|recolhida|filial/.test(statusBicicletas);
+      const isSystemMaintenance = /manuten|oficina|reparo|aguardando|recolhida|filial/.test(statusBicicletas);
       const isSystemExit = /estação|estacao|ativa|lançada|estoque/.test(statusBicicletas);
       const info = { bateria, carregamento, statusBicicletas, isSystemMaintenance, isSystemExit };
       bikeInfoMap[pat] = info;
@@ -2960,90 +3004,120 @@ function getMechanicsList() {
       if (patSemZeros !== pat) bikeInfoMap[patSemZeros] = info;
     });
   } catch(e) { console.error('getMechanicsList - erro ao ler bikes:', e); }
-  let reportEntries = {};
-  let lastStatusByBike = {};
-  const reportCacheKey = 'mechanics_report_scan_v8';  // v85.32: declaração corrigida
-  const reportCached = cache.get(reportCacheKey);
-    if (reportCached) {
-      try {
-        const parsed = JSON.parse(reportCached);
-        reportEntries = parsed.reportEntries;
-        lastStatusByBike = parsed.lastStatusByBike;
-      } catch (e) { reportCached = null; }
-    }
-    if (!reportCached) {
-      const EXIT_STATUSES = ['estação', 'estacao', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'remanejada', 'recuperada', 'encontrada', 'localizada', 'ativa', 'lançada', 'estoque', '[carretinha]', 'carretinha']; // v85.32: 'reserva' removido — bikes em Reserva devem permanecer na lista
-      try {
-        const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório');
-        if (reportSheet && reportSheet.getLastRow() > 1) {
-          const lastRow = reportSheet.getLastRow();
-          const rowsToRead = Math.min(lastRow - 1, 1000);
-          const reportData = reportSheet.getRange(lastRow - rowsToRead + 1, 1, rowsToRead, 10).getValues();
-          reportData.forEach((row, idx) => {
-            const rawTs = row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1];
-            const tsMsBase = toMs(rawTs);
-            if (!tsMsBase || tsMsBase < CUTOFF_MS) return;
-            const tsMs = tsMsBase + (idx / 1000000);
-            const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
-            if (!pat) return;
-            const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
-            if (!status) return;
-            const observacao = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
-            const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
-            if (!lastStatusByBike[pat] || tsMs >= lastStatusByBike[pat].tsMs) lastStatusByBike[pat] = { tsMs, status };
-            const isInitial = (/recolhida|vandalizad|filial|recolher|vandalismo/.test(status) || /manuten[çc]ão/.test(status) || /oficina/.test(status)) && !status.includes('ação mecânica') && !status.includes('remanejada');
-            if (isInitial) {
-              if (!reportEntries[pat] || tsMs >= reportEntries[pat].tsMs) {
-                const prev = reportEntries[pat] || {};
-                reportEntries[pat] = { tsMs, status, motorista: motorista || prev.motorista || '', observacao: observacao || prev.observacao || '' };
-              }
-            }
-          });
-        }
-        
-        // v85.31: Scan Solicitação para sinais de saída (carretinha, remaneja via ADM)
-        try {
-          const reqSheet = ss.getSheetByName(REQUESTS_SHEET_NAME);
-          if (reqSheet && reqSheet.getLastRow() > 1) {
-             const lastRowReq = reqSheet.getLastRow();
-             const rowsReq = Math.min(lastRowReq - 1, 500);
-             const reqData = reqSheet.getRange(lastRowReq - rowsReq + 1, 1, rowsReq, 8).getValues();
-             reqData.forEach((row, idx) => {
-               const tsMs = toMs(row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1]);
-               if (!tsMs || tsMs < CUTOFF_MS) return;
-               const pIdStr = String(row[COLUMN_INDICES.REQUESTS.PATRIMONIO - 1] || '').trim();
-               const status = (row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '').toString().toLowerCase();
-               const situacao = (row[COLUMN_INDICES.REQUESTS.SITUACAO - 1] || '').toString().toLowerCase();
-               
-               const pats = pIdStr.split(',').map(s => s.trim().replace(/^0+/, ''));
-               pats.forEach(pat => {
-                 if (!pat) return;
-                 // Só atualiza lastStatusByBike para carretinha — exit status real
-                 // Finalizada/Aceita sem status concreto não deve sobrescrever o lastStatus do Relatório
-                 if (status.includes('carretinha')) {
-                    if (!lastStatusByBike[pat] || tsMs >= lastStatusByBike[pat].tsMs) {
-                       lastStatusByBike[pat] = { tsMs, status: 'carretinha' };
-                    }
-                 }
-               });
-             });
-          }
-        } catch(e) {}
 
-    Object.keys(reportEntries).forEach(pat => {
-      const last = lastStatusByBike[pat];
-      if (!last) return;
-      const info = bikeInfoMap[pat] || {};
-      // isSystemMaintenance = bike já tem status Manutenção na aba Bicicletas
-      // Neste caso remove do reportEntries para que o bikeMap não crie 'Alterar Status'
-      // O pós-processamento vai promovê-la para 'Aguardando Manutenção' via mechanicsStatus ou bikeMap
-      const isExit = EXIT_STATUSES.some(s => last.status.includes(s)) || info.isSystemExit;
-      if (isExit && last.tsMs > reportEntries[pat].tsMs) delete reportEntries[pat];
-      // Se isSystemMaintenance: NÃO deleta — o pós-processamento vai mover para 'Aguardando Manutenção'
-    });
-        cache.put(reportCacheKey, JSON.stringify({ reportEntries, lastStatusByBike }), 5);
-      } catch (e) { console.error('getMechanicsList - erro ao ler relatório:', e); }
-    }
+  let reportEntries = {};
+  let lastExitByBike = {};
+  const reportCacheKey = 'mechanics_report_scan_v10';
+  const reportCached = cache.get(reportCacheKey);
+  if (reportCached) {
+    try {
+      const parsed = JSON.parse(reportCached);
+      reportEntries = parsed.reportEntries || {};
+      lastExitByBike = parsed.lastExitByBike || {};
+    } catch (e) { }
+  }
+
+  if (!reportCached) {
+    const EXIT_STATUSES = ['estação', 'estacao', 'não encontrada', 'nao encontrada', 'não atendida', 'nao atendida', 'inicio_turno', 'fim_turno', 'remanejada', 'recuperada', 'encontrada', 'localizada', 'ativa', 'lançada', 'estoque', '[carretinha]', 'carretinha'];
+
+    // Pré-carrega exit times da aba Mecânica (Remanejada + Data Finalização)
+    // Isso permite que o Limpar Lista funcione sem gravar no Relatório
+    const mechExitTimes = {};
+    try {
+      if (sheet) {
+        const mechAllRows = sheet.getDataRange().getValues();
+        for (let mi = mechAllRows.length - 1; mi >= 1; mi--) {
+          const mPat = String(mechAllRows[mi][COLUMN_INDICES.MECHANICS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
+          const mSt  = String(mechAllRows[mi][COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim().toLowerCase();
+          const mFin = toMs(mechAllRows[mi][COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1]);
+          const mEnt = toMs(mechAllRows[mi][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
+          const mTs  = Math.max(mFin || 0, mEnt || 0);
+          if (mPat && mSt === 'remanejada' && mTs > 0) {
+            if (!mechExitTimes[mPat] || mTs > mechExitTimes[mPat]) {
+              mechExitTimes[mPat] = mTs;
+            }
+          }
+        }
+      }
+    } catch(e) {}
+
+    try {
+      const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME) || ss.getSheetByName('Relatorio') || ss.getSheetByName('Relatório');
+      if (reportSheet && reportSheet.getLastRow() > 1) {
+        const lastRow = reportSheet.getLastRow();
+        const rowsToRead = Math.min(lastRow - 1, 1000);
+        const reportData = reportSheet.getRange(lastRow - rowsToRead + 1, 1, rowsToRead, 10).getValues();
+        reportData.forEach((row, idx) => {
+          const rawTs = row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1];
+          const tsMsBase = toMs(rawTs);
+          if (!tsMsBase || tsMsBase < CUTOFF_MS) return;
+          // Adiciona micro-offset baseado no índice da linha para preservar ordem cronológica no mesmo segundo
+          const tsMs = tsMsBase + (idx / 1000000);
+          const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
+          if (!pat) return;
+          const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toLowerCase();
+          if (!status) return;
+          const observacao = (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString().trim();
+          const motorista  = (row[COLUMN_INDICES.REPORTS.MOTORISTA  - 1] || '').toString().trim();
+
+          const isExit = EXIT_STATUSES.some(s => status.includes(s));
+          if (isExit) {
+            if (!lastExitByBike[pat] || tsMs >= lastExitByBike[pat].tsMs) {
+              lastExitByBike[pat] = { tsMs, status };
+            }
+          }
+
+          const isInitial = (/recolhida|vandalizad|filial|recolher|vandalismo/.test(status) || /manuten[çc]ão/.test(status) || /oficina/.test(status)) && !status.includes('ação mecânica') && !status.includes('remanejada');
+          if (isInitial) {
+            if (!reportEntries[pat] || tsMs >= reportEntries[pat].tsMs) {
+              const prev = reportEntries[pat] || {};
+              reportEntries[pat] = { tsMs, status, motorista: motorista || prev.motorista || '', observacao: observacao || prev.observacao || '' };
+            }
+          }
+        });
+      }
+      
+      try {
+        const reqSheet = ss.getSheetByName(REQUESTS_SHEET_NAME);
+        if (reqSheet && reqSheet.getLastRow() > 1) {
+           const lastRowReq = reqSheet.getLastRow();
+           const rowsReq = Math.min(lastRowReq - 1, 500);
+           const reqData = reqSheet.getRange(lastRowReq - rowsReq + 1, 1, rowsReq, 8).getValues();
+           reqData.forEach((row, idx) => {
+             const tsMsBase = toMs(row[COLUMN_INDICES.REQUESTS.TIMESTAMP - 1]);
+             if (!tsMsBase || tsMsBase < CUTOFF_MS) return;
+             // Adiciona micro-offset também nas solicitações para evitar empate com reportes do mesmo segundo
+             const tsMs = tsMsBase + (idx / 1000000); 
+             const pIdStr = String(row[COLUMN_INDICES.REQUESTS.PATRIMONIO - 1] || '').trim();
+             const status = (row[COLUMN_INDICES.REQUESTS.OCORRENCIA - 1] || '').toString().toLowerCase();
+             
+             const pats = pIdStr.split(',').map(s => s.trim().replace(/^0+/, ''));
+             pats.forEach(pat => {
+               if (!pat) return;
+               if (status.includes('carretinha')) {
+                  if (!lastExitByBike[pat] || tsMs >= lastExitByBike[pat].tsMs) {
+                     lastExitByBike[pat] = { tsMs, status: 'carretinha' };
+                  }
+               }
+             });
+           });
+        }
+      } catch(e) {}
+
+      Object.keys(reportEntries).forEach(pat => {
+        const exit = lastExitByBike[pat];
+        const info = bikeInfoMap[pat] || {};
+        // v85.42: Uso de >= garante que handled_at_the_same_second_as_report também limpe
+        // Verifica também na aba Mecânica: Remanejada com Data Finalização > reportEntry
+        const mechExit = mechExitTimes[pat] || 0;
+        const isExitStatus = (exit && exit.tsMs >= reportEntries[pat].tsMs)
+          || (mechExit >= reportEntries[pat].tsMs)  // Limpar Lista sem sujar o Relatório
+          || info.isSystemExit;
+        if (isExitStatus) delete reportEntries[pat];
+      });
+      cache.put(reportCacheKey, JSON.stringify({ reportEntries, lastExitByBike }), 5);
+    } catch (e) { console.error('getMechanicsList - erro ao ler relatório:', e); }
+  }
     const mechanicsStatus = {};
     if (sheet) {
       const mechValues = sheet.getDataRange().getValues();
@@ -3070,6 +3144,10 @@ function getMechanicsList() {
         }
 
         if (mechanicsStatus[pat]) continue;
+
+        const exit = lastExitByBike[pat];
+        if (exit && exit.tsMs > (tsMs || 0)) continue;
+
         if (status === 'Remanejada') {
           if (tsMs !== null && tsMs < CUTOFF_MS) continue;
           mechanicsStatus[pat] = { row: i + 1, status, tsMs: tsMs || 0, dataEntrada: tsEntRaw, mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1], tratativa, dataFinalizacao: tsFinRaw, carretinha: row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1], manual: false };
@@ -3636,7 +3714,9 @@ function getSheetsReportsToday(payload) {
 function _clearMechanicsCache() {
   const cache = CacheService.getScriptCache();
   cache.remove('mechanics_list_v1');
-  cache.remove('mechanics_report_scan_v8');
+  cache.remove('mechanics_report_scan_v8');  // legado
+  cache.remove('mechanics_report_scan_v9');  // legado
+  cache.remove('mechanics_report_scan_v10'); // atual
   cache.remove('change_status_data_24h');
   cache.remove('change_status_data_48h');
   cache.remove('change_status_data_72h');
