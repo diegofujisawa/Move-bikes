@@ -7,7 +7,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.32-mechanics-fixes';
+const BACKEND_VERSION = '85.33-mechanics-final-fix';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -2935,7 +2935,9 @@ function getMechanicsList() {
       const carregamentoRaw = (row[COLUMN_INDICES.BIKES.CARREGAMENTO - 1] || '').toString().trim();
       const carregamento = carregamentoRaw.toLowerCase() === 'carregando' ? 'Carregando' : (carregamentoRaw ? 'Não carregando' : '');
       const statusBicicletas = (row[COLUMN_INDICES.BIKES.STATUS - 1] || '').toString().trim().toLowerCase();
-      const info = { bateria, carregamento, statusBicicletas };
+      // v85.33: Normalizar status para facilitar checagens
+      const isSystemMaintenance = /manuten[çc]ão|oficina|reparodr|aguardando|recolhida|filial/.test(statusBicicletas);
+      const info = { bateria, carregamento, statusBicicletas, isSystemMaintenance };
       bikeInfoMap[pat] = info;
       const patSemZeros = pat.replace(/^0+/, '');
       if (patSemZeros !== pat) bikeInfoMap[patSemZeros] = info;
@@ -3083,17 +3085,15 @@ function getMechanicsList() {
     if (mechData && (mechData.tsMs >= entry.tsMs || isMechActive || isMechReserva)) {
       if (mechData.status === 'Remanejada') return;
       let displayStatus = mechData.status;
-      // v85.24: Se status no sistema for manutenção, força Aguardando Manutenção mesmo que esteja em outro estado ativo
-      if ((isMaintenanceReport || (info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina'))))) {
+      // v85.33: Força status de manutenção se detectado no sistema
+      if (info.isSystemMaintenance || isMaintenanceReport) {
         if (displayStatus === 'Alterar Status') displayStatus = 'Aguardando Manutenção';
       }
       bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: mechData.manual, motorista: entry.motorista || '', observacao: entry.observacao || '' };
     } else {
       let finalStatus = 'Alterar Status';
-      const isSystemMaintenance = info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina') || info.statusBicicletas.includes('reparodr') || info.statusBicicletas.includes('aguardando'));
-      
-      // Se for um reporte de manutenção ou se o status no sistema já for Manutenção, pula 'Alterar Status'
-      if (isMaintenanceReport || isSystemMaintenance) {
+      // v85.33: Se for um reporte de manutenção ou se o status no sistema já for Manutenção, pula 'Alterar Status'
+      if (isMaintenanceReport || info.isSystemMaintenance) {
         finalStatus = 'Aguardando Manutenção';
       }
 
@@ -3104,7 +3104,7 @@ function getMechanicsList() {
     if (bikeMap[pat]) return;
     const info = bikeInfoMap[pat] || {};
     let displayStatus = mechData.status;
-    if (displayStatus === 'Alterar Status' && info.statusBicicletas && (info.statusBicicletas.includes('manuten') || info.statusBicicletas.includes('oficina'))) {
+    if (displayStatus === 'Alterar Status' && info.isSystemMaintenance) {
       displayStatus = 'Aguardando Manutenção';
     }
     bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: true };
