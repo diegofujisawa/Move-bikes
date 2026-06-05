@@ -4360,20 +4360,38 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
   // senão usa OSRM (gratuito, sem chave).
   // =================================================================
   const GOOGLE_MAPS_KEY = (typeof import.meta !== 'undefined' && ((import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || (import.meta as any).env?.VITE_GOOGLE_MAPS_KEY)) || '';
+  const googleMapsDisabledRef = useRef(false);
 
   const getRoadDistance = useCallback(async (
     fromLat: number, fromLng: number,
     toLat: number, toLng: number
   ): Promise<{ distanceM: number, durationS: number }> => {
     try {
-      if (GOOGLE_MAPS_KEY) {
-        // Proxy via Apps Script — evita CORS do browser
-        const result = await apiCall({
-          action: 'getDirections',
-          fromLat, fromLng, toLat, toLng
-        }, 1, false);
-        if (result.success && result.distanceM) {
-          return { distanceM: result.distanceM, durationS: result.durationS };
+      if (GOOGLE_MAPS_KEY && !googleMapsDisabledRef.current) {
+        try {
+          // Proxy via Apps Script — evita CORS do browser.
+          // Usamos silent = true para silenciar erros de console em caso de chave ausente no backend.
+          const result = await apiCall({
+            action: 'getDirections',
+            fromLat, fromLng, toLat, toLng
+          }, 1, true);
+          if (result.success && result.distanceM) {
+            return { distanceM: result.distanceM, durationS: result.durationS };
+          }
+        } catch (apiErr: any) {
+          const errMsg = apiErr?.message || '';
+          if (
+            errMsg.includes('Chave') ||
+            errMsg.includes('configurada') ||
+            errMsg.includes('API key') ||
+            errMsg.includes('not configured') ||
+            errMsg.includes('Google Maps')
+          ) {
+            googleMapsDisabledRef.current = true;
+            console.warn('[Routing] Chave Google Maps não configurada no backend Google Apps Script. Desativando redirecionamento para prevenir erros de requisição e usando OSRM.');
+          } else {
+            console.warn('[Routing] Erro inesperado na chamada ao proxy do Google Maps:', apiErr);
+          }
         }
       }
       // OSRM gratuito — funciona direto do browser

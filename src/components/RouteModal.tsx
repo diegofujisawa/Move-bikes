@@ -62,6 +62,7 @@ const RouteModal: React.FC<RouteModalProps> = ({
     setIsScanning(true);
     setScanError(null);
     try {
+      // GEMINI_API_KEY is replaced during build time by Vite. Ensure that Cloudflare builds the site with the correct key.
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
         console.error("GEMINI_API_KEY is not defined in the environment.");
