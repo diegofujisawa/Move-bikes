@@ -105,7 +105,16 @@ const RouteModal: React.FC<RouteModalProps> = ({
       }
     } catch (err: any) {
       console.error("Scan error:", err);
-      setScanError(`Erro ao processar imagem: ${err.message || 'Erro desconhecido'}`);
+      let errMsg = err.message || 'Erro desconhecido';
+      
+      const upperMsg = errMsg.toUpperCase();
+      if (upperMsg.includes('PREPAYMENT') || upperMsg.includes('429') || upperMsg.includes('RESOURCE_EXHAUSTED') || upperMsg.includes('BILLING')) {
+        errMsg = "A chave do Gemini inserida no Cloudflare atingiu o limite de saldo/créditos pagos. Para usar gratuitamente e sem custos, gere uma nova chave em aistudio.google.com em um projeto SEM faturamento (billing) ativo. O uso padrão possui cota gratuita generous de até 15 requisições por minuto.";
+      } else {
+        errMsg = `Erro ao processar imagem: ${errMsg}`;
+      }
+      
+      setScanError(errMsg);
     } finally {
       setIsScanning(false);
     }
