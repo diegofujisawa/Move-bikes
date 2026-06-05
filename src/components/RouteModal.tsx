@@ -85,21 +85,12 @@ const RouteModal: React.FC<RouteModalProps> = ({
       const mimeType = base64Image.split(';')[0].split(':')[1] || "image/png";
       const base64Data = base64Image.split(',')[1];
 
-      // Determina o método de autenticação adequado:
-      // - Chaves de API normais do AI Studio começam com 'AIzaSy' e devem ser passadas via query parameter '?key='
-      // - Tokens de Acesso / Chaves de Contas de Serviço (que começam com 'AQ.' ou 'ya29.') devem usar cabeçalho 'Authorization: Bearer <TOKEN>'
-      const isApiKey = cleanKey.startsWith('AIzaSy');
-      const url = isApiKey 
-        ? `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`
-        : `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent`;
+      // Envia a chave API via parâmetro 'key' de query na URL (padrão do Google AI Studio para todas as chaves, incluindo os novos formatos como 'AQ.')
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
 
       const headers: Record<string, string> = {
         "Content-Type": "application/json"
       };
-
-      if (!isApiKey) {
-        headers["Authorization"] = `Bearer ${cleanKey}`;
-      }
 
       const payload = {
         contents: [
