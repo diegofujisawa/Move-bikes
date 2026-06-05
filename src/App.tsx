@@ -8,6 +8,8 @@ import { apiCall } from './api';
 import { auth } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 
+// Force update comment: Sincronização do GitHub reavaliada
+
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(() => {
     const savedUser = localStorage.getItem('bike_app_user');

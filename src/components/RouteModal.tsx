@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { PlusPlusIcon, XIcon, TrailerIcon, MapIcon } from './icons';
 import { Upload, Loader2, Clipboard, AlertCircle } from 'lucide-react';
 
+// Pequena alteração para reativar o estado do git e liberar o botão de sincronização do GitHub.
+
 interface RouteModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -85,7 +87,7 @@ const RouteModal: React.FC<RouteModalProps> = ({
       const mimeType = base64Image.split(';')[0].split(':')[1] || "image/png";
       const base64Data = base64Image.split(',')[1];
 
-      // Envia a chave API via parâmetro 'key' de query na URL (padrão do Google AI Studio para todas as chaves, incluindo os novos formatos como 'AQ.')
+      // Envia a chave API via query parameter 'key' na URL (padrão oficial do Google AI Studio para chaves AIzaSy e novos formatos)
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
 
       const headers: Record<string, string> = {
@@ -149,6 +151,12 @@ const RouteModal: React.FC<RouteModalProps> = ({
         errMsg = `Chave de faturamento esgotada. Chave usada: ${maskedKey}. Erro original: ${errMsg}`;
       } else if (upperMsg.includes('UNAUTHENTICATED') || upperMsg.includes('CREDENTIALS') || upperMsg.includes('401') || upperMsg.includes('OAUTH') || upperMsg.includes('INVALID_KEY') || upperMsg.includes('API_KEY')) {
         errMsg = `Erro de Autenticação (401). Verifique se a chave está ativa no Google AI Studio. Chave lida pelo app: ${maskedKey}. Erro retornado pelo Google: ${errMsg}`;
+      } else if (upperMsg.includes('404') || upperMsg.includes('NOT_FOUND') || upperMsg.includes('NOT FOUND')) {
+        errMsg = `Erro 404 (Não Encontrado): Isso geralmente acontece se sua chave de API estiver RESTRETA para a API 'Gemini API' em vez de 'Generative Language API' (Google AI Studio) no Google Cloud Console. Para corrigir, no Google Cloud Console:
+1. Vá nas configurações da chave de API
+2. Remova as restrições de API selecionando 'Não restringir chave' OU marque a caixa para 'Generative Language API'
+3. Salve, aguarde 2 minutos e tente novamente.
+Chave usada: ${maskedKey}`;
       } else {
         errMsg = `Erro ao processar imagem: ${errMsg}. Chave lida pelo app: ${maskedKey}`;
       }
