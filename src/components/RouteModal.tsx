@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PlusPlusIcon, XIcon, TrailerIcon, MapIcon } from './icons';
-import { GoogleGenAI, Type } from "@google/genai";
 import { Upload, Loader2, Clipboard, AlertCircle } from 'lucide-react';
 
 interface RouteModalProps {
@@ -75,12 +74,13 @@ const RouteModal: React.FC<RouteModalProps> = ({
         return;
       }
 
-      const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
       const mimeType = base64Image.split(';')[0].split(':')[1] || "image/png";
       const base64Data = base64Image.split(',')[1];
 
-      const response = await ai.models.generateContent({
-        model: "gemini-flash-latest",
+      // Requisita diretamente o endpoint da API REST de forma limpa e sem cabeçalhos de autorização adicionais
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey.trim()}`;
+
+      const payload = {
         contents: [
           {
             parts: [
@@ -89,16 +89,32 @@ const RouteModal: React.FC<RouteModalProps> = ({
             ]
           }
         ],
-        config: {
+        generationConfig: {
           responseMimeType: "application/json",
           responseSchema: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING }
+            type: "ARRAY",
+            items: { type: "STRING" }
           }
         }
+      };
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
       });
 
-      const bikes = JSON.parse(response.text || "[]");
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`API retornou status ${res.status}: ${errorText}`);
+      }
+
+      const resJson = await res.json();
+      const textResponse = resJson.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+      const bikes = JSON.parse(textResponse);
+
       if (Array.isArray(bikes) && bikes.length > 0) {
         setBikeListText(prev => {
           const current = prev.split(/[\s,;\n]+/).map(s => s.trim()).filter(Boolean);

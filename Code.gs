@@ -2868,7 +2868,31 @@ function addToMechanics(bikeNumber) {
 function getDirections(fromLat, fromLng, toLat, toLng) {
   try {
     const key = PropertiesService.getScriptProperties().getProperty('GOOGLE_MAPS_KEY');
-    if (!key) return { success: false, error: 'Chave Google Maps não configurada.' };
+    
+    // Se a chave não estiver configurada, podemos usar o serviço nativo do Google Apps Script
+    // que funciona gratuitamente e SEM necessidade de configurar chave de API!
+    if (!key) {
+      const directions = Maps.newDirectionFinder()
+        .setOrigin(fromLat, fromLng)
+        .setDestination(toLat, toLng)
+        .setMode(Maps.DirectionFinder.Mode.DRIVING)
+        .setLanguage('pt-BR')
+        .getDirections();
+        
+      if (directions.status === 'OK' && directions.routes && directions.routes.length > 0) {
+        const route = directions.routes[0];
+        const leg = route.legs[0];
+        return {
+          success: true,
+          distanceM: leg.distance.value,
+          durationS: leg.duration.value,
+          distanceText: leg.distance.text,
+          durationText: leg.duration.text
+        };
+      }
+      return { success: false, error: 'Serviço de Mapas nativo retornou: ' + (directions.status || 'Sem rotas') };
+    }
+
     const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${fromLat},${fromLng}&destinations=${toLat},${toLng}&mode=driving&language=pt-BR&key=${key}`;
     const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
     const data = JSON.parse(response.getContentText());
