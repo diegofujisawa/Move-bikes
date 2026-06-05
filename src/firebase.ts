@@ -7,9 +7,7 @@ import {
   browserLocalPersistence
 } from 'firebase/auth';
 import {
-  initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager
+  getFirestore
 } from 'firebase/firestore';
 
 import firebaseConfig from './firebase-applet-config.json';
@@ -17,20 +15,12 @@ import firebaseConfig from './firebase-applet-config.json';
 const app = initializeApp(firebaseConfig);
 
 // =================================================================
-// FIRESTORE com persistência offline — API atualizada para Firebase 12
-// Substitui o depreciado enableIndexedDbPersistence()
+// FIRESTORE
 // =================================================================
-const databaseId = (firebaseConfig as any).firestoreDatabaseId && (firebaseConfig as any).firestoreDatabaseId !== 'undefined' 
-  ? (firebaseConfig as any).firestoreDatabaseId 
-  : '(default)';
-
-console.log(`[Firebase] Inicializando Firestore com Database ID: ${databaseId}`);
-
-export const db = initializeFirestore(app, {
-  localCache: persistentLocalCache({
-    tabManager: persistentMultipleTabManager()
-  }),
-}, databaseId);
+// Usando o databaseId do config conforme recomendado pela skill
+export const db = (firebaseConfig as any).firestoreDatabaseId && (firebaseConfig as any).firestoreDatabaseId !== '(default)'
+  ? getFirestore(app, (firebaseConfig as any).firestoreDatabaseId)
+  : getFirestore(app);
 
 export const auth = getAuth(app);
 

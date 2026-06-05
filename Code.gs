@@ -115,7 +115,11 @@ function getSpreadsheet() {
   if (!_ss) {
     const id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')
       || '14U5Y6ZU5oeNr5B7hYLMhqvGgU68K4seeILUgTK335kQ';
-    _ss = SpreadsheetApp.openById(id);
+    try {
+      _ss = SpreadsheetApp.openById(id);
+    } catch (err) {
+      throw new Error('A propriedade SPREADSHEET_ID (' + id + ') não está configurada corretamente, o ID da planilha é inválido ou a conta que executou o script (' + Session.getEffectiveUser().getEmail() + ') não possui permissão de acesso a essa planilha. Detalhes: ' + err.message);
+    }
   }
   return _ss;
 }
@@ -2455,6 +2459,7 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
         else if (status.includes('filial')) type = 'filial';
         else if (status.includes('não encontrada') || status.includes('nao encontrada')) type = 'nao_encontrada';
         else if (status.includes('não atendida') || status.includes('nao atendida')) type = 'nao_atendida';
+        else if (status.includes('carretinha')) type = 'carretinha';
         if (type) {
           const pat = String(row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').trim().replace(/^0+/, '');
           const obs = String(row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').trim();

@@ -60,7 +60,7 @@ import { User } from '../types';
 
 // Janela de proteção após ação do motorista (ms).
 // Durante esse período, o sync do Sheets não sobrescreve o estado local.
-const DRIVER_ACTION_GRACE_MS = 120000; // 120 segundos — maior margem para latência do Sheets e evitar retorno de bikes finalizadas
+const DRIVER_ACTION_GRACE_MS = 300000; // 300 segundos (5 minutos) — margem maior para latência do Sheets e evitar retorno de bikes finalizadas
 
 interface MainScreenProps {
   driverName: string;
@@ -173,9 +173,11 @@ const handleFirestoreError = (error: unknown, operationType: OperationType, path
 async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration. ");
+    console.log("[Firebase] Conexão com Firestore verificada com sucesso.");
+  } catch (error: any) {
+    console.error("[Firebase] Falha na conexão de teste:", error.code, error.message);
+    if (error.message?.includes('the client is offline') || error.code === 'unavailable') {
+      console.error("Verifique a configuração do Firebase (apiKey, projectId) e se o Firestore está habilitado.");
     }
   }
 }
@@ -422,10 +424,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (!meta.recentlyHandled) meta.recentlyHandled = {};
       meta.recentlyHandled[bikeId] = now;
       
-      // Limpeza de itens antigos (> 10 min) para não explodir o localStorage
-      const tenMinAgo = now - 600000;
+      // Limpeza de itens antigos (> 15 min) para não explodir o localStorage
+      const fifteenMinAgo = now - 900000;
       Object.keys(meta.recentlyHandled).forEach(id => {
-        if (meta.recentlyHandled[id] < tenMinAgo) delete meta.recentlyHandled[id];
+        if (meta.recentlyHandled[id] < fifteenMinAgo) delete meta.recentlyHandled[id];
       });
       
       localStorage.setItem(metaKey, JSON.stringify(meta));
@@ -619,7 +621,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
    * Marca que o motorista acabou de executar uma ação.
    * Durante DRIVER_ACTION_GRACE_MS, o sync do Sheets não sobrescreve.
    */
-  const markDriverAction = () => {
+  const markDriverAction = useCallback(() => {
     const now = Date.now();
     lastDriverActionAt.current = now;
     // Persiste no localStorage para durar após reloads
@@ -629,16 +631,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
       meta.lastDriverActionAt = now;
       localStorage.setItem(metaKey, JSON.stringify(meta));
     } catch {}
-  };
+  }, [driverName]);
 
   /**
    * Verifica se o sync do Sheets pode sobrescrever o estado local.
    * Retorna false se houver uma ação recente do motorista.
    */
-  const canSheetsOverride = () => {
+  const canSheetsOverride = useCallback(() => {
     const elapsed = Date.now() - lastDriverActionAt.current;
     return elapsed > DRIVER_ACTION_GRACE_MS;
-  };
+  }, []);
 
   /**
    * Aplica estado vindo do Sheets, respeitando a janela de proteção.
@@ -648,53 +650,73 @@ const MainScreen: React.FC<MainScreenProps> = ({
     if (isUpdatingStateRef.current) return; // operação ativa — não mexe
     if (!canSheetsOverride()) return;       // ação recente do motorista — protege
 
-    const newCollected = [...new Set(sheetsCollected.map(String))];
-    const newRoute = [...new Set(sheetsRoute.map(String))].filter(b => !newCollected.includes(b));
-    const finalRoute = newRoute.filter(b => !processingBikesRef.current.has(b));
-    const finalCollected = newCollected.filter(b => !processingBikesRef.current.has(b));
+    const now = Date.now();
+    const PROTECTION_WINDOW = 300000; // 5 minutos
+
+    const newCollectedRaw = [...new Set(sheetsCollected.map(String).filter(Boolean))];
+    const newRouteRaw = [...new Set(sheetsRoute.map(String).filter(Boolean))];
+
+    // Reconciliação: Protege bikes que foram manipuladas recentemente, mesmo que não estejam no Sheets ainda
+    const handledRecently = Array.from(recentlyHandledBikesRef.current.entries())
+      .filter(([, ts]) => now - ts < PROTECTION_WINDOW)
+      .map(([id]) => id);
+    
+    // Se a bike foi "Recolhida" recentemente mas não está no Sheets, mantém ela na Posse
+    const protectedCollected = handledRecently.filter(id => collectedBikesRef.current.includes(id) && !newCollectedRaw.includes(id));
+    const finalCollected = [...new Set([...newCollectedRaw, ...protectedCollected])];
+
+    // Se a bike foi colocada "Em Rota" recentemente mas não está no Sheets, mantém ela na Rota
+    const protectedRoute = handledRecently.filter(id => routeBikesRef.current.includes(id) && !newRouteRaw.includes(id) && !finalCollected.includes(id));
+    const finalRoute = [...new Set([...newRouteRaw, ...protectedRoute])].filter(b => !finalCollected.includes(b));
+
+    const sanitizedRoute = finalRoute.filter(b => !processingBikesRef.current.has(b));
+    const sanitizedCollected = finalCollected.filter(b => !processingBikesRef.current.has(b));
 
     setRouteBikes(prev => {
       const prevStr = [...prev].sort().join(',');
-      const nextStr = [...finalRoute].sort().join(',');
-      return prevStr === nextStr ? prev : finalRoute;
+      const nextStr = [...sanitizedRoute].sort().join(',');
+      return prevStr === nextStr ? prev : sanitizedRoute;
     });
 
     setCollectedBikes(prev => {
       const prevStr = [...prev].sort().join(',');
-      const nextStr = [...finalCollected].sort().join(',');
+      const nextStr = [...sanitizedCollected].sort().join(',');
       
-      // v85.42: Registra Em Posse para novas bikes detectadas via Sheets (ADM/Sync)
       if (prevStr !== nextStr) {
-        const added = finalCollected.filter(id => !prev.includes(id));
+        const added = sanitizedCollected.filter(id => !prev.includes(id));
         added.forEach(id => {
-          addDoc(collection(db, 'timeline_events'), {
-            driverName,
-            bikeNumber: id,
-            type: 'em_posse',
-            timestamp: serverTimestamp(),
-            date: localDateStr(),
-            observacao: 'Sync: Atribuído via Planilha'
-          }).catch(e => console.warn('[Timeline] Erro no sync Posse:', e));
+          // Só registra se não for uma bike que já tínhamos localmente (evita duplicatas na timeline)
+          const lastHandledAt = recentlyHandledBikesRef.current.get(id);
+          if (!lastHandledAt || (now - lastHandledAt > 10000)) {
+            addDoc(collection(db, 'timeline_events'), {
+              driverName,
+              bikeNumber: id,
+              type: 'em_posse',
+              timestamp: serverTimestamp(),
+              date: localDateStr(),
+              observacao: 'Sync: Atribuído via Planilha'
+            }).catch(e => console.warn('[Timeline] Erro no sync Posse:', e));
+          }
         });
       }
 
-      return prevStr === nextStr ? prev : finalCollected;
+      return prevStr === nextStr ? prev : sanitizedCollected;
     });
 
-    // Espelha no Firebase APENAS se o estado mudou — evita write a cada sync (12s)
+    // Espelha no Firebase APENAS se o estado mudou
     const prevRouteStr = [...routeBikesRef.current].sort().join(',');
     const prevCollStr  = [...collectedBikesRef.current].sort().join(',');
-    const nextRouteStr = [...finalRoute].sort().join(',');
-    const nextCollStr  = [...finalCollected].sort().join(',');
+    const nextRouteStr = [...sanitizedRoute].sort().join(',');
+    const nextCollStr  = [...sanitizedCollected].sort().join(',');
     if (prevRouteStr !== nextRouteStr || prevCollStr !== nextCollStr) {
       setDoc(doc(db, 'users', normalizeName(driverName)), {
-        routeBikes: finalRoute,
-        collectedBikes: finalCollected,
+        routeBikes: sanitizedRoute,
+        collectedBikes: sanitizedCollected,
         lastUpdate: serverTimestamp(),
         sheetsSync: true,
       }, { merge: true }).catch(() => {});
     }
-  }, [driverName]);
+  }, [driverName, canSheetsOverride]);
 
   /**
    * Grava o estado do motorista no Firebase e envia para Sheets em paralelo.
@@ -871,29 +893,43 @@ const MainScreen: React.FC<MainScreenProps> = ({
         return;
       }
 
+      // v85.45: Adiciona proteção contra bikes que somem por sync atrasado do Sheets para o Firebase
+      const now = Date.now();
+      const PROTECTION_WINDOW = 300000; // 5 minutos
+      const fbRoute = (data.routeBikes || []).map(String);
+      const fbCollected = (data.collectedBikes || []).map(String);
+
+      // Reconciliação: Se o Firebase diz que a bike sumiu, mas nós a manipulamos recentemente, mantemos a versão local
+      const handledRecently = Array.from(recentlyHandledBikesRef.current.entries())
+        .filter(([, ts]) => now - ts < PROTECTION_WINDOW)
+        .map(([id]) => id);
+
+      const protectedRoute = handledRecently.filter(id => routeBikesRef.current.includes(id) && !fbRoute.includes(id) && !fbCollected.includes(id));
+      const finalRoute = [...new Set([...fbRoute, ...protectedRoute])];
+
+      const protectedCollected = handledRecently.filter(id => collectedBikesRef.current.includes(id) && !fbCollected.includes(id));
+      const finalCollected = [...new Set([...fbCollected, ...protectedCollected])];
+
       // Atualiza o timestamp da última sincronização do Firebase para reconciliação
       lastFirebaseUpdateAt.current = lastUpdate.getTime();
 
-      // Atualiza UI apenas se houver mudança real para evitar re-renders desnecessários
-      const newRoute = data.routeBikes || [];
-      const newCollected = data.collectedBikes || [];
-      
+      // Atualiza UI apenas se houver mudança real
       setRouteBikes(prev => {
         const prevStr = [...prev].sort().join(',');
-        const nextStr = [...newRoute].sort().join(',');
+        const nextStr = [...finalRoute].sort().join(',');
         if (prevStr !== nextStr) {
-          routeBikesRef.current = newRoute;
-          return newRoute;
+          routeBikesRef.current = finalRoute;
+          return finalRoute;
         }
         return prev;
       });
 
       setCollectedBikes(prev => {
         const prevStr = [...prev].sort().join(',');
-        const nextStr = [...newCollected].sort().join(',');
+        const nextStr = [...finalCollected].sort().join(',');
         if (prevStr !== nextStr) {
-          collectedBikesRef.current = newCollected;
-          return newCollected;
+          collectedBikesRef.current = finalCollected;
+          return finalCollected;
         }
         return prev;
       });
@@ -3925,33 +3961,21 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         const sheetsCollected = d.driverState.collectedBikes || [];
         
         if (canSheetsOverride()) {
-          // Se passou o tempo de carência, ainda assim filtramos bikes que o Firebase diz estarem finalizadas
-          // Isso garante que bikes não "retornem" se o Sheets estiver muito atrasado
-          // const reconciledRoute = sheetsRoute.filter(b => {
-          sheetsRoute.filter(b => {
-            const bikeId = String(b);
-            // Se a bike está no nosso estado local de 'coletadas', ela não pode voltar para a 'rota'
-            if (collectedBikesRef.current.includes(bikeId)) return false;
-            
-            // Verifica se foi manipulada recentemente (janela de 2 minutos para sync do Sheets)
-            const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
-            if (lastHandledAt && (Date.now() - lastHandledAt < 120000)) return false;
-
-            return true;
-          });
-
+          // Se passou o tempo de carência, aplicamos reconciliação inteligente
+          const PROTECTION_WINDOW = 300000; // 5 minutos
+          
           // Reconciliação: unimos o que o Sheet tem com o que acabamos de aceitar localmente
           const fromSheets = sheetsRoute.filter(b => {
             const bikeId = String(b).trim();
             if (collectedBikesRef.current.includes(bikeId)) return false;
             const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
-            if (lastHandledAt && (Date.now() - lastHandledAt < 120000)) return false;
+            if (lastHandledAt && (Date.now() - lastHandledAt < PROTECTION_WINDOW)) return false;
             return true;
           });
           const fromLocalGrace = routeBikesRef.current.filter(b => {
             const bikeId = String(b).trim();
             const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
-            return lastHandledAt && (Date.now() - lastHandledAt < 120000);
+            return lastHandledAt && (Date.now() - lastHandledAt < PROTECTION_WINDOW);
           });
           const reconciledRouteReal = [...new Set([...fromSheets, ...fromLocalGrace])];
 
@@ -3959,13 +3983,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
           const fromSheetsCollected = sheetsCollected.filter(b => {
             const bikeId = String(b).trim();
             const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
-            if (lastHandledAt && (Date.now() - lastHandledAt < 120000)) return false;
+            if (lastHandledAt && (Date.now() - lastHandledAt < PROTECTION_WINDOW)) return false;
             return true;
           });
           const fromLocalGraceCollected = collectedBikesRef.current.filter(b => {
             const bikeId = String(b).trim();
             const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
-            return lastHandledAt && (Date.now() - lastHandledAt < 120000);
+            return lastHandledAt && (Date.now() - lastHandledAt < PROTECTION_WINDOW);
           });
           const reconciledCollectedReal = [...new Set([...fromSheetsCollected, ...fromLocalGraceCollected])];
 
@@ -3973,16 +3997,17 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         } else {
           // Se estamos no período de carência, apenas aceitamos NOVAS atribuições do Sheets
           // (bikes que o Sheets enviou mas que não temos no Firebase nem no local)
+          const PROTECTION_WINDOW = 300000; // 5 minutos
           const currentAll = new Set([...routeBikesRef.current, ...collectedBikesRef.current]);
           const newAssignments = sheetsRoute.filter(b => {
-            const bikeId = String(b);
+            const bikeId = String(b).trim();
             // Ignore se já temos ou se processamos agora
             if (currentAll.has(bikeId)) return false;
             if (processingBikesRef.current.has(bikeId)) return false;
 
             // Proteção extra: ignora se foi FINALIZADA ou REMOVIDA recentemente
             const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
-            if (lastHandledAt && (Date.now() - lastHandledAt < 120000)) return false;
+            if (lastHandledAt && (Date.now() - lastHandledAt < PROTECTION_WINDOW)) return false;
 
             return true;
           });
@@ -4175,7 +4200,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       setIsSyncing(false);
       if (isAdm) { setIsSummaryLoading(false); setIsAlertsLoading(false); setIsVandalizedLoading(false); }
     }
-  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate, alertsVersion]);
+  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate, alertsVersion, canSheetsOverride]);
 
   // Busca baterias em tempo real para bikes na mecânica conforme o Firebase atualiza a lista
   useEffect(() => {
@@ -4222,9 +4247,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         }
         if (meta.recentlyHandled) {
           const now = Date.now();
-          const tenMinAgo = now - 600000;
+          const fifteenMinAgo = now - 900000;
           Object.entries(meta.recentlyHandled).forEach(([id, ts]) => {
-            if ((ts as number) > tenMinAgo) {
+            if ((ts as number) > fifteenMinAgo) {
               recentlyHandledBikesRef.current.set(id, ts as number);
             }
           });
@@ -7786,10 +7811,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         };
         const dotConfig: Record<string, {bg: string, label: string}> = {
           em_posse:       { bg: 'bg-green-500',  label: 'Em Posse' },
-          recolhida:      { bg: 'bg-green-700',  label: 'Recolhida (Filial)' },
+          recolhida:      { bg: 'bg-green-700',  label: 'Filial' },
+          filial:         { bg: 'bg-green-700',  label: 'Filial' },
           estacao:        { bg: 'bg-indigo-500', label: 'Estação' },
           nao_atendida:   { bg: 'bg-yellow-500', label: 'Não atend.' },
-          nao_encontrada: { bg: 'bg-red-500',    label: 'Não enc.' },
+          nao_encontrada: { bg: 'bg-red-500',    label: 'Não encontrada' },
           carretinha:     { bg: 'bg-purple-600', label: 'Carretinha' },
           removida_por_adm: { bg: 'bg-black',    label: 'Removida por ADM' },
         };
