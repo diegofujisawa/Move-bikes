@@ -118,7 +118,7 @@ const RouteModal: React.FC<RouteModalProps> = ({
 
       if (!res.ok) {
         const errorText = await res.text();
-        throw new Error(`Google API returned status ${res.status}: ${errorText}`);
+        throw new Error(`A API do Google retornou o status ${res.status}: ${errorText}`);
       }
 
       const resJson = await res.json();
