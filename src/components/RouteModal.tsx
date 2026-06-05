@@ -69,8 +69,16 @@ const RouteModal: React.FC<RouteModalProps> = ({
         return;
       }
 
-      if (!apiKey.trim().startsWith('AIzaSy')) {
-        setScanError("A chave configurada no Cloudflare parece inválida (chaves do Gemini devem começar com 'AIzaSy'). Por favor, verifique se inseriu o valor correto em GEMINI_API_KEY.");
+      // Normaliza a chave removendo espaços e possíveis aspas envolventes de copy-paste
+      let cleanKey = apiKey.trim();
+      if (cleanKey.startsWith('"') && cleanKey.endsWith('"')) {
+        cleanKey = cleanKey.slice(1, -1).trim();
+      } else if (cleanKey.startsWith("'") && cleanKey.endsWith("'")) {
+        cleanKey = cleanKey.slice(1, -1).trim();
+      }
+
+      if (!cleanKey) {
+        setScanError("Erro: Chave API do Gemini está vazia.");
         return;
       }
 
@@ -78,7 +86,7 @@ const RouteModal: React.FC<RouteModalProps> = ({
       const base64Data = base64Image.split(',')[1];
 
       // Requisita diretamente o endpoint da API REST de forma limpa e sem cabeçalhos de autorização adicionais
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey.trim()}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${cleanKey}`;
 
       const payload = {
         contents: [
