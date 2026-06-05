@@ -86,7 +86,7 @@ const RouteModal: React.FC<RouteModalProps> = ({
       const base64Data = base64Image.split(',')[1];
 
       // Requisita diretamente o endpoint da API REST de forma limpa e sem cabeçalhos de autorização adicionais
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${cleanKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
 
       const payload = {
         contents: [
@@ -116,7 +116,7 @@ const RouteModal: React.FC<RouteModalProps> = ({
 
       if (!res.ok) {
         const errorText = await res.text();
-        throw new Error(`API retornou status ${res.status}: ${errorText}`);
+        throw new Error(`Google API returned status ${res.status}: ${errorText}`);
       }
 
       const resJson = await res.json();
@@ -137,13 +137,18 @@ const RouteModal: React.FC<RouteModalProps> = ({
       console.error("Scan error:", err);
       let errMsg = err.message || 'Erro desconhecido';
       
+      const apiKeyVal = process.env.GEMINI_API_KEY || '';
+      const maskedKey = apiKeyVal.length > 8 
+        ? `${apiKeyVal.substring(0, 7)}...${apiKeyVal.substring(apiKeyVal.length - 5)} (Tam: ${apiKeyVal.length})`
+        : `Vazia/Inválida (Tam: ${apiKeyVal.length})`;
+
       const upperMsg = errMsg.toUpperCase();
       if (upperMsg.includes('PREPAYMENT') || upperMsg.includes('429') || upperMsg.includes('RESOURCE_EXHAUSTED') || upperMsg.includes('BILLING')) {
-        errMsg = "A chave do Gemini inserida no Cloudflare atingiu o limite de saldo/créditos pagos. Para usar gratuitamente e sem custos, gere uma nova chave em aistudio.google.com em um projeto SEM faturamento (billing) ativo. O uso padrão possui cota gratuita generous de até 15 requisições por minuto.";
+        errMsg = `Chave de faturamento esgotada. Chave usada: ${maskedKey}. Erro original: ${errMsg}`;
       } else if (upperMsg.includes('UNAUTHENTICATED') || upperMsg.includes('CREDENTIALS') || upperMsg.includes('401') || upperMsg.includes('OAUTH') || upperMsg.includes('INVALID_KEY') || upperMsg.includes('API_KEY')) {
-        errMsg = "Erro de Autenticação (401): A chave do Gemini (GEMINI_API_KEY) configurada no Cloudflare não é válida. Certifique-se de gerar uma chave válida começando com 'AIzaSy' em aistudio.google.com e atualize a variável no Cloudflare.";
+        errMsg = `Erro de Autenticação (401). Verifique se a chave está ativa no Google AI Studio. Chave lida pelo app: ${maskedKey}. Erro retornado pelo Google: ${errMsg}`;
       } else {
-        errMsg = `Erro ao processar imagem: ${errMsg}`;
+        errMsg = `Erro ao processar imagem: ${errMsg}. Chave lida pelo app: ${maskedKey}`;
       }
       
       setScanError(errMsg);
