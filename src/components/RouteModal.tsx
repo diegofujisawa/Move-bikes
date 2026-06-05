@@ -66,11 +66,16 @@ const RouteModal: React.FC<RouteModalProps> = ({
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
         console.error("GEMINI_API_KEY is not defined in the environment.");
-        setScanError("Erro: Chave API não configurada.");
+        setScanError("Erro: Chave API do Gemini não configurada nas variáveis do Cloudflare.");
         return;
       }
 
-      const ai = new GoogleGenAI({ apiKey });
+      if (!apiKey.trim().startsWith('AIzaSy')) {
+        setScanError("A chave configurada no Cloudflare parece inválida (chaves do Gemini devem começar com 'AIzaSy'). Por favor, verifique se inseriu o valor correto em GEMINI_API_KEY.");
+        return;
+      }
+
+      const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
       const mimeType = base64Image.split(';')[0].split(':')[1] || "image/png";
       const base64Data = base64Image.split(',')[1];
 
@@ -111,6 +116,8 @@ const RouteModal: React.FC<RouteModalProps> = ({
       const upperMsg = errMsg.toUpperCase();
       if (upperMsg.includes('PREPAYMENT') || upperMsg.includes('429') || upperMsg.includes('RESOURCE_EXHAUSTED') || upperMsg.includes('BILLING')) {
         errMsg = "A chave do Gemini inserida no Cloudflare atingiu o limite de saldo/créditos pagos. Para usar gratuitamente e sem custos, gere uma nova chave em aistudio.google.com em um projeto SEM faturamento (billing) ativo. O uso padrão possui cota gratuita generous de até 15 requisições por minuto.";
+      } else if (upperMsg.includes('UNAUTHENTICATED') || upperMsg.includes('CREDENTIALS') || upperMsg.includes('401') || upperMsg.includes('OAUTH') || upperMsg.includes('INVALID_KEY') || upperMsg.includes('API_KEY')) {
+        errMsg = "Erro de Autenticação (401): A chave do Gemini (GEMINI_API_KEY) configurada no Cloudflare não é válida. Certifique-se de gerar uma chave válida começando com 'AIzaSy' em aistudio.google.com e atualize a variável no Cloudflare.";
       } else {
         errMsg = `Erro ao processar imagem: ${errMsg}`;
       }
