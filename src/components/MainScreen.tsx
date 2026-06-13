@@ -256,6 +256,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [bikeConflicts, setBikeConflicts] = useState<Record<string, any>>({});
   const [currentDriverLocation, setCurrentDriverLocation] = useState<{ lat: number, lng: number } | null>(null);
   const [routeDistances, setRouteDistances] = useState<Record<string, { distance: string, duration: string, value: number, isRoad?: boolean }>>({});
+  const lastOptimizedBikesSetRef = useRef<string>('');
 
   // --- Modais ---
   const [isRequestModalOpen, setRequestModalOpen] = useState(false);
@@ -4544,6 +4545,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       if (prev.join('|') === newOrder.join('|')) return prev;
       return newOrder;
     });
+    
+    // Atualiza a chave de otimização/reordenamento
+    lastOptimizedBikesSetRef.current = [...newOrder].sort().join(',');
     console.log('[Routing] Cálculo de distâncias de trajeto e ordenação sequencial concluídos.');
   }, [currentDriverLocation, routeBikes, routeBikesDetails, getRoadDistance]);
 
@@ -4557,87 +4561,95 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
   }, [routeBikes, routeBikesDetails]);
 
   // Dispara roteamento ao mudar posição ou bikes — com debounce de 3s
+  // Só o fazemos se o conjunto de bikes mudou para não ficar reordenando enquanto o motorista dirige
   useEffect(() => {
     if (!currentDriverLocation || !routeBikes.length || !bikesHash) return;
     
+    const currentBikesSet = [...routeBikes].sort().join(',');
+    if (lastOptimizedBikesSetRef.current === currentBikesSet) {
+      // Se o conjunto de bikes é igual, não precisamos disparar buildOptimizedRoute
+      return;
+    }
+
     const timer = setTimeout(() => {
       console.log('[Routing] Iniciando otimização por mudança de posição/bikes');
       buildOptimizedRoute();
     }, 3000);
     return () => clearTimeout(timer);
-  }, [currentDriverLocation, routeBikes.length, bikesHash, buildOptimizedRoute]);
+  }, [currentDriverLocation, routeBikes, bikesHash, buildOptimizedRoute]);
 
   // Reorganiza o roteiro em tempo real com base no GPS do motorista
   // e recalcula as distâncias sequenciais imediatamente.
   useEffect(() => {
     if (!currentDriverLocation || !routeBikes.length) return;
 
-    // 1. Separa as bikes com e sem coordenadas
-    const bikesWithCoords = routeBikes
-      .map(id => ({ id, details: routeBikesDetails[id] }))
-      .filter(b => b.details?.currentLat && b.details?.currentLng);
+    const currentBikesSet = [...routeBikes].sort().join(',');
+    const setHasChanged = lastOptimizedBikesSetRef.current !== currentBikesSet;
 
-    if (bikesWithCoords.length === 0) return;
+    if (setHasChanged) {
+      // 1. Separa as bikes com e sem coordenadas
+      const bikesWithCoords = routeBikes
+        .map(id => ({ id, details: routeBikesDetails[id] }))
+        .filter(b => b.details?.currentLat && b.details?.currentLng);
 
-    // 2. Calcula a sequência Nearest Neighbor a partir do GPS atual do motorista
-    const ordered: string[] = [];
-    let currentPoint = { lat: currentDriverLocation.lat, lng: currentDriverLocation.lng };
-    const unvisited = [...bikesWithCoords];
+      if (bikesWithCoords.length === 0) return;
 
-    const dists: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean }> = {};
-    let cumulativeDistM = 0;
+      // 2. Calcula a sequência Nearest Neighbor a partir do GPS atual do motorista
+      const ordered: string[] = [];
+      let currentPoint = { lat: currentDriverLocation.lat, lng: currentDriverLocation.lng };
+      const unvisited = [...bikesWithCoords];
 
-    while (unvisited.length > 0) {
-      let bestIndex = 0;
-      let minDistance = Infinity;
-      for (let i = 0; i < unvisited.length; i++) {
-        const bikeLat = unvisited[i].details.currentLat!;
-        const bikeLng = unvisited[i].details.currentLng!;
-        const dist = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng);
-        if (dist < minDistance) {
-          minDistance = dist;
-          bestIndex = i;
+      const dists: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean }> = {};
+      let cumulativeDistM = 0;
+
+      while (unvisited.length > 0) {
+        let bestIndex = 0;
+        let minDistance = Infinity;
+        for (let i = 0; i < unvisited.length; i++) {
+          const bikeLat = unvisited[i].details.currentLat!;
+          const bikeLng = unvisited[i].details.currentLng!;
+          const dist = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng);
+          if (dist < minDistance) {
+            minDistance = dist;
+            bestIndex = i;
+          }
         }
+
+        const nextBikeObj = unvisited[bestIndex];
+        const nextBikeId = nextBikeObj.id;
+        ordered.push(nextBikeId);
+
+        const bikeLat = nextBikeObj.details.currentLat!;
+        const bikeLng = nextBikeObj.details.currentLng!;
+
+        // Calcula a distância direta (Haversine) para esta perna da sequência
+        const distKm = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng);
+        const distM = distKm * 1000;
+        const durS = distKm * 180; // aprox 20 km/h médio na cidade em segundos
+        cumulativeDistM += distM;
+
+        dists[nextBikeId] = {
+          distance: distKm < 1 ? `${distM.toFixed(0)}m` : `${distKm.toFixed(1)}km`,
+          duration: `~${Math.round(durS / 60)} min`,
+          value: cumulativeDistM,
+          durationS: durS,
+          isRoad: false
+        };
+
+        // Avança o ponto de referência para a bike atual
+        currentPoint = { lat: bikeLat, lng: bikeLng };
+        unvisited.splice(bestIndex, 1);
       }
 
-      const nextBikeObj = unvisited[bestIndex];
-      const nextBikeId = nextBikeObj.id;
-      ordered.push(nextBikeId);
+      const withoutCoords = routeBikes.filter(id => {
+        const d = routeBikesDetails[id];
+        return !d?.currentLat || !d?.currentLng;
+      });
 
-      const bikeLat = nextBikeObj.details.currentLat!;
-      const bikeLng = nextBikeObj.details.currentLng!;
-
-      // Calcula a distância direta (Haversine) para esta perna da sequência
-      const distKm = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng);
-      const distM = distKm * 1000;
-      const durS = distKm * 180; // aprox 20 km/h médio na cidade em segundos
-      cumulativeDistM += distM;
-
-      dists[nextBikeId] = {
-        distance: distKm < 1 ? `${distM.toFixed(0)}m` : `${distKm.toFixed(1)}km`,
-        duration: `~${Math.round(durS / 60)} min`,
-        value: cumulativeDistM,
-        durationS: durS,
-        isRoad: false
-      };
-
-      // Avança o ponto de referência para a bike atual
-      currentPoint = { lat: bikeLat, lng: bikeLng };
-      unvisited.splice(bestIndex, 1);
-    }
-
-    const withoutCoords = routeBikes.filter(id => {
-      const d = routeBikesDetails[id];
-      return !d?.currentLat || !d?.currentLng;
-    });
-
-    const newOrder = [...ordered, ...withoutCoords];
-
-    // Se houve mudança na ordem, atualizamos o roteiro E as distâncias simultaneamente para o motorista
-    const orderHasChanged = routeBikes.join('|') !== newOrder.join('|');
-
-    if (orderHasChanged) {
-      console.log('[Routing] Reorganizando roteiro dinamicamente para o GPS do motorista:', newOrder);
+      const newOrder = [...ordered, ...withoutCoords];
+      console.log('[Routing] Reorganizando roteiro inicialmente para novo conjunto de bikes:', newOrder);
+      
+      lastOptimizedBikesSetRef.current = currentBikesSet;
       setRouteBikes(newOrder);
       setRouteDistances(prev => {
         const next = { ...prev };
@@ -4647,6 +4659,36 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         return next;
       });
     } else {
+      // O conjunto de bikes é idêntico. Mantemos a ordem atual estável para não confundir o motorista.
+      // Apenas computamos as distâncias sequenciais seguindo a ordem ATUAL de routeBikes.
+      const dists: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean }> = {};
+      let currentPoint = { lat: currentDriverLocation.lat, lng: currentDriverLocation.lng };
+      let cumulativeDistM = 0;
+
+      routeBikes.forEach(bikeId => {
+        const details = routeBikesDetails[bikeId];
+        if (details?.currentLat && details?.currentLng) {
+          const bikeLat = details.currentLat;
+          const bikeLng = details.currentLng;
+          
+          const distKm = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng);
+          const distM = distKm * 1000;
+          const durS = distKm * 180;
+          cumulativeDistM += distM;
+
+          dists[bikeId] = {
+            distance: distKm < 1 ? `${distM.toFixed(0)}m` : `${distKm.toFixed(1)}km`,
+            duration: `~${Math.round(durS / 60)} min`,
+            value: cumulativeDistM,
+            durationS: durS,
+            isRoad: false
+          };
+
+          // Avança para o próximo ponto
+          currentPoint = { lat: bikeLat, lng: bikeLng };
+        }
+      });
+
       // Se a ordem for a mesma, atualizamos as distâncias se houver variação relevante para manter o compasso fluido
       setRouteDistances(prev => {
         const next = { ...prev };

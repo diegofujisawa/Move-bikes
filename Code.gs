@@ -1419,8 +1419,8 @@ function _updateDriverStateInternal(driverName, routeBikes, collectedBikes) {
   if (!sheet) throw new Error(`Planilha "${STATE_SHEET_NAME}" não encontrada.`);
   const lastRow = sheet.getLastRow();
   const lastCol = sheet.getLastColumn() || 4;
-  const routeStr = Array.isArray(routeBikes) ? [...new Set(routeBikes.map(b => String(b).trim()))].filter(Boolean).sort().join(', ') : '';
-  const collectedStr = Array.isArray(collectedBikes) ? [...new Set(collectedBikes.map(b => String(b).trim()))].filter(Boolean).sort().join(', ') : '';
+  const routeStr = Array.isArray(routeBikes) ? [...new Set(routeBikes.map(b => String(b).trim()))].filter(Boolean).join(', ') : '';
+  const collectedStr = Array.isArray(collectedBikes) ? [...new Set(collectedBikes.map(b => String(b).trim()))].filter(Boolean).join(', ') : '';
   const allBikes = [...new Set([
     ...(Array.isArray(routeBikes) ? routeBikes.map(b => String(b).trim()).filter(Boolean) : []),
     ...(Array.isArray(collectedBikes) ? collectedBikes.map(b => String(b).trim()).filter(Boolean) : [])
@@ -1458,8 +1458,8 @@ function _updateDriverStateInternal(driverName, routeBikes, collectedBikes) {
         otherCollected = otherCollected.filter(b => b !== bike); 
       });
       if (otherRoute.length + otherCollected.length !== before) {
-        dataRows[i][routeColIdx] = otherRoute.sort().join(', ');
-        dataRows[i][collectedColIdx] = otherCollected.sort().join(', ');
+        dataRows[i][routeColIdx] = otherRoute.join(', ');
+        dataRows[i][collectedColIdx] = otherCollected.join(', ');
         changed = true;
       }
     }
