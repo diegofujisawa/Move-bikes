@@ -201,6 +201,13 @@ function parseCoordinate(val) {
     : parseFloat(String(val).trim().replace(',', '.').replace(/[–—]/g, '-').replace(/[^\d.-]/g, ''));
   if (isNaN(num)) return NaN;
   while (Math.abs(num) > 180) num /= 10;
+  
+  // Auto-healing para erros comuns de digitação em planilhas (esquecer o sinal de menos no Brasil/SP)
+  if (num > 15 && num < 35) {
+    num = -num;
+  } else if (num > 35 && num < 75) {
+    num = -num;
+  }
   return num;
 }
 

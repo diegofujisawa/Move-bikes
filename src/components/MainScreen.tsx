@@ -91,9 +91,20 @@ const ZoneButton = ({ id, icon, label, config, setConfig }: { id: string, icon: 
 // =================================================================
 const normalizeCoord = (coord: number): number => {
   if (isNaN(coord) || coord === null) return coord;
-  if (coord >= -180 && coord <= 180) return coord;
   let val = coord;
-  while (Math.abs(val) > 180) val /= 10;
+  if (Math.abs(val) > 180) {
+    while (Math.abs(val) > 180) val /= 10;
+  }
+  
+  // Auto-healing para erros comuns de digitação em planilhas (esquecer o sinal de menos)
+  // No Brasil (região de operação no Sudeste/SP):
+  // Latitudes positivas entre 15 e 35 convertidas para negativas
+  // Longitudes positivas entre 35 e 75 convertidas para negativas
+  if (val > 15 && val < 35) {
+    val = -val;
+  } else if (val > 35 && val < 75) {
+    val = -val;
+  }
   return val;
 };
 
@@ -4727,11 +4738,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
     let lastFirebaseLat = 0, lastFirebaseLng = 0, lastFirebaseTime = 0;
     let lastSheetsLat = 0, lastSheetsLng = 0, lastSheetsTime = 0;
+    let lastSuccessTime = Date.now();
     let wakeLock: any = null;
     let watchId: number | null = null;
 
     const sendLocation = (latitude: number, longitude: number, speed: number | null = null, force = false) => {
       const now = Date.now();
+      lastSuccessTime = now;
       
       // 1. FIREBASE: Alta frequência para fluidez no mapa ADM
       const movedFirebase = getDistanceInMeters(latitude, longitude, lastFirebaseLat, lastFirebaseLng);
@@ -4779,16 +4792,22 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     const getCurrentAndSend = (force = false) => {
       if (gpsBypassRef.current) return;
 
+      // Evita chamadas redundantes se o GPS já estiver reportando atualizações em alta frequência
+      const elapsedSinceSuccess = Date.now() - lastSuccessTime;
+      if (!force && elapsedSinceSuccess < 45000) {
+        return;
+      }
+
       const options = { 
         enableHighAccuracy: true, 
-        timeout: 20000, // Aumentado para evitar falsos erros em conexões lentas
-        maximumAge: 5000 
+        timeout: 25000, // Tempo de espera maior para evitar falhas frequentes em movimento
+        maximumAge: 30000 // Permite posições em cache para resposta sub-segundo confiável
       };
 
       const onSuccess = ({ coords: { latitude, longitude, speed } }: GeolocationPosition) => {
         setGpsError(null);
         setGpsWarning(null);
-        // setGpsDebug(`OK: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+        lastSuccessTime = Date.now();
         setCurrentDriverLocation({ lat: latitude, lng: longitude });
         sendLocation(latitude, longitude, speed, force);
       };
@@ -4802,6 +4821,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             console.error("GPS Fallback Error:", err2.code, err2.message);
             
             if (!gpsBypassRef.current) {
+              const inactiveSecs = Math.round((Date.now() - lastSuccessTime) / 1000);
+              const isCriticallyInactive = inactiveSecs > 120; // Histerese de alerta de 2 minutos
+
               if (err2.code === err2.PERMISSION_DENIED) {
                 if (err2.message.toLowerCase().includes('permissions policy')) {
                   setGpsError('O GPS foi bloqueado pela política de segurança do navegador (Iframe). Por favor, abra o aplicativo em uma NOVA ABA para que o GPS funcione corretamente.');
@@ -4809,40 +4831,43 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                   setGpsError('Acesso ao GPS negado pelo navegador.');
                 }
               } else if (err2.code === err2.TIMEOUT) {
-                if (lastLocationRef.current) {
-                  setGpsWarning('Atualização do GPS expirou. Mantendo última posição conhecida.');
-                } else {
-                  setGpsWarning('Tempo limite de localização esgotado. Tentando obter sinal...');
+                if (lastLocationRef.current && isCriticallyInactive) {
+                  setGpsWarning(`A atualização do GPS está instável há ${inactiveSecs}s. Mantendo última posição.`);
+                } else if (!lastLocationRef.current) {
+                  setGpsWarning('Tempo limite de localização esgotado. Tentando obter sinal de satélite...');
                 }
               } else if (err2.code === err2.POSITION_UNAVAILABLE) {
-                if (lastLocationRef.current) {
-                  setGpsWarning('Sinal de GPS indisponível. Mantendo última posição conhecida.');
-                } else {
-                  setGpsWarning('Sinal de GPS indisponível. Tentando se conectar...');
+                if (lastLocationRef.current && isCriticallyInactive) {
+                  setGpsWarning(`Sinal de GPS indisponível há ${inactiveSecs}s. Mantendo última posição conhecida.`);
+                } else if (!lastLocationRef.current) {
+                  setGpsWarning('Sinal de GPS indisponível. Procurando satélites...');
                 }
               }
             }
-          }, { ...options, enableHighAccuracy: false, timeout: 15000 });
+          }, { ...options, enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 });
           return;
         }
 
         if (!gpsBypassRef.current) {
+          const inactiveSecs = Math.round((Date.now() - lastSuccessTime) / 1000);
+          const isCriticallyInactive = inactiveSecs > 120;
+
           if (err.code === err.PERMISSION_DENIED) {
             if (err.message.toLowerCase().includes('permissions policy')) {
               setGpsError('O GPS foi bloqueado pela política de segurança do navegador (Iframe). Por favor, abra o aplicativo em uma NOVA ABA para que o GPS funcione corretamente.');
             } else {
-              setGpsError('Acesso ao GPS negado pelo navegador. Verifique as permissões no cadeado e certifique-se de não estar em modo de navegação anônima restrito.');
+              setGpsError('Acesso ao GPS negado pelo navegador. Verifique as permissões no cadeado.');
             }
           } else if (err.code === err.TIMEOUT) {
-            if (lastLocationRef.current) {
-              setGpsWarning('Atualização do GPS expirou. Mantendo última posição conhecida.');
-            } else {
+            if (lastLocationRef.current && isCriticallyInactive) {
+              setGpsWarning(`A atualização do GPS está instável há ${inactiveSecs}s. Mantendo última posição conhecida.`);
+            } else if (!lastLocationRef.current) {
               setGpsWarning('Tempo limite de localização esgotado. Tentando obter sinal...');
             }
           } else if (err.code === err.POSITION_UNAVAILABLE) {
-            if (lastLocationRef.current) {
-              setGpsWarning('Sinal de GPS indisponível. Mantendo última posição conhecida.');
-            } else {
+            if (lastLocationRef.current && isCriticallyInactive) {
+              setGpsWarning(`Sinal de GPS indisponível há ${inactiveSecs}s. Mantendo última posição.`);
+            } else if (!lastLocationRef.current) {
               setGpsWarning('Sinal de GPS indisponível. Tentando se conectar...');
             }
           }
@@ -4860,7 +4885,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         ({ coords: { latitude, longitude, speed } }) => {
           setGpsError(null);
           setGpsWarning(null);
-          // setGpsDebug(`Watch OK: ${latitude.toFixed(4)}`);
+          lastSuccessTime = Date.now();
           setCurrentDriverLocation({ lat: latitude, lng: longitude });
           sendLocation(latitude, longitude, speed);
         },
@@ -4868,6 +4893,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
           console.error("GPS Watch Error:", err.code);
           
           if (!gpsBypassRef.current) {
+            const inactiveSecs = Math.round((Date.now() - lastSuccessTime) / 1000);
+            const isCriticallyInactive = inactiveSecs > 120;
+
             if (err.code === err.PERMISSION_DENIED) {
               if (err.message.toLowerCase().includes('permissions policy')) {
                 setGpsError('O GPS foi bloqueado pela política de segurança do navegador (Iframe). Por favor, abra o aplicativo em uma NOVA ABA.');
@@ -4875,21 +4903,21 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                 setGpsError('Acesso ao GPS negado. O aplicativo requer localização ativa.');
               }
             } else if (err.code === err.POSITION_UNAVAILABLE) {
-              if (lastLocationRef.current) {
-                setGpsWarning('Sinal de GPS indisponível. Mantendo de forma segura a última posição conhecida.');
-              } else {
-                setGpsWarning('Sinal de GPS indisponível. Tentando restabelecer sinal...');
+              if (lastLocationRef.current && isCriticallyInactive) {
+                setGpsWarning(`Sinal de GPS indisponível há ${inactiveSecs}s. Mantendo posição de forma estável.`);
+              } else if (!lastLocationRef.current) {
+                setGpsWarning('Sinal de GPS indisponível. Tentando restabelecer conexão...');
               }
             } else if (err.code === err.TIMEOUT) {
-              if (lastLocationRef.current) {
-                setGpsWarning('Sincronização de GPS temporariamente indisponível. Mantendo última posição conhecida.');
-              } else {
+              if (lastLocationRef.current && isCriticallyInactive) {
+                setGpsWarning(`Sincronização de GPS temporariamente instável há ${inactiveSecs}s.`);
+              } else if (!lastLocationRef.current) {
                 setGpsWarning('Aguardando sincronização de GPS...');
               }
             }
           }
         },
-        { enableHighAccuracy: true, timeout: 30000, maximumAge: 3000 }
+        { enableHighAccuracy: true, timeout: 30000, maximumAge: 15000 }
       );
     };
 
