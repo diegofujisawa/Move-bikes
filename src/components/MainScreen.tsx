@@ -958,11 +958,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Removido listener do Firebase para alertas pois o Sheets é o source of truth para os checks
     // e o listener estava sobrescrevendo os dados com informações incompletas.
 
-    // Listener de timeline_events (para ADM — enriquece a timeline dos motoristas)
+    // Listener de timeline_events (para ADM ou Motorista — enriquece a timeline dos motoristas)
     let unsubTimeline = () => {};
-    if (isAdm) {
+    if (isAdm || driverName) {
       setFirebaseTimelineEvents({}); // limpa ao trocar de data
-      // Filtra pela data selecionada no servidor para maior eficiência
+      // Filtra pela data selecionada no servidor para maior eficiência e faz filtro por motorista localmente de forma case-insensitive
       const q = query(collection(db, 'timeline_events'), where('date', '==', timelineDate));
       unsubTimeline = onSnapshot(q, snapshot => {
         const byDriver: Record<string, Array<{tsMs: number, type: string, bikeNumber?: string}>> = {};
@@ -970,6 +970,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
           const data = d.data();
           const driver = data.driverName;
           if (!driver) return;
+          // Se for motorista comum, só aceita os seus próprios eventos de forma case-insensitive/acentuação
+          if (!isAdm && normalizeName(driver) !== normalizeName(driverName)) {
+            return;
+          }
           // serverTimestamp() pode ser null na primeira escrita (pendingWrite)
           // Nesse caso usa o timestamp local do documento como fallback
           const ts = data.timestamp?.toDate?.()
@@ -987,8 +991,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // Preserva eventos anteriores — mescla com novos
         setFirebaseTimelineEvents(prev => {
           const merged = { ...prev };
-          Object.entries(byDriver).forEach(([driver, events]) => {
-            merged[driver] = events;
+          Object.entries(byDriver).forEach(([drv, events]) => {
+            merged[drv] = events;
           });
           return merged;
         });
@@ -1652,7 +1656,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     const lowerReason = (reason || '').toLowerCase();
     const lowerTitle = (title || '').toLowerCase();
-    const isTrailer = lowerReason.includes('carretinha') || lowerTitle.includes('carretinha');
+    // v85.51: Verifica o padrão exato de colchetes '[carretinha]' para distinguir transferências reais de carretinha dos pedidos padrão
+    const isTrailer = lowerReason.includes('[carretinha]') || lowerTitle.includes('[carretinha]');
     // v85.32: isRoute identifica apenas roteiros automáticos massivos do Sheets. 
     // Solicitações manuais ou via App de uma única bike (recolhas) são tratadas como Ocorrência.
     const isRoute = lowerTitle.includes('roteiro gerado') || lowerReason.includes('roteiro gerado');
@@ -1785,17 +1790,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
       // Background
       (async () => {
         try {
-          // v85.39: Registra na Linha do Tempo a aceitação da Carretinha ou Pedido (Em Posse)
-          await Promise.all(bikesToAdd.map(id => 
-            addDoc(collection(db, 'timeline_events'), {
-              driverName,
-              bikeNumber: id,
-              type: 'em_posse',
-              timestamp: serverTimestamp(),
-              date: localDateStr(),
-              observacao: `Aceite: ${title || 'Solicitação'}`
-            }).catch(e => console.warn('[Timeline] Erro no aceite:', e))
-          ));
+          // v85.39: Registra na Linha do Tempo a aceitação da Carretinha (Em Posse de fato)
+          if (isTrailer) {
+            await Promise.all(bikesToAdd.map(id => 
+              addDoc(collection(db, 'timeline_events'), {
+                driverName,
+                bikeNumber: id,
+                type: 'em_posse',
+                timestamp: serverTimestamp(),
+                date: localDateStr(),
+                observacao: `Aceite: ${title || 'Solicitação'}`
+              }).catch(e => console.warn('[Timeline] Erro no aceite:', e))
+            ));
+          }
 
           if (isTrailer) {
             await Promise.all([
@@ -5499,19 +5506,199 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
               const total = recolhidas + remanejada;
 
               return (
-                <div key={`driver-resume-${driver.name}-${i}`} className="grid grid-cols-5 gap-1.5">
-                  {[
-                    { label: 'Notif.', value: driver.pendingRequests, c: 'blue' },
-                    { label: 'Recolh.', value: recolhidas, c: 'green' },
-                    { label: 'Remanej.', value: remanejada, c: 'indigo' },
-                    { label: 'Não Enc.', value: naoEncontrada, c: 'red' },
-                    { label: 'Total', value: total, c: 'orange' },
-                  ].map((item, i) => (
-                    <div key={`stat-${item.label}-${i}`} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
-                      <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.label}</p>
-                      <p className={`text-sm font-black text-${item.c}-800`}>{item.value}</p>
-                    </div>
-                  ))}
+                <div key={`driver-resume-${driver.name}-${i}`} className="space-y-4">
+                  {/* Grid de Estatísticas */}
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {[
+                      { label: 'Notif.', value: driver.pendingRequests, c: 'blue' },
+                      { label: 'Recolh.', value: recolhidas, c: 'green' },
+                      { label: 'Remanej.', value: remanejada, c: 'indigo' },
+                      { label: 'Não Enc.', value: naoEncontrada, c: 'red' },
+                      { label: 'Total', value: total, c: 'orange' },
+                    ].map((item, i) => (
+                      <div key={`stat-${item.label}-${i}`} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
+                        <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.label}</p>
+                        <p className={`text-sm font-black text-${item.c}-800`}>{item.value}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Seletor de data da Linha do Tempo */}
+                  <div className="flex items-center gap-2 p-2 bg-white border rounded-lg shadow-sm">
+                    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 text-purple-500 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                    <span className="text-[9px] font-black text-gray-400 uppercase tracking-wider whitespace-nowrap">Linha do Tempo</span>
+                    <input
+                      type="date"
+                      value={timelineDate}
+                      max={localDateStr()}
+                      onChange={e => {
+                        setTimelineDate(e.target.value);
+                        setFirebaseTimelineEvents({});
+                      }}
+                      className="flex-1 text-[10px] font-mono text-purple-700 border-0 bg-transparent focus:outline-none cursor-pointer"
+                    />
+                    {timelineDate !== localDateStr() && (
+                      <button onClick={() => { setTimelineDate(localDateStr()); setFirebaseTimelineEvents({}); }}
+                        className="text-[9px] text-purple-500 font-bold hover:text-purple-700 whitespace-nowrap">
+                        Hoje
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Linha do tempo de atividade */}
+                  <div className="bg-white p-3 rounded-lg border shadow-sm">
+                    {(() => {
+                      const sheetsEvents = ((driver.timeline || []) as any[]).map(e => ({
+                        ...e,
+                        type: e.type === 'filial' ? 'recolhida' : e.type
+                      }));
+                      // fbEvents: 'em_posse' e 'removida_por_adm' — eventos exclusivos Firebase
+                      // Estação/Recolhida/Não encontrada vêm do Sheets com isOccurrence correto via occLookup
+                      const getFbEventsForDriverName = (nm: string) => {
+                        const lowNm = normalizeName(nm);
+                        const key = Object.keys(firebaseTimelineEvents).find(k => normalizeName(k) === lowNm);
+                        return key ? firebaseTimelineEvents[key] : [];
+                      };
+                      const fbEvents = (getFbEventsForDriverName(driver.name))
+                        .filter((e: any) => e.type === 'em_posse' || e.type === 'removida_por_adm')
+                        .map((e: any) => ({
+                          tsMs: e.tsMs, hour: new Date(e.tsMs).getHours(),
+                          min: new Date(e.tsMs).getMinutes(),
+                          type: e.type,
+                          bikeNumber: e.bikeNumber,
+                          observacao: e.observacao || '',
+                          isOccurrence: !!e.isOccurrence
+                        }));
+                      const merged = [...sheetsEvents];
+                      fbEvents.forEach((fe: any) => {
+                        // Dedup por bike + janela de 2min
+                        const isDup = sheetsEvents.some((se: any) => se.bikeNumber === fe.bikeNumber && Math.abs(se.tsMs - fe.tsMs) < 2 * 60 * 1000);
+                        if (!isDup) merged.push(fe);
+                      });
+                      const events = merged.sort((a, b) => a.tsMs - b.tsMs);
+
+                      const window = driver.timelineWindow as {startMs: number, endMs: number} | null;
+                      let startMs = window?.startMs;
+                      let endMs   = window?.endMs;
+                      if (fbEvents.length > 0) {
+                        const fbMin = Math.min(...fbEvents.map(e => e.tsMs));
+                        const fbMax = Math.max(...fbEvents.map(e => e.tsMs));
+                        startMs = startMs ? Math.min(startMs, fbMin) : fbMin;
+                        endMs   = endMs   ? Math.max(endMs,   fbMax) : fbMax;
+                      }
+                      if (!startMs || !endMs) {
+                        // Sem dados ainda — mostra linha vazia
+                        return (
+                          <div className="mb-1">
+                            <div className="flex items-center justify-between mb-1.5 pb-1 border-b">
+                              <p className="text-[8px] font-black text-gray-400 uppercase tracking-wider">Linha do Tempo</p>
+                            </div>
+                            <div className="relative h-5 mx-1 mt-1">
+                              <div className="absolute top-2 left-0 right-0 h-px bg-gray-200"/>
+                              <span className="absolute top-3.5 left-1/2 -translate-x-1/2 text-[7px] text-gray-300 italic">sem registros no período</span>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      const totalMs = endMs - startMs || 1;
+                      const toPos = (tsMs: number) => Math.max(0, Math.min(100, (tsMs - startMs!) / totalMs * 100));
+                      const fmtTime = (ms: number) => {
+                        const d = new Date(ms);
+                        return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+                      };
+
+                      // Agrupa eventos próximos (mesmo tipo, ±3 minutos) em clusters
+                      const CLUSTER_MS = 3 * 60 * 1000;
+                      const clusters: Array<{type: string, tsMs: number, bikes: string[], count: number, observacoes: string[], isOccurrence: boolean}> = [];
+                      events.forEach(ev => {
+                        const last = clusters[clusters.length - 1];
+                        if (last && last.type === ev.type && Math.abs(ev.tsMs - last.tsMs) < CLUSTER_MS) {
+                          last.count++;
+                          if (ev.bikeNumber && !last.bikes.includes(ev.bikeNumber)) last.bikes.push(ev.bikeNumber);
+                          if (ev.observacao && !last.observacoes.includes(ev.observacao)) last.observacoes.push(ev.observacao);
+                          if (!!(ev as any).isOccurrence && (ev.type === 'em_posse' || ev.type === 'nao_encontrada')) last.isOccurrence = true;
+                          last.tsMs = Math.round((last.tsMs * (last.count - 1) + ev.tsMs) / last.count);
+                        } else {
+                          clusters.push({
+                            type: ev.type,
+                            tsMs: ev.tsMs,
+                            bikes: ev.bikeNumber ? [ev.bikeNumber] : [],
+                            observacoes: ev.observacao ? [ev.observacao] : [],
+                            count: 1,
+                            isOccurrence: !!(ev as any).isOccurrence && (ev.type === 'em_posse' || ev.type === 'nao_encontrada')
+                          });
+                        }
+                      });
+
+                      const dotConfig: Record<string, {bg: string, label: string}> = {
+                        em_posse:      { bg: 'bg-green-500',   label: 'Em Posse' },
+                        recolhida:     { bg: 'bg-green-700',   label: 'Recolhida (Filial)' },
+                        estacao:       { bg: 'bg-indigo-500',  label: 'Estação' },
+                        nao_atendida:  { bg: 'bg-yellow-500',  label: 'Não atend.' },
+                        nao_encontrada:{ bg: 'bg-red-500',     label: 'Não enc.' },
+                        carretinha:    { bg: 'bg-purple-600',  label: 'Carretinha' },
+                        removida_por_adm: { bg: 'bg-black',    label: 'Removida por ADM' },
+                      };
+
+                      return (
+                        <div className="mb-1">
+                          <div className="flex items-center justify-between mb-1.5 border-b pb-1">
+                            <p className="text-[8px] font-black text-gray-400 uppercase tracking-wider">Histórico de Atividade</p>
+                            <button
+                              onClick={() => setTimelineModal({ driver: driver.name, events, clusters, startMs: startMs!, endMs: endMs! })}
+                              className="text-[8px] text-blue-500 font-bold hover:underline"
+                            >⤢ Expandir</button>
+                          </div>
+                          <div className="relative h-8 mx-1">
+                            <div className="absolute top-4 left-0 right-0 h-px bg-gray-900"/>
+                            <span className="absolute top-5.5 left-0 text-[7px] text-gray-400 font-mono">{fmtTime(startMs!)}</span>
+                            <span className="absolute top-5.5 right-0 text-[7px] text-gray-400 font-mono">{fmtTime(endMs!)}</span>
+                            {clusters.map((cl, ci) => {
+                              const pos = toPos(cl.tsMs);
+                              const cfg = dotConfig[cl.type] || { bg: 'bg-gray-400', label: cl.type };
+                              const isMulti = cl.count > 1;
+                              return (
+                                <div key={ci} className="absolute -translate-x-1/2 top-2.5 flex flex-col items-center"
+                                  style={{left: `${pos}%`}}
+                                  title={`${cl.isOccurrence ? '[OCORRÊNCIA] ' : ''}${(cl.type === 'carretinha' || cl.type === 'removida_por_adm') && cl.observacoes?.[0] ? cl.observacoes[0] : cfg.label}${cl.type === 'em_posse' && cl.bikes.length > 0 ? ` Bike ${cl.bikes.join(', ')}` : isMulti ? ` (${cl.count} bikes)` : ''} — ${fmtTime(cl.tsMs)}`}
+                                >
+                                  {cl.isOccurrence && (
+                                    <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 flex flex-col items-center animate-pulse">
+                                      <span className={`text-[12px] drop-shadow-sm ${cl.type === 'nao_encontrada' ? 'text-red-600' : 'text-yellow-500'}`}>★</span>
+                                    </div>
+                                  )}
+                                  <div className={`rounded-full border-2 shadow-sm flex items-center justify-center ${isMulti ? 'w-4 h-4' : 'w-2.5 h-2.5'} ${cfg.bg} ${cl.isOccurrence ? (cl.type === 'nao_encontrada' ? 'border-red-500 ring-2 ring-red-400/50' : 'border-yellow-400 ring-2 ring-yellow-400/50') : 'border-white'}`}>
+                                    {isMulti && !cl.isOccurrence && (
+                                      <span className="text-[7px] font-black text-white leading-none">{cl.count}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div className="flex flex-wrap gap-2 mt-4 border-t pt-2">
+                            {Object.entries(dotConfig).map(([k, v]) => (
+                              <div key={k} className="flex items-center gap-0.5 animate-fade-in">
+                                <div className={`w-1.5 h-1.5 rounded-full ${v.bg}`}/>
+                                <span className="text-[7px] text-gray-400">{v.label}</span>
+                              </div>
+                            ))}
+                            <div className="flex items-center gap-1 ml-auto">
+                              <div className="flex items-center gap-0.5">
+                                <span className="text-[10px] text-yellow-500">★</span>
+                                <span className="text-[7px] text-gray-400">Ocorrência Recolhida</span>
+                              </div>
+                              <div className="flex items-center gap-0.5">
+                                <span className="text-[10px] text-red-600">★</span>
+                                <span className="text-[7px] text-gray-400">Ocorrência Não Encontrada</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
                 </div>
               );
             })}
@@ -6650,7 +6837,12 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                             }));
                             // fbEvents: 'em_posse' e 'removida_por_adm' — eventos exclusivos Firebase
                             // Estação/Recolhida/Não encontrada vêm do Sheets com isOccurrence correto via occLookup
-                            const fbEvents = (firebaseTimelineEvents[driver.name] || [])
+                            const getFbEventsForDriverName = (nm: string) => {
+                              const lowNm = normalizeName(nm);
+                              const key = Object.keys(firebaseTimelineEvents).find(k => normalizeName(k) === lowNm);
+                              return key ? firebaseTimelineEvents[key] : [];
+                            };
+                            const fbEvents = (getFbEventsForDriverName(driver.name))
                               .filter((e: any) => e.type === 'em_posse' || e.type === 'removida_por_adm')
                               .map((e: any) => ({
                                 tsMs: e.tsMs, hour: new Date(e.tsMs).getHours(),
