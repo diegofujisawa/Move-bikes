@@ -266,7 +266,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [driverLocations, setDriverLocations] = useState<DriverLocation[]>([]);
   const [bikeConflicts, setBikeConflicts] = useState<Record<string, any>>({});
   const [currentDriverLocation, setCurrentDriverLocation] = useState<{ lat: number, lng: number } | null>(null);
-  const [routeDistances, setRouteDistances] = useState<Record<string, { distance: string, duration: string, value: number, isRoad?: boolean }>>({});
+  const [routeDistances, setRouteDistances] = useState<Record<string, { distance: string, duration: string, value: number, isRoad?: boolean, directDistanceM?: number }>>({});
   const lastOptimizedBikesSetRef = useRef<string>('');
 
   // --- Modais ---
@@ -1221,8 +1221,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // MEMOS
   // =================================================================
   const sortedRouteBikes = useMemo(() => {
-    return routeBikes;
-  }, [routeBikes]);
+    return [...routeBikes].sort((a, b) => {
+      const detailsA = routeBikesDetails[a] || collectedBikesDetails[a] || searchCacheRef.current[a];
+      const detailsB = routeBikesDetails[b] || collectedBikesDetails[b] || searchCacheRef.current[b];
+
+      // Pega a distância direta em metros da rota se calculada, caso contrário calcula Haversine na hora
+      const distA = routeDistances[a]?.directDistanceM !== undefined 
+        ? routeDistances[a].directDistanceM 
+        : (currentDriverLocation && detailsA?.currentLat && detailsA?.currentLng
+          ? calculateDistance(currentDriverLocation.lat, currentDriverLocation.lng, detailsA.currentLat, detailsA.currentLng) * 1000
+          : Infinity);
+
+      const distB = routeDistances[b]?.directDistanceM !== undefined 
+        ? routeDistances[b].directDistanceM 
+        : (currentDriverLocation && detailsB?.currentLat && detailsB?.currentLng
+          ? calculateDistance(currentDriverLocation.lat, currentDriverLocation.lng, detailsB.currentLat, detailsB.currentLng) * 1000
+          : Infinity);
+
+      if (distA === distB) return 0;
+      return distA - distB;
+    });
+  }, [routeBikes, routeDistances, currentDriverLocation, routeBikesDetails, collectedBikesDetails]);
 
   const totalRouteSummary = useMemo(() => {
     let totalMDistance = 0;
@@ -4423,7 +4442,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
   const getRoadDistance = useCallback(async (
     fromLat: number, fromLng: number,
     toLat: number, toLng: number
-  ): Promise<{ distanceM: number, durationS: number }> => {
+  ): Promise<{ distanceM: number, durationS: number, isRoad: boolean }> => {
     try {
       if (GOOGLE_MAPS_KEY && !googleMapsDisabledRef.current) {
         try {
@@ -4434,7 +4453,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             fromLat, fromLng, toLat, toLng
           }, 1, true);
           if (result.success && result.distanceM) {
-            return { distanceM: result.distanceM, durationS: result.durationS };
+            return { distanceM: result.distanceM, durationS: result.durationS, isRoad: true };
           }
         } catch (apiErr: any) {
           const errMsg = apiErr?.message || '';
@@ -4457,14 +4476,14 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
       const data = await r.json();
       if (data.code === 'Ok' && data.routes?.[0]) {
-        return { distanceM: data.routes[0].distance, durationS: data.routes[0].duration };
+        return { distanceM: data.routes[0].distance, durationS: data.routes[0].duration, isRoad: true };
       }
     } catch (e) {
       console.warn('[Routing] API falhou, usando Haversine:', e);
     }
     // Último fallback: Haversine
     const km = calculateDistance(fromLat, fromLng, toLat, toLng);
-    return { distanceM: km * 1000, durationS: km * 180 };
+    return { distanceM: km * 1000, durationS: km * 180, isRoad: false };
   }, [GOOGLE_MAPS_KEY]);
 
   const buildOptimizedRoute = useCallback(async () => {
@@ -4482,7 +4501,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     // Começamos na rota a partir da posição do motorista.
     let currentPoint = { lat: currentDriverLocation.lat, lng: currentDriverLocation.lng };
     const unvisited = [...bikesWithCoords];
-    const orderedSequence: { bike: any; distanceM: number; durationS: number; legM: number; legS: number }[] = [];
+    const orderedSequence: { bike: any; distanceM: number; durationS: number; isRoad: boolean; legM: number; legS: number }[] = [];
 
     // Escolhemos o próximo ponto mais próximo via Haversine (heurística rápida) e então
     // calculamos o trajeto real de carro até ele.
@@ -4504,7 +4523,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       const bikeLng = targetBike.details.currentLng;
 
       // Chama a distância de estrada de carro entre a posição do motorista e este ponto (todas as bikes consideram apenas a posição do motorista)
-      const { distanceM, durationS } = await getRoadDistance(
+      const { distanceM, durationS, isRoad } = await getRoadDistance(
         currentDriverLocation.lat, currentDriverLocation.lng,
         bikeLat, bikeLng
       );
@@ -4516,6 +4535,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         bike: targetBike,
         distanceM,
         durationS,
+        isRoad,
         legM,
         legS
       });
@@ -4527,7 +4547,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
     // Cria os objetos de distância para o estado routeDistances
     const ordered: string[] = [];
-    const newDistances: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean }> = {};
+    const newDistances: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean, directDistanceM: number }> = {};
     let cumulativeDistM = 0;
 
     orderedSequence.forEach(item => {
@@ -4542,7 +4562,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         duration: `~${mins} min`,
         value: cumulativeDistM, // Valor acumulado para manter a ordenação cronológica lógica
         durationS: item.legS,
-        isRoad: true
+        isRoad: item.isRoad,
+        directDistanceM: item.distanceM
       };
     });
 
@@ -8088,7 +8109,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           {dist !== null && (
                             <span className="text-[10px] font-bold text-blue-600">
                               {routeDistances[bike] 
-                                ? `${routeDistances[bike].distance} · ${routeDistances[bike].duration} (da sua posição)` 
+                                ? `${routeDistances[bike].distance} · ${routeDistances[bike].duration} (${routeDistances[bike].isRoad ? 'de carro/ruas' : 'linha reta'})` 
                                 : `${dist.toFixed(2)} km (calculando trajeto...)`}
                             </span>
                           )}

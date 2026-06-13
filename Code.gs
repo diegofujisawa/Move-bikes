@@ -2741,6 +2741,7 @@ function getRouteDetails(driverName, bikeNumbers, providedBikesSheet, providedRe
     const requestsData = lastRowReq > 1 ? requestsSheet.getRange(lastRowReq - numRowsReq + 1, 1, numRowsReq, requestsSheet.getLastColumn()).getValues() : [];
     const bikeNumberSet = new Set(bikeNumbers.map(n => String(parseFloat(n) || String(n).trim())));
     const result = {};
+    const processedBikesInRequest = new Set();
 
     const findInIndex = (pat, index) => {
       const bikeStr = String(pat).trim();
@@ -2785,6 +2786,8 @@ function getRouteDetails(driverName, bikeNumbers, providedBikesSheet, providedRe
           });
           
           if (originalKey) {
+            if (processedBikesInRequest.has(originalKey)) return;
+            processedBikesInRequest.add(originalKey);
             if (!result[originalKey]) {
               const rowFromIndex = bikeIndex[originalKey] || bikeIndex[originalKey.replace(/^0+/, '')];
               if (rowFromIndex) {
