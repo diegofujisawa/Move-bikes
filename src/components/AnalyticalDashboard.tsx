@@ -19,7 +19,7 @@ interface DashboardData {
 
 interface AnalyticalDashboardProps {
   onClose: () => void;
-  apiCall: (action: string, data?: any) => Promise<any>;
+  apiCall: (payload: Record<string, any>, retries?: number, silent?: boolean) => Promise<any>;
 }
 
 export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClose, apiCall }) => {

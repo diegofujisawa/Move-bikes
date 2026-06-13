@@ -151,6 +151,22 @@ function formatDateTime(date) {
   return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+function getScriptTzDate() {
+  const tz = Session.getScriptTimeZone();
+  const formatted = Utilities.formatDate(new Date(), tz, "yyyy-MM-dd HH:mm:ss");
+  const parts = formatted.split(' ');
+  const dateParts = parts[0].split('-');
+  const timeParts = parts[1].split(':');
+  return new Date(
+    parseInt(dateParts[0], 10),
+    parseInt(dateParts[1], 10) - 1,
+    parseInt(dateParts[2], 10),
+    parseInt(timeParts[0], 10),
+    parseInt(timeParts[1], 10),
+    parseInt(timeParts[2], 10)
+  );
+}
+
 function normalizeCategory(str) {
   return (str || '').toString().toUpperCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -1966,8 +1982,11 @@ function getDailyReportData(driverName, timeRange = 'day') {
   const reportSheet   = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
   const requestSheet  = getSpreadsheet().getSheetByName(REQUESTS_SHEET_NAME);
   if (!reportSheet || !requestSheet) return { success: false, error: 'Planilhas não encontradas.' };
-  const filterDate = new Date(); filterDate.setHours(0, 0, 0, 0);
-  const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
+  
+  const baseLocal = getScriptTzDate();
+  const filterDate = new Date(baseLocal.getTime()); filterDate.setHours(0, 0, 0, 0);
+  const todayEnd = new Date(baseLocal.getTime()); todayEnd.setHours(23, 59, 59, 999);
+  
   if (timeRange === 'week') {
     const day = filterDate.getDay();
     const diff = (day === 0 ? -6 : 1) - day;
@@ -2310,9 +2329,9 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
         })
         .map(row => row[COLUMN_INDICES.ACCESS.USUARIO - 1].toString().trim()))];
     }
-    const now = new Date();
-    const filterDate = new Date(); filterDate.setHours(0,0,0,0);
-    let endDate = new Date(); endDate.setHours(23,59,59,999);
+    const baseLocal = getScriptTzDate();
+    let filterDate = new Date(baseLocal.getTime()); filterDate.setHours(0,0,0,0);
+    let endDate = new Date(baseLocal.getTime()); endDate.setHours(23,59,59,999);
     let rowsToRead = 1000;
     let timelineFilterDate = filterDate;
     let timelineEndDate = endDate;
@@ -2320,13 +2339,18 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
       const parts = timelineDate.split('-');
       timelineFilterDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]), 0, 0, 0, 0);
       timelineEndDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]), 23, 59, 59, 999);
+      if (timeRange === 'day') {
+        filterDate = timelineFilterDate;
+        endDate = timelineEndDate;
+      }
     }
-    if (timeRange === 'week') { const day = now.getDay(); const diffToMon = (day === 0 ? -6 : 1) - day; filterDate.setDate(now.getDate() + diffToMon); rowsToRead = 50000; }
-    else if (timeRange === 'month') { filterDate.setDate(1); rowsToRead = 80000; }
-    else if (timeRange === '-1') { filterDate.setDate(now.getDate() - 1); endDate.setDate(now.getDate() - 1); rowsToRead = 30000; }
+    if (timeRange === 'week') { const day = baseLocal.getDay(); const diffToMon = (day === 0 ? -6 : 1) - day; filterDate.setDate(baseLocal.getDate() + diffToMon); filterDate.setHours(0,0,0,0); rowsToRead = 50000; }
+    else if (timeRange === 'month') { filterDate.setDate(1); filterDate.setHours(0,0,0,0); rowsToRead = 80000; }
+    else if (timeRange === '-1') { filterDate.setDate(baseLocal.getDate() - 1); filterDate.setHours(0,0,0,0); endDate.setDate(baseLocal.getDate() - 1); endDate.setHours(23,59,59,999); rowsToRead = 30000; }
     else if (timeRange === '-7') {
-      const day = now.getDay(); const diffToMon = (day === 0 ? -6 : 1) - day;
-      filterDate.setDate(now.getDate() + diffToMon - 7);
+      const day = baseLocal.getDay(); const diffToMon = (day === 0 ? -6 : 1) - day;
+      filterDate.setDate(baseLocal.getDate() + diffToMon - 7);
+      filterDate.setHours(0,0,0,0);
       endDate.setDate(filterDate.getDate() + 6); endDate.setHours(23, 59, 59, 999); rowsToRead = 80000;
     }
     const lastRowR = reportSheet.getLastRow();

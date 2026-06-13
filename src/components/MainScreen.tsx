@@ -225,6 +225,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [syncAlert, setSyncAlert] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [gpsWarning, setGpsWarning] = useState<string | null>(null);
   const gpsBypassRef = useRef(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -1204,25 +1205,48 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // MEMOS
   // =================================================================
   const sortedRouteBikes = useMemo(() => {
-    if (!routeBikes.length) return routeBikes;
+    return routeBikes;
+  }, [routeBikes]);
 
-    // Ordena pelo menor valor disponível: distância de estrada (value em metros) ou Haversine
-    return [...routeBikes].sort((a, b) => {
-      const rdA = routeDistances[a], rdB = routeDistances[b];
-      // Se ambos têm distância calculada, usa value
-      if (rdA?.value !== undefined && rdB?.value !== undefined) return rdA.value - rdB.value;
-      if (rdA?.value !== undefined) return -1;
-      if (rdB?.value !== undefined) return 1;
-      
-      // Fallback: Haversine com coordenadas das bikes
-      if (!currentDriverLocation) return 0;
-      const dA = routeBikesDetails[a], dB = routeBikesDetails[b];
-      if (!dA?.currentLat || !dA?.currentLng) return 1;
-      if (!dB?.currentLat || !dB?.currentLng) return -1;
-      return calculateDistance(currentDriverLocation.lat, currentDriverLocation.lng, dA.currentLat, dA.currentLng)
-           - calculateDistance(currentDriverLocation.lat, currentDriverLocation.lng, dB.currentLat, dB.currentLng);
+  const totalRouteSummary = useMemo(() => {
+    let totalMDistance = 0;
+    let totalMins = 0;
+    let count = 0;
+
+    sortedRouteBikes.forEach(bike => {
+      const rd = routeDistances[bike];
+      if (rd) {
+        // rd.value represents the cumulative distance up to this point
+        // To get the total distance of the whole route, we can just look closely or sum leg segments.
+        // Wait, since 'value' stores the cumulative distance, the last item's 'value' is actually the total cumulative distance!
+        // But to be completely safe against missing elements or sparse lists, we can also sum their values if they represent legs, 
+        // or take the maximum of the cumulative values!
+        // Yes, taking the maximum of the cumulative values represents the total trajectory length.
+        if (rd.value && rd.value > totalMDistance) {
+          totalMDistance = rd.value;
+        }
+        
+        if (rd.durationS !== undefined) {
+          totalMins += Math.round(rd.durationS / 60);
+        } else {
+          const match = rd.duration.match(/\d+/);
+          if (match) {
+            totalMins += parseInt(match[0], 10);
+          }
+        }
+        count++;
+      }
     });
-  }, [routeBikes, routeBikesDetails, currentDriverLocation, routeDistances]);
+
+    if (totalMDistance === 0 || count === 0) return null;
+
+    const totalKm = totalMDistance / 1000;
+    return {
+      distance: totalKm < 1 ? `${totalMDistance.toFixed(0)}m` : `${totalKm.toFixed(1)}km`,
+      duration: `~${totalMins} min`,
+      count
+    };
+  }, [sortedRouteBikes, routeDistances]);
 
   const sortedCollectedBikes = useMemo(() => {
     return [...collectedBikes].sort((a, b) => {
@@ -1674,9 +1698,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
           const next = { ...prev };
           bikesToAdd.forEach(id => {
             const existing = next[id] || {};
+            const searchCached = searchCacheRef.current[id] || {};
             // v85.32: Garante inicialização e marca como ocorrência se for pedido direto
             next[id] = { 
               ...existing, 
+              ...searchCached,
               ocorrencia: !!existing.ocorrencia || isPickupRequest 
             };
             
@@ -1719,9 +1745,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
           const next = { ...prev };
           bikesToAdd.forEach(id => {
             const existing = next[id] || {};
+            const searchCached = searchCacheRef.current[id] || {};
             // v85.32: Garante inicialização correta e marca como ocorrência se for um pedido de recolha
             next[id] = { 
               ...existing, 
+              ...searchCached,
               ocorrencia: !!existing.ocorrencia || isPickupRequest 
             };
             
@@ -4282,7 +4310,18 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         });
         setPendingRequests(pendingOnly);
       }
-      if (d.driverState) { setRouteBikes(d.driverState.routeBikes || []); setCollectedBikes(d.driverState.collectedBikes || []); }
+      if (d.driverState) { 
+        setRouteBikes(d.driverState.routeBikes || []); 
+        setCollectedBikes(d.driverState.collectedBikes || []); 
+      }
+      if (d.bikeDetails) {
+        const details = d.bikeDetails;
+        const routeD: Record<string, any> = {}, collectedD: Record<string, any> = {};
+        (d.driverState?.routeBikes || []).forEach((b: string) => { if (details[b]) routeD[b] = details[b]; });
+        (d.driverState?.collectedBikes || []).forEach((b: string) => { if (details[b]) collectedD[b] = details[b]; });
+        setRouteBikesDetails(routeD);
+        setCollectedBikesDetails(collectedD);
+      }
       if (d.bikeStatuses) setBikeConflicts(d.bikeStatuses);
       if (d.schedule) setUserSchedule(d.schedule);
       if (d.motoristas) {
@@ -4418,33 +4457,72 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
     if (bikesWithCoords.length === 0) return;
 
-    console.log(`[Routing] Calculando distâncias de carro para ${bikesWithCoords.length} bikes...`);
+    console.log(`[Routing] Otimizando trajeto e calculando distâncias de carro sequenciais para ${bikesWithCoords.length} bikes...`);
 
-    // Calcula distância de carro do motorista para CADA bike
-    const distances = await Promise.all(
-      bikesWithCoords.map(async b => {
-        const { distanceM, durationS } = await getRoadDistance(
-          currentDriverLocation.lat, currentDriverLocation.lng,
-          b.details.currentLat, b.details.currentLng
-        );
-        return { bike: b, distanceM, durationS };
-      })
-    );
+    // 1. Otimização Nearest Neighbor para formar uma sequência geograficamente lógica.
+    // Começamos na rota a partir da posição do motorista.
+    let currentPoint = { lat: currentDriverLocation.lat, lng: currentDriverLocation.lng };
+    const unvisited = [...bikesWithCoords];
+    const orderedSequence: { bike: any; distanceM: number; durationS: number; legM: number; legS: number }[] = [];
 
-    // Ordena pelo percurso de carro mais curto do motorista até a bike
-    distances.sort((a, b) => a.distanceM - b.distanceM);
-    
+    // Escolhemos o próximo ponto mais próximo via Haversine (heurística rápida) e então
+    // calculamos o trajeto real de carro até ele.
+    while (unvisited.length > 0) {
+      let bestIndex = 0;
+      let minHaversine = Infinity;
+      for (let i = 0; i < unvisited.length; i++) {
+        const bikeLat = unvisited[i].details.currentLat;
+        const bikeLng = unvisited[i].details.currentLng;
+        const hav = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng);
+        if (hav < minHaversine) {
+          minHaversine = hav;
+          bestIndex = i;
+        }
+      }
+
+      const targetBike = unvisited[bestIndex];
+      const bikeLat = targetBike.details.currentLat;
+      const bikeLng = targetBike.details.currentLng;
+
+      // Chama a distância de estrada de carro entre a posição do motorista e este ponto (todas as bikes consideram apenas a posição do motorista)
+      const { distanceM, durationS } = await getRoadDistance(
+        currentDriverLocation.lat, currentDriverLocation.lng,
+        bikeLat, bikeLng
+      );
+
+      const legM = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng) * 1000;
+      const legS = (legM / 1000) * 180; // aprox. 3min por km
+
+      orderedSequence.push({
+        bike: targetBike,
+        distanceM,
+        durationS,
+        legM,
+        legS
+      });
+
+      // Anda para a bicicleta atual
+      currentPoint = { lat: bikeLat, lng: bikeLng };
+      unvisited.splice(bestIndex, 1);
+    }
+
+    // Cria os objetos de distância para o estado routeDistances
     const ordered: string[] = [];
-    const newDistances: Record<string, { distance: string, duration: string, value: number, isRoad: boolean }> = {};
+    const newDistances: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean }> = {};
+    let cumulativeDistM = 0;
 
-    distances.forEach(item => {
+    orderedSequence.forEach(item => {
       ordered.push(item.bike.id);
+      cumulativeDistM += item.legM;
+      
       const distKm = item.distanceM / 1000;
       const mins = Math.round(item.durationS / 60);
+
       newDistances[item.bike.id] = {
         distance: distKm < 1 ? `${item.distanceM.toFixed(0)}m` : `${distKm.toFixed(1)}km`,
         duration: `~${mins} min`,
-        value: item.distanceM,
+        value: cumulativeDistM, // Valor acumulado para manter a ordenação cronológica lógica
+        durationS: item.legS,
         isRoad: true
       };
     });
@@ -4459,7 +4537,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       if (prev.join('|') === newOrder.join('|')) return prev;
       return newOrder;
     });
-    console.log('[Routing] Cálculo de distâncias e ordenação concluídos.');
+    console.log('[Routing] Cálculo de distâncias de trajeto e ordenação sequencial concluídos.');
   }, [currentDriverLocation, routeBikes, routeBikesDetails, getRoadDistance]);
 
   // Hash de coordenadas para reagir quando as bikes se movem
@@ -4482,41 +4560,98 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     return () => clearTimeout(timer);
   }, [currentDriverLocation, routeBikes.length, bikesHash, buildOptimizedRoute]);
 
-  // Distâncias Haversine — mantido como display inicial antes do roteamento carregar
+  // Reorganiza o roteiro em tempo real com base no GPS do motorista
+  // e recalcula as distâncias sequenciais imediatamente.
   useEffect(() => {
     if (!currentDriverLocation || !routeBikes.length) return;
-    const dists: Record<string, any> = {};
-    routeBikes.forEach(id => {
-      const d = routeBikesDetails[id];
-      // Sempre calcula Haversine como base de ordenação — sobrescrito pelo Nearest Neighbor quando disponível
-      // IMPORTANTE: Não incluímos routeDistances nas dependências para evitar loop infinito
-      dists[id] = { 
-        distance: '', 
-        duration: '', 
-        value: 999999,
-        isRoad: false 
+
+    // 1. Separa as bikes com e sem coordenadas
+    const bikesWithCoords = routeBikes
+      .map(id => ({ id, details: routeBikesDetails[id] }))
+      .filter(b => b.details?.currentLat && b.details?.currentLng);
+
+    if (bikesWithCoords.length === 0) return;
+
+    // 2. Calcula a sequência Nearest Neighbor a partir do GPS atual do motorista
+    const ordered: string[] = [];
+    let currentPoint = { lat: currentDriverLocation.lat, lng: currentDriverLocation.lng };
+    const unvisited = [...bikesWithCoords];
+
+    const dists: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean }> = {};
+    let cumulativeDistM = 0;
+
+    while (unvisited.length > 0) {
+      let bestIndex = 0;
+      let minDistance = Infinity;
+      for (let i = 0; i < unvisited.length; i++) {
+        const bikeLat = unvisited[i].details.currentLat!;
+        const bikeLng = unvisited[i].details.currentLng!;
+        const dist = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng);
+        if (dist < minDistance) {
+          minDistance = dist;
+          bestIndex = i;
+        }
+      }
+
+      const nextBikeObj = unvisited[bestIndex];
+      const nextBikeId = nextBikeObj.id;
+      ordered.push(nextBikeId);
+
+      const bikeLat = nextBikeObj.details.currentLat!;
+      const bikeLng = nextBikeObj.details.currentLng!;
+
+      // Calcula a distância direta (Haversine) para esta perna da sequência
+      const distKm = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng);
+      const distM = distKm * 1000;
+      const durS = distKm * 180; // aprox 20 km/h médio na cidade em segundos
+      cumulativeDistM += distM;
+
+      dists[nextBikeId] = {
+        distance: distKm < 1 ? `${distM.toFixed(0)}m` : `${distKm.toFixed(1)}km`,
+        duration: `~${Math.round(durS / 60)} min`,
+        value: cumulativeDistM,
+        durationS: durS,
+        isRoad: false
       };
 
-      if (d?.currentLat && d?.currentLng) {
-        const km = calculateDistance(currentDriverLocation.lat, currentDriverLocation.lng, d.currentLat, d.currentLng);
-        dists[id] = { 
-          distance: km < 1 ? `${(km*1000).toFixed(0)}m` : `${km.toFixed(1)}km`, 
-          duration: `~${Math.round(km*3)} min`, 
-          value: km*1000,
-          isRoad: false 
-        };
-      }
+      // Avança o ponto de referência para a bike atual
+      currentPoint = { lat: bikeLat, lng: bikeLng };
+      unvisited.splice(bestIndex, 1);
+    }
+
+    const withoutCoords = routeBikes.filter(id => {
+      const d = routeBikesDetails[id];
+      return !d?.currentLat || !d?.currentLng;
     });
 
-    if (Object.keys(dists).length > 0) {
+    const newOrder = [...ordered, ...withoutCoords];
+
+    // Se houve mudança na ordem, atualizamos o roteiro E as distâncias simultaneamente para o motorista
+    const orderHasChanged = routeBikes.join('|') !== newOrder.join('|');
+
+    if (orderHasChanged) {
+      console.log('[Routing] Reorganizando roteiro dinamicamente para o GPS do motorista:', newOrder);
+      setRouteBikes(newOrder);
+      setRouteDistances(prev => {
+        const next = { ...prev };
+        Object.entries(dists).forEach(([id, val]) => {
+          next[id] = val;
+        });
+        return next;
+      });
+    } else {
+      // Se a ordem for a mesma, atualizamos as distâncias se houver variação relevante para manter o compasso fluido
       setRouteDistances(prev => {
         const next = { ...prev };
         let changed = false;
         Object.entries(dists).forEach(([id, newVal]) => {
-          // Só aplica Haversine se não houver um cálculo de ROTA (road) já feito
-          if (!prev[id]?.isRoad) {
-            // Verifica se o valor mudou significativamente para evitar updates constantes
-            if (prev[id]?.value !== newVal.value) {
+          // Só atualiza em tempo real se não for rota de estrada pré-calculada fixa OU se a mudança de posição for > 20m
+          if (!prev[id]?.isRoad || Math.abs((prev[id]?.value || 0) - newVal.value) > 20) {
+            if (
+              !prev[id] ||
+              prev[id].distance !== newVal.distance ||
+              prev[id].duration !== newVal.duration
+            ) {
               next[id] = newVal;
               changed = true;
             }
@@ -4603,6 +4738,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
       const onSuccess = ({ coords: { latitude, longitude, speed } }: GeolocationPosition) => {
         setGpsError(null);
+        setGpsWarning(null);
         // setGpsDebug(`OK: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
         setCurrentDriverLocation({ lat: latitude, lng: longitude });
         sendLocation(latitude, longitude, speed, force);
@@ -4610,15 +4746,12 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
       const onError = (err: GeolocationPositionError) => {
         console.error("GPS Error:", err.code, err.message);
-        // setGpsDebug(`Erro ${err.code}: ${err.message}`);
         
         // Se falhou com alta precisão, tenta novamente com baixa precisão uma vez
         if (options.enableHighAccuracy && err.code !== err.PERMISSION_DENIED) {
           navigator.geolocation.getCurrentPosition(onSuccess, (err2) => {
             console.error("GPS Fallback Error:", err2.code, err2.message);
-            // setGpsDebug(`Erro Fallback ${err2.code}: ${err2.message}`);
             
-            // Se o fallback também falhar, tratamos os erros para não deixar o app travado
             if (!gpsBypassRef.current) {
               if (err2.code === err2.PERMISSION_DENIED) {
                 if (err2.message.toLowerCase().includes('permissions policy')) {
@@ -4627,9 +4760,17 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                   setGpsError('Acesso ao GPS negado pelo navegador.');
                 }
               } else if (err2.code === err2.TIMEOUT) {
-                setGpsError('Tempo esgotado ao obter localização. Verifique se o GPS está ligado e tente novamente.');
+                if (lastLocationRef.current) {
+                  setGpsWarning('Atualização do GPS expirou. Mantendo última posição conhecida.');
+                } else {
+                  setGpsWarning('Tempo limite de localização esgotado. Tentando obter sinal...');
+                }
               } else if (err2.code === err2.POSITION_UNAVAILABLE) {
-                setGpsError('Sinal de GPS indisponível. Tente se mover para um local mais aberto.');
+                if (lastLocationRef.current) {
+                  setGpsWarning('Sinal de GPS indisponível. Mantendo última posição conhecida.');
+                } else {
+                  setGpsWarning('Sinal de GPS indisponível. Tentando se conectar...');
+                }
               }
             }
           }, { ...options, enableHighAccuracy: false, timeout: 15000 });
@@ -4644,9 +4785,17 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
               setGpsError('Acesso ao GPS negado pelo navegador. Verifique as permissões no cadeado e certifique-se de não estar em modo de navegação anônima restrito.');
             }
           } else if (err.code === err.TIMEOUT) {
-            setGpsError('Tempo esgotado ao obter localização. Verifique o sinal do GPS.');
+            if (lastLocationRef.current) {
+              setGpsWarning('Atualização do GPS expirou. Mantendo última posição conhecida.');
+            } else {
+              setGpsWarning('Tempo limite de localização esgotado. Tentando obter sinal...');
+            }
           } else if (err.code === err.POSITION_UNAVAILABLE) {
-            setGpsError('Localização indisponível. Verifique se o GPS está ativo.');
+            if (lastLocationRef.current) {
+              setGpsWarning('Sinal de GPS indisponível. Mantendo última posição conhecida.');
+            } else {
+              setGpsWarning('Sinal de GPS indisponível. Tentando se conectar...');
+            }
           }
         }
       };
@@ -4661,13 +4810,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       watchId = navigator.geolocation.watchPosition(
         ({ coords: { latitude, longitude, speed } }) => {
           setGpsError(null);
+          setGpsWarning(null);
           // setGpsDebug(`Watch OK: ${latitude.toFixed(4)}`);
           setCurrentDriverLocation({ lat: latitude, lng: longitude });
           sendLocation(latitude, longitude, speed);
         },
         err => {
           console.error("GPS Watch Error:", err.code);
-          // setGpsDebug(`Watch Erro ${err.code}`);
           
           if (!gpsBypassRef.current) {
             if (err.code === err.PERMISSION_DENIED) {
@@ -4677,11 +4826,17 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                 setGpsError('Acesso ao GPS negado. O aplicativo requer localização ativa.');
               }
             } else if (err.code === err.POSITION_UNAVAILABLE) {
-              setGpsError('Sinal de GPS perdido ou indisponível.');
+              if (lastLocationRef.current) {
+                setGpsWarning('Sinal de GPS indisponível. Mantendo de forma segura a última posição conhecida.');
+              } else {
+                setGpsWarning('Sinal de GPS indisponível. Tentando restabelecer sinal...');
+              }
             } else if (err.code === err.TIMEOUT) {
-              // No watchPosition, timeout pode ser comum se o dispositivo não se mover.
-              // Apenas logamos e deixamos o fallbackInterval tentar novamente.
-              // setGpsDebug(`Watch Timeout: ${Date.now()}`);
+              if (lastLocationRef.current) {
+                setGpsWarning('Sincronização de GPS temporariamente indisponível. Mantendo última posição conhecida.');
+              } else {
+                setGpsWarning('Aguardando sincronização de GPS...');
+              }
             }
           }
         },
@@ -7574,6 +7729,20 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         {/* ROTEIRO DE RECOLHAS */}
         {!isAdm && !isMecanica && !isTecnica && (
           <div className="mt-6 p-4 border rounded-lg bg-gray-50">
+            {gpsWarning && (
+              <div className="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg flex items-center gap-2.5 text-xs animate-in slide-in-from-top duration-200">
+                <AlertTriangleIcon className="w-4 h-4 text-amber-500 animate-pulse flex-shrink-0" />
+                <div className="flex-1">
+                  <span className="font-bold">Sinal do GPS:</span> {gpsWarning}
+                </div>
+                <button 
+                  onClick={() => setGpsWarning(null)} 
+                  className="text-amber-500 hover:text-amber-700 text-xs font-black uppercase px-1.5 py-0.5 rounded hover:bg-amber-100 transition-colors"
+                >
+                  Ok
+                </button>
+              </div>
+            )}
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-semibold text-gray-700">Roteiro de Recolhas</h2>
@@ -7601,10 +7770,21 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                 </button>
               </div>
             </div>
+            {sortedRouteBikes.length > 0 && totalRouteSummary && (
+              <div className="mb-3 p-3 bg-blue-50 border border-blue-100 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-blue-800 shadow-sm">
+                <div className="flex items-center gap-1.5 font-bold text-blue-950">
+                  <span>🧭 Resumo do Roteiro ({totalRouteSummary.count} paradas):</span>
+                </div>
+                <div className="flex items-center gap-4 text-[11px] font-semibold">
+                  <span className="flex items-center gap-1">🚗 Trajeto total: <strong className="font-black text-blue-950 text-xs">{totalRouteSummary.distance}</strong></span>
+                  <span className="flex items-center gap-1">⏱️ Tempo total: <strong className="font-black text-blue-950 text-xs">{totalRouteSummary.duration}</strong></span>
+                </div>
+              </div>
+            )}
             {sortedRouteBikes.length > 0 ? (
               <ul className="space-y-2">
-                {sortedRouteBikes.map(bike => {
-                  const details = routeBikesDetails[bike];
+                {sortedRouteBikes.map((bike) => {
+                  const details = routeBikesDetails[bike] || searchCacheRef.current[bike] || collectedBikesDetails[bike];
                   const moved = details?.currentLat && details?.currentLng && details?.initialLat && details?.initialLng
                     ? getDistanceInMeters(details.initialLat, details.initialLng, details.currentLat, details.currentLng) : 0;
                   const dist = currentDriverLocation && details?.currentLat && details?.currentLng
@@ -7645,7 +7825,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           </div>
                           {dist !== null && (
                             <span className="text-[10px] font-bold text-blue-600">
-                              {routeDistances[bike] ? `${routeDistances[bike].distance} · ${routeDistances[bike].duration}` : `${dist.toFixed(2)} km`}
+                              {routeDistances[bike] 
+                                ? `${routeDistances[bike].distance} · ${routeDistances[bike].duration} (da sua posição)` 
+                                : `${dist.toFixed(2)} km (calculando trajeto...)`}
                             </span>
                           )}
                         </div>
@@ -7670,31 +7852,34 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             <h2 className="text-lg font-semibold text-gray-700 mb-3">Bikes Recolhidas</h2>
             {sortedCollectedBikes.length > 0 ? (
               <ul className="space-y-2">
-                {sortedCollectedBikes.map((bike, i) => (
-                  <li key={`route-${bike}-${i}`} className="p-3 bg-white border rounded-md flex flex-col sm:flex-row justify-between items-center gap-2">
-                    <div className="flex items-center gap-3">
-                      <p className="font-mono text-gray-800 font-bold text-lg">{bike}</p>
-                      <div className="flex items-center gap-1.5">
-                        <div className="flex items-center justify-center w-8 h-8 rounded-full border-2 border-blue-500 text-[9px] font-bold text-blue-600 bg-white shadow-sm flex-shrink-0">
-                          {collectedBikesDetails[bike]?.battery !== undefined ? `${formatBattery(collectedBikesDetails[bike].battery)}%` : '??%'}
+                {sortedCollectedBikes.map((bike, i) => {
+                  const details = collectedBikesDetails[bike] || searchCacheRef.current[bike] || routeBikesDetails[bike];
+                  return (
+                    <li key={`route-${bike}-${i}`} className="p-3 bg-white border rounded-md flex flex-col sm:flex-row justify-between items-center gap-2">
+                      <div className="flex items-center gap-3">
+                        <p className="font-mono text-gray-800 font-bold text-lg">{bike}</p>
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex items-center justify-center w-8 h-8 rounded-full border-2 border-blue-500 text-[9px] font-bold text-blue-600 bg-white shadow-sm flex-shrink-0">
+                            {details?.battery !== undefined ? `${formatBattery(details.battery)}%` : '??%'}
+                          </div>
+                          {(() => {
+                            const st = details?.status || details?.Status || details?.statusSistema || details?.situacao || bikeConflicts[bike]?.status || 'Recolhida';
+                            return (
+                              <span className="text-[10px] font-bold bg-green-100 text-green-700 px-2 py-0.5 rounded-full uppercase truncate max-w-[100px]" title={String(st)}>
+                                {String(st)}
+                              </span>
+                            );
+                          })()}
                         </div>
-                        {(() => {
-                          const st = collectedBikesDetails[bike]?.status || collectedBikesDetails[bike]?.Status || collectedBikesDetails[bike]?.statusSistema || collectedBikesDetails[bike]?.situacao || bikeConflicts[bike]?.status || 'Recolhida';
-                          return (
-                            <span className="text-[10px] font-bold bg-green-100 text-green-700 px-2 py-0.5 rounded-full uppercase truncate max-w-[100px]" title={String(st)}>
-                              {String(st)}
-                            </span>
-                          );
-                        })()}
                       </div>
-                    </div>
                     <div className="grid grid-cols-3 gap-2 w-full max-w-[240px]">
                       <button onClick={() => handleCollectedBikeAction(bike, 'Enviada para Estação')} disabled={isLoading || processingBikes.has(bike)} className="px-2 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 active:scale-95 text-xs disabled:bg-gray-400">Estação</button>
                       <button onClick={() => handleCollectedBikeAction(bike, 'Enviada para Filial')} disabled={isLoading || processingBikes.has(bike)} className="px-2 py-1 bg-green-500 text-white rounded-md hover:bg-green-600 active:scale-95 text-xs disabled:bg-gray-400">Filial</button>
                       <button onClick={() => handleCollectedBikeAction(bike, 'Vandalizada')} disabled={isLoading || processingBikes.has(bike)} className="px-2 py-1 bg-red-500 text-white rounded-md hover:bg-red-600 active:scale-95 text-xs disabled:bg-gray-400">Vandalizada</button>
                     </div>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             ) : <p className="text-sm text-gray-500">Nenhuma bicicleta recolhida ainda.</p>}
           </div>

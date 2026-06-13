@@ -4,7 +4,7 @@ import MainScreen from './components/MainScreen';
 import AdminMap from './components/AdminMap'; // Importa o novo componente de mapa
 import ErrorBoundary from './components/ErrorBoundary';
 import { User } from './types';
-import { apiCall } from './api';
+import { apiCall, clearCache } from './api';
 import { auth } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 
@@ -64,6 +64,7 @@ const App: React.FC = () => {
 
   const handleLogin = (loggedInUser: User) => {
     if (loggedInUser && loggedInUser.name && loggedInUser.name.trim()) {
+      clearCache(); // Limpa cache anterior ao logar
       const userWithCategory = {
         ...loggedInUser,
         category: (loggedInUser.category || 'MOTORISTA').trim().toUpperCase(),
@@ -78,6 +79,7 @@ const App: React.FC = () => {
       setUser(null);
       localStorage.removeItem('bike_app_user');
       setIsMapVisible(false); // Garante que o mapa seja fechado ao fazer logout
+      clearCache(); // Limpa cache do usuário na saída
       
       apiCall({ action: 'logout', userName: userNameToLogout })
         .catch(err => {

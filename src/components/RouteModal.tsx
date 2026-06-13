@@ -63,69 +63,22 @@ const RouteModal: React.FC<RouteModalProps> = ({
     setIsScanning(true);
     setScanError(null);
     try {
-      // GEMINI_API_KEY is replaced during build time by Vite. Ensure that Cloudflare builds the site with the correct key.
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        console.error("GEMINI_API_KEY is not defined in the environment.");
-        setScanError("Erro: Chave API do Gemini não configurada nas variáveis do Cloudflare.");
-        return;
-      }
-
-      // Normaliza a chave removendo espaços e possíveis aspas envolventes de copy-paste
-      let cleanKey = apiKey.trim();
-      if (cleanKey.startsWith('"') && cleanKey.endsWith('"')) {
-        cleanKey = cleanKey.slice(1, -1).trim();
-      } else if (cleanKey.startsWith("'") && cleanKey.endsWith("'")) {
-        cleanKey = cleanKey.slice(1, -1).trim();
-      }
-
-      if (!cleanKey) {
-        setScanError("Erro: Chave API do Gemini está vazia.");
-        return;
-      }
-
-      const mimeType = base64Image.split(';')[0].split(':')[1] || "image/png";
-      const base64Data = base64Image.split(',')[1];
-
-      // Envia a chave API via query parameter 'key' na URL (padrão oficial do Google AI Studio para chaves AIzaSy e novos formatos)
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
-
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json"
-      };
-
-      const payload = {
-        contents: [
-          {
-            parts: [
-              { inlineData: { mimeType, data: base64Data } },
-              { text: "List bike numbers in this map. Return ONLY a JSON array of strings. Fast mode." }
-            ]
-          }
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: "ARRAY",
-            items: { type: "STRING" }
-          }
-        }
-      };
-
-      const res = await fetch(url, {
+      const res = await fetch("/api/gemini/process-image", {
         method: "POST",
-        headers,
-        body: JSON.stringify(payload)
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ image: base64Image })
       });
 
       if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`A API do Google retornou o status ${res.status}: ${errorText}`);
+        const errJson = await res.json().catch(() => ({}));
+        const errorText = errJson.error || `A API do servidor retornou o status ${res.status}`;
+        throw new Error(errorText);
       }
 
       const resJson = await res.json();
-      const textResponse = resJson.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
-      const bikes = JSON.parse(textResponse);
+      const bikes = resJson.bikes || [];
 
       if (Array.isArray(bikes) && bikes.length > 0) {
         setBikeListText(prev => {
@@ -135,30 +88,21 @@ const RouteModal: React.FC<RouteModalProps> = ({
         });
         setIsScannerOpen(false);
       } else {
-        setScanError("Nenhuma bike detectada.");
+        setScanError("Nenhuma bike detectada na imagem.");
       }
     } catch (err: any) {
       console.error("Scan error:", err);
       let errMsg = err.message || 'Erro desconhecido';
       
-      const apiKeyVal = process.env.GEMINI_API_KEY || '';
-      const maskedKey = apiKeyVal.length > 8 
-        ? `${apiKeyVal.substring(0, 7)}...${apiKeyVal.substring(apiKeyVal.length - 5)} (Tam: ${apiKeyVal.length})`
-        : `Vazia/Inválida (Tam: ${apiKeyVal.length})`;
-
       const upperMsg = errMsg.toUpperCase();
       if (upperMsg.includes('PREPAYMENT') || upperMsg.includes('429') || upperMsg.includes('RESOURCE_EXHAUSTED') || upperMsg.includes('BILLING')) {
-        errMsg = `Chave de faturamento esgotada. Chave usada: ${maskedKey}. Erro original: ${errMsg}`;
+        errMsg = `Limite de requisições ou faturamento excedido. Por favor, tente novamente mais tarde. Erro original: ${errMsg}`;
       } else if (upperMsg.includes('UNAUTHENTICATED') || upperMsg.includes('CREDENTIALS') || upperMsg.includes('401') || upperMsg.includes('OAUTH') || upperMsg.includes('INVALID_KEY') || upperMsg.includes('API_KEY')) {
-        errMsg = `Erro de Autenticação (401). Verifique se a chave está ativa no Google AI Studio. Chave lida pelo app: ${maskedKey}. Erro retornado pelo Google: ${errMsg}`;
+        errMsg = `Erro de autenticação no servidor. Verifique se a variável GEMINI_API_KEY está configurada corretamente no painel de segredos. Erro original: ${errMsg}`;
       } else if (upperMsg.includes('404') || upperMsg.includes('NOT_FOUND') || upperMsg.includes('NOT FOUND')) {
-        errMsg = `Erro 404 (Não Encontrado): Isso geralmente acontece se sua chave de API estiver RESTRETA para a API 'Gemini API' em vez de 'Generative Language API' (Google AI Studio) no Google Cloud Console. Para corrigir, no Google Cloud Console:
-1. Vá nas configurações da chave de API
-2. Remova as restrições de API selecionando 'Não restringir chave' OU marque a caixa para 'Generative Language API'
-3. Salve, aguarde 2 minutos e tente novamente.
-Chave usada: ${maskedKey}`;
+        errMsg = `Módulo ou modelo de IA não encontrado no provedor. Por favor, revise as configurações do modelo. Erro original: ${errMsg}`;
       } else {
-        errMsg = `Erro ao processar imagem: ${errMsg}. Chave lida pelo app: ${maskedKey}`;
+        errMsg = `Erro ao processar imagem via servidor: ${errMsg}`;
       }
       
       setScanError(errMsg);
