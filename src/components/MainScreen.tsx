@@ -266,8 +266,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [driverLocations, setDriverLocations] = useState<DriverLocation[]>([]);
   const [bikeConflicts, setBikeConflicts] = useState<Record<string, any>>({});
   const [currentDriverLocation, setCurrentDriverLocation] = useState<{ lat: number, lng: number } | null>(null);
-  const [routeDistances, setRouteDistances] = useState<Record<string, { distance: string, duration: string, value: number, isRoad?: boolean, directDistanceM?: number }>>({});
+  const [routeDistances, setRouteDistances] = useState<Record<string, { distance: string, duration: string, value: number, isRoad?: boolean, directDistanceM?: number, legM?: number, legS?: number }>>({});
   const lastOptimizedBikesSetRef = useRef<string>('');
+  const lastRouteCalculatedGpsRef = useRef<{ lat: number, lng: number } | null>(null);
 
   // --- Modais ---
   const [isRequestModalOpen, setRequestModalOpen] = useState(false);
@@ -1093,7 +1094,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     return () => { unsubRequests(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); unsubReports(); };
   }, [driverName, isAdm, timelineDate, getStartOfDayTs]);
 
-  const routeBikesKey = [...routeBikes].sort().join(',');
+  const routeBikesTenKey = useMemo(() => {
+    return routeBikes.slice(0, 10).sort().join(',');
+  }, [routeBikes]);
+
   // Listener em tempo real para as bikes na rota (Agilidade Máxima)
   // Se uma bike na rota for recolhida por outro motorista, ela sai da lista imediatamente
   useEffect(() => {
@@ -1126,7 +1130,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
     
     return () => unsubBikes();
-  }, [driverName, routeBikesKey, routeBikes]); // routeBikesKey garante estabilidade, routeBikes satisfaz o linter
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driverName, routeBikesTenKey]); // routeBikesTenKey garante estabilidade, evitando re-inscrições desnecessárias
 
   // =================================================================
   // GARANTIA DE UNICIDADE
@@ -1321,6 +1326,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
     isUpdatingStateRef.current = true;
     setIsLoading(true);
 
+    let hasLaunchedBackground = false;
+
     try {
       // Usa estado local — protegido por isUpdatingStateRef=true, nenhum sync externo altera durante a operação
       // Usa refs para garantir o estado mais recente mesmo em cliques rápidos
@@ -1378,6 +1385,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // Feedback imediato
         setSuccessMessage(`Bicicleta ${bikeNumber} recolhida!`);
         setIsLoading(false);
+        hasLaunchedBackground = true;
 
         // Background
         (async () => {
@@ -1427,6 +1435,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // Feedback imediato de sucesso
         setSuccessMessage(`Bicicleta ${bikeNumber} marcada como não encontrada.`);
         setIsLoading(false);
+        hasLaunchedBackground = true;
 
         // Processamento em background
         (async () => {
@@ -1480,10 +1489,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       console.error('Erro ao atualizar status:', err);
       setError('Erro ao atualizar status: ' + err.message);
     } finally {
-      isUpdatingStateRef.current = false;
-      setIsLoading(false);
-      processingBikesRef.current.delete(bikeNumber);
-      setProcessingBikes(new Set(processingBikesRef.current));
+      if (!hasLaunchedBackground) {
+        isUpdatingStateRef.current = false;
+        setIsLoading(false);
+        processingBikesRef.current.delete(bikeNumber);
+        setProcessingBikes(new Set(processingBikesRef.current));
+      }
     }
   };
 
@@ -4436,15 +4447,18 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
   // Usa Google Maps se VITE_GOOGLE_MAPS_KEY estiver definida,
   // senão usa OSRM (gratuito, sem chave).
   // =================================================================
-  const GOOGLE_MAPS_KEY = (typeof import.meta !== 'undefined' && ((import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || (import.meta as any).env?.VITE_GOOGLE_MAPS_KEY)) || '';
   const googleMapsDisabledRef = useRef(false);
 
   const getRoadDistance = useCallback(async (
-    fromLat: number, fromLng: number,
-    toLat: number, toLng: number
+    rawFromLat: number, rawFromLng: number,
+    rawToLat: number, rawToLng: number
   ): Promise<{ distanceM: number, durationS: number, isRoad: boolean }> => {
+    const fromLat = normalizeCoord(rawFromLat);
+    const fromLng = normalizeCoord(rawFromLng);
+    const toLat = normalizeCoord(rawToLat);
+    const toLng = normalizeCoord(rawToLng);
     try {
-      if (GOOGLE_MAPS_KEY && !googleMapsDisabledRef.current) {
+      if (!googleMapsDisabledRef.current) {
         try {
           // Proxy via Apps Script — evita CORS do browser.
           // Usamos silent = true para silenciar erros de console em caso de chave ausente no backend.
@@ -4484,7 +4498,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     // Último fallback: Haversine
     const km = calculateDistance(fromLat, fromLng, toLat, toLng);
     return { distanceM: km * 1000, durationS: km * 180, isRoad: false };
-  }, [GOOGLE_MAPS_KEY]);
+  }, []);
 
   const buildOptimizedRoute = useCallback(async () => {
     if (!currentDriverLocation || !routeBikes.length) return;
@@ -4528,8 +4542,20 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         bikeLat, bikeLng
       );
 
-      const legM = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng) * 1000;
-      const legS = (legM / 1000) * 180; // aprox. 3min por km
+      // Distância de carro para esta perna da sequência (legM/legS)
+      let legM = 0;
+      let legS = 0;
+      if (currentPoint.lat === currentDriverLocation.lat && currentPoint.lng === currentDriverLocation.lng) {
+        legM = distanceM;
+        legS = durationS;
+      } else {
+        const legRoad = await getRoadDistance(
+          currentPoint.lat, currentPoint.lng,
+          bikeLat, bikeLng
+        );
+        legM = legRoad.distanceM;
+        legS = legRoad.durationS;
+      }
 
       orderedSequence.push({
         bike: targetBike,
@@ -4547,7 +4573,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
     // Cria os objetos de distância para o estado routeDistances
     const ordered: string[] = [];
-    const newDistances: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean, directDistanceM: number }> = {};
+    const newDistances: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean, directDistanceM: number, legM: number, legS: number }> = {};
     let cumulativeDistM = 0;
 
     orderedSequence.forEach(item => {
@@ -4563,7 +4589,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         value: cumulativeDistM, // Valor acumulado para manter a ordenação cronológica lógica
         durationS: item.legS,
         isRoad: item.isRoad,
-        directDistanceM: item.distanceM
+        directDistanceM: item.distanceM,
+        legM: item.legM,
+        legS: item.legS
       };
     });
 
@@ -4682,6 +4710,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       console.log('[Routing] Reorganizando roteiro inicialmente para novo conjunto de bikes:', newOrder);
       
       lastOptimizedBikesSetRef.current = currentBikesSet;
+      lastRouteCalculatedGpsRef.current = null; // reseta para que o próximo ciclo calcule rota de carro imediatamente
       setRouteBikes(newOrder);
       setRouteDistances(prev => {
         const next = { ...prev };
@@ -4692,56 +4721,102 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       });
     } else {
       // O conjunto de bikes é idêntico. Mantemos a ordem atual estável para não confundir o motorista.
-      // Apenas computamos as distâncias sequenciais seguindo a ordem ATUAL de routeBikes.
-      const dists: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean }> = {};
-      let currentPoint = { lat: currentDriverLocation.lat, lng: currentDriverLocation.lng };
-      let cumulativeDistM = 0;
-
-      routeBikes.forEach(bikeId => {
-        const details = routeBikesDetails[bikeId];
-        if (details?.currentLat && details?.currentLng) {
-          const bikeLat = details.currentLat;
-          const bikeLng = details.currentLng;
-          
-          const distKm = calculateDistance(currentPoint.lat, currentPoint.lng, bikeLat, bikeLng);
-          const distM = distKm * 1000;
-          const durS = distKm * 180;
-          cumulativeDistM += distM;
-
-          dists[bikeId] = {
-            distance: distKm < 1 ? `${distM.toFixed(0)}m` : `${distKm.toFixed(1)}km`,
-            duration: `~${Math.round(durS / 60)} min`,
-            value: cumulativeDistM,
-            durationS: durS,
-            isRoad: false
-          };
-
-          // Avança para o próximo ponto
-          currentPoint = { lat: bikeLat, lng: bikeLng };
+      // Apenas recalculamos se o motorista se moveu mais de 20 metros desde o último cálculo para não estressar a rede/API
+      if (lastRouteCalculatedGpsRef.current) {
+        const movedM = getDistanceInMeters(
+          currentDriverLocation.lat, currentDriverLocation.lng,
+          lastRouteCalculatedGpsRef.current.lat, lastRouteCalculatedGpsRef.current.lng
+        );
+        if (movedM < 20) {
+          return;
         }
-      });
+      }
 
-      // Se a ordem for a mesma, atualizamos as distâncias se houver variação relevante para manter o compasso fluido
-      setRouteDistances(prev => {
-        const next = { ...prev };
-        let changed = false;
-        Object.entries(dists).forEach(([id, newVal]) => {
-          // Só atualiza em tempo real se não for rota de estrada pré-calculada fixa OU se a mudança de posição for > 20m
-          if (!prev[id]?.isRoad || Math.abs((prev[id]?.value || 0) - newVal.value) > 20) {
+      const runRoadUpdates = async () => {
+        const dists: Record<string, { distance: string, duration: string, value: number, durationS: number, isRoad: boolean, legM: number, legS: number }> = {};
+        let currentPoint = { lat: currentDriverLocation.lat, lng: currentDriverLocation.lng };
+        let cumulativeDistM = 0;
+
+        for (let i = 0; i < routeBikes.length; i++) {
+          const bikeId = routeBikes[i];
+          const details = routeBikesDetails[bikeId];
+          if (details?.currentLat && details?.currentLng) {
+            const bikeLat = details.currentLat;
+            const bikeLng = details.currentLng;
+
+            // 1. Distância de trajeto da posição do motorista até esta bike (direto)
+            const { distanceM, durationS, isRoad } = await getRoadDistance(
+              currentDriverLocation.lat, currentDriverLocation.lng,
+              bikeLat, bikeLng
+            );
+
+            // 2. Distância de carro para esta perna da sequência (legM/legS)
+            let legM = 0;
+            let legS = 0;
+            if (currentPoint.lat === currentDriverLocation.lat && currentPoint.lng === currentDriverLocation.lng) {
+              legM = distanceM;
+              legS = durationS;
+            } else {
+              // Se já temos gravado no routeDistances e os pontos de origem/destino continuam idênticos, reutilizamos
+              const prev = routeDistances[bikeId];
+              if (prev && prev.isRoad && prev.legM !== undefined && prev.legS !== undefined) {
+                legM = prev.legM;
+                legS = prev.legS;
+              } else {
+                const legRoad = await getRoadDistance(
+                  currentPoint.lat, currentPoint.lng,
+                  bikeLat, bikeLng
+                );
+                legM = legRoad.distanceM;
+                legS = legRoad.durationS;
+              }
+            }
+
+            cumulativeDistM += legM;
+
+            const distKm = distanceM / 1000;
+            const mins = Math.round(durationS / 60);
+
+            dists[bikeId] = {
+              distance: distKm < 1 ? `${distanceM.toFixed(0)}m` : `${distKm.toFixed(1)}km`,
+              duration: `~${mins} min`,
+              value: cumulativeDistM,
+              durationS: legS,
+              isRoad,
+              legM,
+              legS
+            };
+
+            // Avança para o próximo ponto
+            currentPoint = { lat: bikeLat, lng: bikeLng };
+          }
+        }
+
+        lastRouteCalculatedGpsRef.current = { lat: currentDriverLocation.lat, lng: currentDriverLocation.lng };
+
+        // Se a ordem for a mesma, atualizamos as distâncias se houver variação relevante para manter o compasso fluido
+        setRouteDistances(prev => {
+          const next = { ...prev };
+          let changed = false;
+          Object.entries(dists).forEach(([id, newVal]) => {
             if (
               !prev[id] ||
               prev[id].distance !== newVal.distance ||
-              prev[id].duration !== newVal.duration
+              prev[id].duration !== newVal.duration ||
+              prev[id].isRoad !== newVal.isRoad ||
+              Math.abs((prev[id]?.value || 0) - newVal.value) > 20
             ) {
               next[id] = newVal;
               changed = true;
             }
-          }
+          });
+          return changed ? next : prev;
         });
-        return changed ? next : prev;
-      });
+      };
+
+      runRoadUpdates();
     }
-  }, [currentDriverLocation, routeBikes, routeBikesDetails]);
+  }, [currentDriverLocation, routeBikes, routeBikesDetails, getRoadDistance, routeDistances]);
 
   useEffect(() => {
     if (isAdm) {

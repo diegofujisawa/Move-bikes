@@ -2899,8 +2899,13 @@ function addToMechanics(bikeNumber) {
   sheet.appendRow([bikeNumber, 'Alterar Status', new Date(), '', '', '', '']);
 }
 
-function getDirections(fromLat, fromLng, toLat, toLng) {
+function getDirections(rawFromLat, rawFromLng, rawToLat, rawToLng) {
   try {
+    const fromLat = parseCoordinate(rawFromLat);
+    const fromLng = parseCoordinate(rawFromLng);
+    const toLat = parseCoordinate(rawToLat);
+    const toLng = parseCoordinate(rawToLng);
+    
     const key = PropertiesService.getScriptProperties().getProperty('GOOGLE_MAPS_KEY');
     
     // Se a chave não estiver configurada, podemos usar o serviço nativo do Google Apps Script
