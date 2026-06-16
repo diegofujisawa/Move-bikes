@@ -7687,15 +7687,14 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
                   {/* Card por técnico */}
                   {(() => {
-                    const byTechnician: Record<string, {aguardando: number, emTecnica: number, bikes: string[]}> = {};
-                    technicaList.filter(b => b.status === 'Aguardando Técnica' || b.status === 'Em Técnica').forEach(b => {
+                    const byTechnician: Record<string, {emTecnica: number, bikes: string[]}> = {};
+                    technicaList.filter(b => b.status === 'Em Técnica').forEach(b => {
                       const t = b.tecnico || '—';
-                      if (!byTechnician[t]) byTechnician[t] = { aguardando: 0, emTecnica: 0, bikes: [] };
-                      if (b.status === 'Aguardando Técnica') byTechnician[t].aguardando++;
-                      else byTechnician[t].emTecnica++;
+                      if (!byTechnician[t]) byTechnician[t] = { emTecnica: 0, bikes: [] };
+                      byTechnician[t].emTecnica++;
                       byTechnician[t].bikes.push(b.patrimonio);
                     });
-                    const techs = Object.entries(byTechnician);
+                    const techs = Object.entries(byTechnician).filter(([name]) => name !== '—');
                     if (techs.length === 0) return (
                       <div className="text-center py-6 bg-white rounded-lg border border-dashed">
                         <p className="text-gray-400 text-xs">Nenhum técnico em atividade</p>
@@ -7708,26 +7707,17 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                             <div className="flex justify-between items-center mb-2 border-b pb-1">
                               <h3 className="font-black text-gray-900 text-sm uppercase">{name}</h3>
                             </div>
-                            <div className="grid grid-cols-2 gap-1.5 mb-2">
-                              {[
-                                { l: 'Aguardando', v: data.aguardando, c: 'blue' },
-                                { l: 'Em Técnica', v: data.emTecnica, c: 'indigo' },
-                              ].map(item => (
-                                <div key={item.l} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
-                                  <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.l}</p>
-                                  <p className={`text-sm font-black text-${item.c}-800`}>{item.v}</p>
-                                </div>
-                              ))}
+                            <div className="mb-2">
+                              <div className="bg-indigo-50 p-1.5 rounded border border-indigo-100 text-center">
+                                <p className="text-[8px] text-indigo-600 font-black uppercase leading-tight">Em Técnica</p>
+                                <p className="text-sm font-black text-indigo-800">{data.emTecnica}</p>
+                              </div>
                             </div>
                             <div>
                               <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Bikes ({data.bikes.length})</p>
                               <div className="flex flex-wrap gap-1">
-                                {technicaList.filter(b => (b.status === 'Aguardando Técnica' || b.status === 'Em Técnica') && b.tecnico === name).map((b: any) => (
-                                  <span key={b.patrimonio} className={`px-2 py-0.5 rounded text-[10px] font-black font-mono ${
-                                    b.status === 'Aguardando Técnica'
-                                      ? 'bg-blue-500 text-white'
-                                      : 'bg-indigo-600 text-white'
-                                  }`}>{b.patrimonio}</span>
+                                {technicaList.filter(b => b.status === 'Em Técnica' && b.tecnico === name).map((b: any) => (
+                                  <span key={b.patrimonio} className="px-2 py-0.5 rounded text-[10px] font-black font-mono bg-indigo-600 text-white">{b.patrimonio}</span>
                                 ))}
                               </div>
                             </div>

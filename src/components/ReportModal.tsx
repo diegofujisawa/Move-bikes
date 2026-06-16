@@ -18,6 +18,8 @@ const ReportModal: React.FC<ReportModalProps> = ({ isOpen, onClose, driverName, 
   const [kmFinal, setKmFinal] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const generateReportText = useCallback((data: any, finalKmStr: string) => {
     if (!data) return 'Gerando relatório...';
@@ -98,6 +100,8 @@ ${Object.entries(data.estacoes || {}).map(([name, count]) => `• ${name}: ${cou
 
   useEffect(() => {
     if (isOpen) {
+      setErrorMessage(null);
+      setSuccessMessage(null);
       fetchAndGenerateReport();
       setCopyButtonText('Copiar');
     }
@@ -146,14 +150,17 @@ ${Object.entries(data.estacoes || {}).map(([name, count]) => `• ${name}: ${cou
   };
 
   const handleCopy = async () => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
     if (!kmFinal) {
-      alert("Por favor, insira o KM Final antes de copiar o relatório.");
+      setErrorMessage("Por favor, insira o KM Final antes de copiar o relatório.");
       return;
     }
 
     const kmFinalNum = parseFloat(kmFinal) || 0;
     if (kmInicial !== undefined && kmFinalNum < kmInicial) {
-      alert(`O KM Final (${kmFinalNum}) não pode ser menor que o KM Inicial (${kmInicial}). Por favor, verifique o odômetro.`);
+      setErrorMessage(`O KM Final (${kmFinalNum}) não pode ser menor que o KM Inicial (${kmInicial}). Por favor, verifique o odômetro.`);
       return;
     }
 
@@ -208,19 +215,20 @@ ${Object.entries(data.estacoes || {}).map(([name, count]) => `• ${name}: ${cou
 
       if (result.success) {
         if (!copied) {
-          alert("O relatório foi salvo e o KM Final registrado, mas não foi possível copiar automaticamente devido a restrições do navegador. Por favor, selecione o texto abaixo e copie manualmente.");
+          setSuccessMessage("O relatório foi salvo e o KM Final registrado! Infelizmente não foi possível copiar automaticamente para a área de transferência devido a restrições do navegador na visualização atual (iframe). Por favor, selecione e copie o texto abaixo manualmente.");
+        } else {
+          setSuccessMessage("Relatório salvo, KM Final registrado e copiado com sucesso para a área de transferência!");
         }
         
         setTimeout(() => {
           setCopyButtonText('Copiar');
-          alert("Relatório salvo e KM Final registrado com sucesso!");
           onClose();
-        }, 1500);
+        }, 3500);
       } else {
-        alert("Erro ao salvar KM Final: " + result.error);
+        setErrorMessage("Erro ao salvar KM Final: " + result.error);
       }
     } catch (err: any) {
-      alert("Erro de comunicação: " + err.message);
+      setErrorMessage("Erro de comunicação: " + err.message);
     } finally {
       setIsSubmitting(false);
     }
@@ -249,6 +257,18 @@ ${Object.entries(data.estacoes || {}).map(([name, count]) => `• ${name}: ${cou
           />
           <p className="text-[10px] text-blue-600 mt-1 italic">Obrigatório para liberar a cópia do relatório.</p>
         </div>
+
+        {errorMessage && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs font-semibold leading-relaxed">
+            ⚠️ {errorMessage}
+          </div>
+        )}
+
+        {successMessage && (
+          <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-700 rounded-lg text-xs font-semibold leading-relaxed">
+            ✅ {successMessage}
+          </div>
+        )}
 
         <textarea
           readOnly
