@@ -2328,14 +2328,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
       // Mapeamento de coleções e campos para busca
       const searchConfigs = [
-        { col: 'bikes', field: 'patrimonio', type: 'Status Atual', useId: true },
         { col: 'reports', field: 'patrimonio', type: 'Relatório' },
         { col: 'reports', field: 'bikeNumber', type: 'Relatório' },
         { col: 'boletins', field: 'bikeNumber', type: 'Boletim' },
         { col: 'timeline_events', field: 'patrimonio', type: 'Linha do Tempo' },
-        { col: 'timeline_events', field: 'bikeNumber', type: 'Linha do Tempo' },
-        { col: 'mechanics_flow', field: 'patrimonio', type: 'Mecânica', useId: true },
-        { col: 'technical_flow', field: 'patrimonio', type: 'Técnica', useId: true }
+        { col: 'timeline_events', field: 'bikeNumber', type: 'Linha do Tempo' }
       ];
 
       const queryPromises: Promise<any>[] = [];
@@ -7825,8 +7822,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                     <div className="space-y-2">
                       {bikeSearchResult.map((record: any, i: number) => {
                         const statusLow = (record.status || '').toLowerCase();
-                        const isMecanicaRecord = record.origem === 'mecanica' || record.type === 'Mecânica' || record.type === 'Reparo';
-                        const isTecnicaRecord  = record.type === 'Técnica';
+                        const isAguardandoTecnica = statusLow.includes('aguardando técnica') || statusLow.includes('aguardando tecnica');
+                        const isMecanicaRecord = record.origem === 'mecanica' || record.type === 'Mecânica' || record.type === 'Reparo' || isAguardandoTecnica;
+                        const isTecnicaRecord  = record.type === 'Técnica' && !isAguardandoTecnica;
                         const isCarretinha     = record.type === 'Carretinha';
                         const isRecolhida   = statusLow === 'recolhida' || statusLow === 'filial';
                         const isEstacao     = statusLow === 'estação' || statusLow === 'estacao' || statusLow === 'em estação';
