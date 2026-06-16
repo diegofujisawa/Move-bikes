@@ -291,7 +291,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [technicaReceiptModal, setTechnicaReceiptModal] = useState<{ bikeNumber: string; originalMechanic: string } | null>(null);
   const [technicaRepairModal, setTechnicaRepairModal] = useState<{ bike: any } | null>(null);
   const [technicaRepairSelected, setTechnicaRepairSelected] = useState<Set<string>>(new Set());
-  const TECNICA_TECHNICIANS = ['Diego', 'Juliano'];
+  const TECNICA_TECHNICIANS = ['Diego', 'Jhonatan'];
   const TECNICA_REPAIR_OPTIONS = [
     'CARCAÇA FRONTAL', 'CARCAÇA TRASEIRA', 'TRAVA', 'MOTOR TRAVADO',
     'SENSORES', 'ALTO FALANTE', 'CABO DE ENERGIA', 'BATERIA',

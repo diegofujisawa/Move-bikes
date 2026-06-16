@@ -11,7 +11,7 @@ interface MechanicSelectionModalProps {
 }
 
 const MechanicSelectionModal: React.FC<MechanicSelectionModalProps> = ({ isOpen, onClose, onConfirm, isLoading, bikeNumber }) => {
-    const mechanics = ["Kauan", "João", "Felipe", "Caio", "Rafael"];
+    const mechanics = ["Kauan", "Felipe", "João", "Rafael", "Andre"];
     const [selected, setSelected] = React.useState('');
 
     if (!isOpen) return null;
