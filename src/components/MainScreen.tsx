@@ -2445,11 +2445,57 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
       console.log('[Search] Total Firebase processado:', firebaseRecords.length);
 
-      // Merge e Ordenação
-      const merged = [...allRecords, ...firebaseRecords].sort((a, b) => {
-        const dateA = a.timestamp instanceof Date ? a.timestamp : new Date(a.timestamp || 0);
-        const dateB = b.timestamp instanceof Date ? b.timestamp : new Date(b.timestamp || 0);
-        return dateB.getTime() - dateA.getTime();
+      // Helper robusto para converter qualquer string ou timestamp pt-BR em Date em JS
+      const parseMovementDate = (val: any): Date => {
+        if (!val) return new Date(0);
+        if (val instanceof Date) {
+          return isNaN(val.getTime()) ? new Date(0) : val;
+        }
+        if (val && typeof val === 'object' && typeof val.toDate === 'function') {
+          try {
+            return val.toDate() || new Date(0);
+          } catch {
+            return new Date(0);
+          }
+        }
+        const s = String(val).trim();
+        if (!s) return new Date(0);
+        if (/^\d{9,14}$/.test(s)) {
+          const d = new Date(parseInt(s, 10));
+          return isNaN(d.getTime()) ? new Date(0) : d;
+        }
+        if (s.includes('/')) {
+          const parts = s.split(/[,\s]+/);
+          const dp = parts[0].split('/');
+          if (dp.length === 3) {
+            const day = dp[0].padStart(2, '0');
+            const month = dp[1].padStart(2, '0');
+            const year = dp[2];
+            let timePart = parts[1] || '';
+            if (timePart) {
+              const tParts = timePart.split(':');
+              const hour = (tParts[0] || '0').padStart(2, '0');
+              const min = (tParts[1] || '0').padStart(2, '0');
+              const sec = (tParts[2] || '0').split(/[.,]/)[0].padStart(2, '0');
+              timePart = `T${hour}:${min}:${sec}`;
+            } else {
+              timePart = 'T00:00:00';
+            }
+            const isoStr = `${year}-${month}-${day}${timePart}`;
+            const d = new Date(isoStr);
+            if (!isNaN(d.getTime())) return d;
+          }
+        }
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? new Date(0) : d;
+      };
+
+      // Merge, normalização das datas e ordenação (mais recente primeiro)
+      const merged = [...allRecords, ...firebaseRecords].map(item => ({
+        ...item,
+        timestamp: parseMovementDate(item.timestamp)
+      })).sort((a, b) => {
+        return b.timestamp.getTime() - a.timestamp.getTime();
       });
 
       console.log('[Search] Total final merged:', merged.length);
