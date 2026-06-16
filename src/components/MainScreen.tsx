@@ -1052,9 +1052,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }, err => console.error('Listener locations:', err));
     }
 
-    // Listener de ações pendentes (ADM)
+    // Listener de ações pendentes (ADM, Mecânica e Técnica para fins de filtragem preventiva)
     let unsubPending = () => {};
-    if (isAdm) {
+    if (isAdm || isMecanica || isTecnica) {
       setIsPendingActionsLoading(true);
       const qPending = query(
         collection(db, 'pending_actions'), 
@@ -1092,7 +1092,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const unsubReports = () => {};
 
     return () => { unsubRequests(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); unsubReports(); };
-  }, [driverName, isAdm, timelineDate, getStartOfDayTs]);
+  }, [driverName, isAdm, isMecanica, isTecnica, timelineDate, getStartOfDayTs]);
 
   const routeBikesTenKey = useMemo(() => {
     return routeBikes.slice(0, 10).sort().join(',');
@@ -3260,6 +3260,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
         const res = await apiCall({ action: 'organizeTrailer', bikeNumbers: action.bikes, trailerName: action.trailerName }, 1, true);
         if (!res.success) throw new Error(res.error || 'Erro ao aprovar carretinha.');
+
+        // v85.45: Auto-finaliza no Sheets também ao aprovar ação da carretinha do mecânico para mudar status para Remanejada
+        await apiCall({ action: 'finalizeTrailer', trailerName: action.trailerName }).catch(e => {
+          console.warn('Erro ao rodar finalizeTrailer ao aprovar carretinha:', e);
+        });
 
         // v85.30: Para carretinhas, não remove da lista de pendentes até ser enviada para o motorista.
         // Apenas marca como ativada para exibição no card.
