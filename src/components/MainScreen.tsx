@@ -496,6 +496,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const activeStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
     const validMechanicsStatuses = activeStatuses;
     
+    // Ordem de precedência de status da mecânica
+    const statusOrder: Record<string, number> = {
+      'Alterar Status': 1,
+      'Não encontrada': 1,
+      'Aguardando Manutenção': 2,
+      'Em Manutenção': 3,
+      'Reserva': 4
+    };
+    
     const fbMap: Record<string, any> = {};
     fbFlow.forEach(b => {
       fbMap[String(b.patrimonio)] = b;
@@ -526,8 +535,25 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // o servidor prevalece, pois a bike já teve seu status mestre alterado para Manutenção na aba Bicicletas.
         const isMasterMaintenance = sStatus === 'Aguardando Manutenção' && fbStatus === 'Alterar Status';
 
-        // Prioridade 1: Se o status do Firebase for ATIVO, ele prevalece sobre o servidor (exceto para o caso mestre acima).
-        if (activeStatuses.includes(fbStatus) && !isMasterMaintenance) {
+        // v85.55: Se o status do servidor (Sheets) é mais avançado no fluxo de mecânica do que o do Firebase,
+        // o status do servidor deve prevalecer para evitar que dados antigos do Firebase fiquem presos (stale)
+        // e façam a bike retornar para estados anteriores (ex: se o servidor já está como 'Reserva' mas o Firebase diz 'Alterar Status').
+        const isServerNewer = (statusOrder[sStatus] || 0) > (statusOrder[fbStatus] || 0);
+
+        if (isServerNewer) {
+          // Limpeza assíncrona em background do documento stale no Firestore
+          (async () => {
+            try {
+              const { deleteDoc: _deleteDoc, doc: _doc } = await import('firebase/firestore');
+              await _deleteDoc(_doc(db, 'mechanics_flow', pat));
+            } catch (err) {
+              console.warn('[Firebase] Cleanup of stale mechanics_flow document failed for', pat, err);
+            }
+          })();
+        }
+
+        // Prioridade 1: Se o status do Firebase for ATIVO, ele prevalece sobre o servidor (exceto para o caso mestre ou se o servidor for mais atual).
+        if (activeStatuses.includes(fbStatus) && !isMasterMaintenance && !isServerNewer) {
           result.push({
             ...fbBike,
             // Prioridade para bateria e carregamento LIVE, depois servidor (Sheets), depois Firebase
@@ -536,8 +562,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
             dataEntrada: fbBike.dataEntrada?.toDate?.() || fbBike.dataEntrada || new Date(),
           });
         } 
-        // Prioridade 2: Se o status do Firebase NÃO for ativo ou se for a exceção de Manutenção
-        else if (isMasterMaintenance || sStatus === 'Alterar Status' || validMechanicsStatuses.includes(sStatus)) {
+        // Prioridade 2: Se o status do Firebase NÃO for ativo ou se for a exceção de Manutenção/Servidor mais recente
+        else if (isMasterMaintenance || isServerNewer || sStatus === 'Alterar Status' || validMechanicsStatuses.includes(sStatus)) {
           result.push({
             ...sBike,
             bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : sBike.bateria,
@@ -5602,6 +5628,18 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           bikes: bikesToClear.map(b => ({ patrimonio: b.patrimonio, row: b.row }))
                         }, 1, false);
                         if (r.success) {
+                          try {
+                            const { deleteDoc: _deleteDoc, doc: _doc } = await import('firebase/firestore');
+                            await Promise.all(
+                              bikesToClear.map(b => 
+                                _deleteDoc(_doc(db, 'mechanics_flow', b.patrimonio)).catch(err => 
+                                  console.warn(`[Firebase] Delete mechanics_flow failed for ${b.patrimonio}:`, err)
+                                )
+                              )
+                            );
+                          } catch (fErr) {
+                            console.warn('[Firebase] Import/Promise delete failed during list clear:', fErr);
+                          }
                           setMechanicsList(prev => prev.filter(b => b.status !== 'Alterar Status' && b.status !== 'Não encontrada'));
                           setSuccessMessage(`${r.cleared} bike(s) removidas da lista.`);
                         } else {
@@ -6334,26 +6372,30 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                   );
 
                   const items = mechanicsList.filter(b => {
-                    const pat = String(b.patrimonio || '').trim().replace(/^0+/, '');
-                    const isPending = bikesInPendingActions.has(pat);
                     return (b.status === 'Alterar Status' || b.status === 'Não encontrada') &&
-                           !isPending &&
                            (!mechanicSearchTerm || String(b.patrimonio || '').includes(mechanicSearchTerm));
                   });
                   return items.length > 0 ? (
                     <div className="space-y-2">
                       {items.map((bike, i) => {
                         const isNotFound = bike.status === 'Não encontrada';
+                        const pat = String(bike.patrimonio || '').trim().replace(/^0+/, '');
+                        const isPending = bikesInPendingActions.has(pat);
                         return (
                           <div key={`mec-alterar-${bike.patrimonio}-${i}`} 
-                            className={`flex justify-between items-center p-3 bg-white border rounded-md shadow-sm ${isNotFound ? 'border-red-400 ring-1 ring-red-400' : ''}`}
+                            className={`flex justify-between items-center p-3 bg-white border rounded-md shadow-sm ${isPending ? 'border-amber-200 bg-amber-50/50' : isNotFound ? 'border-red-400 ring-1 ring-red-400' : ''}`}
                           >
                           <div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 mb-1">
                               <span className={`font-bold ${isNotFound ? 'text-red-600' : 'text-gray-700'}`}>Bike: {bike.patrimonio}</span>
                               {isNotFound && (
                                 <span className="px-1.5 py-0.5 bg-red-100 text-red-700 text-[8px] font-black rounded border border-red-200 animate-pulse">
                                   PENDENTE / NÃO ENCONTRADA
+                                </span>
+                              )}
+                              {isPending && (
+                                <span className="px-1.5 py-0.5 bg-amber-100 text-amber-800 text-[8px] font-black rounded border border-amber-200 uppercase tracking-wider">
+                                  Aguardando ADM
                                 </span>
                               )}
                             </div>
@@ -6366,8 +6408,13 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                             {bike.observacao && <p className="text-[10px] text-orange-600">Motivo: {bike.observacao}</p>}
                             {isNotFound && <p className="text-[10px] text-red-500 italic mt-1">Aguardando localização...</p>}
                           </div>
-                          <div className="flex flex-col gap-2 min-w-[100px]">
-                            {!isNotFound ? (
+                          <div className="flex flex-col gap-2 min-w-[124px]">
+                            {isPending ? (
+                              <div className="text-center bg-amber-50 border border-amber-200 rounded p-1.5">
+                                <p className="text-[9px] font-extrabold text-amber-700 uppercase tracking-wider leading-none">Pendente</p>
+                                <p className="text-[8px] text-amber-600 mt-1 font-semibold leading-tight">Validação do Administrador</p>
+                              </div>
+                            ) : !isNotFound ? (
                               <>
                                 <button
                                   onClick={() => handleAlterarStatus(bike.patrimonio)}
