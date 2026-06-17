@@ -3310,7 +3310,30 @@ function getMechanicsList() {
     if (info.isSystemMaintenance) entry.status = 'Aguardando Manutenção';
   });
 
-  const result = Object.values(bikeMap).filter(b => b.status !== 'Remanejada');
+  const result = Object.values(bikeMap).filter(b => {
+    if (b.status === 'Remanejada') return false;
+
+    const info = bikeInfoMap[b.patrimonio] || {};
+    const statusBicicletasNorm = (info.statusBicicletas || '').toLowerCase();
+    
+    // v85.52: Se a bike no sistema principal está ativa, em estação, estoque, lançada, ou remanejada,
+    // ela já saiu completamente do fluxo de oficina e transporte da mecânica.
+    const isMainSheetExit = /estação|estacao|ativa|lançada|estoque|remanejada/.test(statusBicicletasNorm);
+    
+    // Se ela estiver nessas condições de saída e não houver um reporte inicial recente específico pendente (não está em reportEntries),
+    // ela não deve constar na resposta do getMechanicsList.
+    if (isMainSheetExit && !reportEntries[b.patrimonio]) {
+      return false;
+    }
+
+    // v85.52: Se a bike está como 'Alterar Status' mas na aba Bicicletas já consta como 'Reserva', 
+    // ela não deve retornar para o estado de 'Alterar Status'. Somente novos registros devem ir para lá.
+    if (b.status === 'Alterar Status' && statusBicicletasNorm === 'reserva') {
+      return false;
+    }
+
+    return true;
+  });
   try { cache.put(mechCacheKey, JSON.stringify(result), 5); } catch(e) {}
   return { success: true, data: result };
 }
