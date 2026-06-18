@@ -496,6 +496,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const activeStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
     const validMechanicsStatuses = activeStatuses;
     
+    // Identifica as bikes que estão em validação de carretinha ou alteração de status em lote para ocultá-las da visualização ativa e evitar loopings
+    const bikesInPendingActions = new Set(
+      pendingActions
+        .filter(a => a.type === 'trailer_validation' || a.type === 'alterar_status_lote')
+        .flatMap(a => a.bikes || [])
+        .map(p => String(p).trim().replace(/^0+/, ''))
+    );
+
     // Ordem de precedência de status da mecânica
     const statusOrder: Record<string, number> = {
       'Alterar Status': 1,
@@ -620,8 +628,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
         return { ...bike, ...protectedFields };
       }
       return bike;
-    }).filter(b => validMechanicsStatuses.includes(b.status));
-  }, [mechanicsLiveDetails, isTecnica, driverName]);
+    }).filter(b => {
+      const pat = String(b.patrimonio).trim().replace(/^0+/, '');
+      return validMechanicsStatuses.includes(b.status) && !bikesInPendingActions.has(pat);
+    });
+  }, [mechanicsLiveDetails, isTecnica, driverName, pendingActions]);
 
   useEffect(() => {
     setMechanicsList(mergeMechanicsList(sheetsMechanicsList, fbMechanicsFlow));
