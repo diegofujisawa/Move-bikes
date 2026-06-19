@@ -7,7 +7,7 @@
 // =================================================================
 
 // --- VERSÃO ---
-const BACKEND_VERSION = '85.51-idempotency-fix';
+const BACKEND_VERSION = '85.52-trailer-exit-fix';
 const CUTOFF_MS = new Date('2026-03-24T00:00:00').getTime();
 
 // --- CONFIGURAÇÃO GLOBAL ---
@@ -3213,14 +3213,20 @@ function getMechanicsList() {
 
         if (mechanicsStatus[pat]) continue;
 
-        const exit = lastExitByBike[pat];
-        if (exit && exit.tsMs > (tsMs || 0)) continue;
-
+        // v85.52-fix: status 'Remanejada' tem tratamento e filtro próprios mais abaixo.
+        // Ele NÃO deve passar pelo filtro de lastExitByBike, pois o próprio reporte
+        // "Remanejada (Carretinha)" gerado pelo finalizeTrailer é sempre timestampado
+        // DEPOIS da Data Finalização desta linha, o que fazia essa checagem
+        // excluir a própria linha que acabou de ser finalizada (bug: bike
+        // retornava para "Alterar Status" após ser enviada na carretinha).
         if (status === 'Remanejada') {
           if (tsMs !== null && tsMs < CUTOFF_MS) continue;
           mechanicsStatus[pat] = { row: i + 1, status, tsMs: tsMs || 0, dataEntrada: tsEntRaw, mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1], tratativa, dataFinalizacao: tsFinRaw, carretinha: row[COLUMN_INDICES.MECHANICS.CARRETINHA - 1], manual: false };
           continue;
         }
+
+        const exit = lastExitByBike[pat];
+        if (exit && exit.tsMs > (tsMs || 0)) continue;
         const isActiveStatus = (status === 'Aguardando Manutenção' || status === 'Em Manutenção' || status === 'Reserva' || status === 'Aguardando Técnica' || status === 'Em Técnica');
         if (!isActiveStatus && tsMs !== null && tsMs < CUTOFF_MS) continue;
         if (tsMs === null && !isActiveStatus) continue;
