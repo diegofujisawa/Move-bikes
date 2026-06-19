@@ -249,6 +249,7 @@ function doGet(e) {
     else if (action === 'getDriverLocations') response = { ...getDriverLocations(), version: BACKEND_VERSION };
     else if (action === 'getStations')   response = { ...getStations(), version: BACKEND_VERSION };
     else if (action === 'getMotoristas') response = { ...getMotoristas(), version: BACKEND_VERSION };
+    else if (action === 'getMecanicos')  response = { ...getMecanicos(), version: BACKEND_VERSION };
     else if (action === 'getAlerts')     response = { ...getAlerts(e.parameter.forceScan === 'true'), version: BACKEND_VERSION };
     else if (action === 'getVandalized') response = { ...getVandalized(), version: BACKEND_VERSION };
     else if (action === 'getReporData')  response = { ...getReporData(), version: BACKEND_VERSION };
@@ -314,6 +315,7 @@ function doPost(e) {
       case 'declineRequest':        response = { ...declineRequest(request.requestId, request.driverName), version: BACKEND_VERSION }; break;
       case 'getStations':           response = { ...getStations(), version: BACKEND_VERSION }; break;
       case 'getMotoristas':         response = { ...getMotoristas(), version: BACKEND_VERSION }; break;
+      case 'getMecanicos':          response = { ...getMecanicos(), version: BACKEND_VERSION }; break;
       case 'logReport':             response = { ...logReport(request.rowData, request.kmFinal, request.plate), version: BACKEND_VERSION }; break;
       case 'updateBikeAssignment':  response = { ...updateBikeAssignment(request.bikeNumber, request.driverName), version: BACKEND_VERSION }; break;
       case 'getAllPatrimonioNumbers':response = { ...getAllPatrimonioNumbers(), version: BACKEND_VERSION }; break;
@@ -1348,6 +1350,35 @@ function getMotoristas(providedData) {
     .map(row => row[COLUMN_INDICES.ACCESS.USUARIO - 1]).filter(Boolean);
   if (!providedData && motoristas.length > 0) cache.put(cacheKey, JSON.stringify(motoristas), 600);
   return { success: true, data: motoristas };
+}
+
+function getMecanicos(providedData) {
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'mecanicos_list';
+  if (!providedData) {
+    const cached = cache.get(cacheKey);
+    if (cached) return { success: true, data: JSON.parse(cached) };
+  }
+  let data = providedData;
+  if (!data) {
+    const sheet = getSpreadsheet().getSheetByName(ACCESS_SHEET_NAME);
+    if (!sheet) return { success: true, data: [] };
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { success: true, data: [] };
+    data = sheet.getRange(2, 1, lastRow - 1, COLUMN_INDICES.ACCESS.CATEGORIA).getValues();
+  } else {
+    if (data.length > 0 && (data[0][0] === 'Usuário' || data[0][0] === 'USUARIO')) data = data.slice(1);
+  }
+  const mecanicos = data
+    .filter(row => {
+      const cat = normalizeCategory(row[COLUMN_INDICES.ACCESS.CATEGORIA - 1]);
+      const user = (row[COLUMN_INDICES.ACCESS.USUARIO - 1] || '').toString().trim();
+      const lowerUser = user.toLowerCase();
+      return (cat.includes('MECANICA') || cat.includes('MECANICO')) && !lowerUser.includes('aline') && !lowerUser.includes('diego');
+    })
+    .map(row => row[COLUMN_INDICES.ACCESS.USUARIO - 1]).filter(Boolean);
+  if (!providedData && mecanicos.length > 0) cache.put(cacheKey, JSON.stringify(mecanicos), 600);
+  return { success: true, data: mecanicos };
 }
 
 // =================================================================

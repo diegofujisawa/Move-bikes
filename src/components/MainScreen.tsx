@@ -389,6 +389,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [mechanicHistory, setMechanicHistory] = useState<any[]>([]);
   const [isMechanicHistoryLoading, setIsMechanicHistoryLoading] = useState(false);
   const [mechanicHistoryFilter, setMechanicHistoryFilter] = useState({ mechanic: 'Todos', date: '' });
+  const [dynamicMechanics, setDynamicMechanics] = useState<string[]>(["KAUAN", "JOAO", "FELIPE", "CAIO", "RAFAEL"]);
   const [isTechnicaHistoryOpen, setIsTechnicaHistoryOpen] = useState(false);
   const [technicaHistory, setTechnicaHistory] = useState<any[]>([]);
   const [isTechnicaHistoryLoading, setIsTechnicaHistoryLoading] = useState(false);
@@ -2037,8 +2038,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
   };
 
   const mechanicsNames = useMemo(() => {
-    return Array.from(new Set(mechanicsList.filter(b => b.mecanico).map(b => b.mecanico))).sort();
-  }, [mechanicsList]);
+    const fromList = mechanicsList.filter(b => b.mecanico).map(b => b.mecanico);
+    const activeMechs = dynamicMechanics.length > 0 ? dynamicMechanics : AUTHORIZED_MECHANICS_NORMALIZED;
+    return Array.from(new Set([...activeMechs, ...fromList]))
+      .filter(name => {
+        const uppercase = name.toUpperCase();
+        return uppercase !== 'MECANICA' && uppercase !== 'TODOS' && uppercase !== '—' && uppercase !== '';
+      })
+      .sort();
+  }, [mechanicsList, dynamicMechanics]);
 
   // =================================================================
   // BUSCA
@@ -2260,8 +2268,8 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       .filter(r => {
         if (!r.bikeNumber) return false;
         const nameClean = normalizeForSearch(r.mecanico || '');
-        // O mecânico deve ser um dos 5 autorizados
-        return AUTHORIZED_MECHANICS_NORMALIZED.some(auth => nameClean.includes(auth));
+        const authList = dynamicMechanics.length > 0 ? dynamicMechanics : AUTHORIZED_MECHANICS_NORMALIZED;
+        return authList.some(auth => nameClean.includes(normalizeForSearch(auth)));
       })
       .sort((a: any, b: any) => (b.dataSaida?.toMillis?.() || 0) - (a.dataSaida?.toMillis?.() || 0));
 
@@ -4211,17 +4219,33 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
 
   useEffect(() => { fetchDriversSummary(); }, [fetchDriversSummary]);
 
+  const fetchDynamicMechanics = useCallback(async () => {
+    try {
+      const res = await apiCall({ action: 'getMecanicos' });
+      if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+        const names = res.data.map((m: any) => String(m).trim().toUpperCase()).filter(Boolean);
+        setDynamicMechanics(names);
+      }
+    } catch (err) {
+      console.error('getMecanicos failed:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchDynamicMechanics();
+  }, [fetchDynamicMechanics]);
+
   // =================================================================
   // REFRESH ALL
   //
-  // Aplica dados do Sheets exceto driverState, que só é aplicado
-  // se não houver ação recente do motorista (canSheetsOverride).
+  // ...
   // =================================================================
   const refreshAll = useCallback(async (force = false) => {
     refreshAllRef.current = refreshAll;
     if (!force && (document.visibilityState === 'hidden' || isUpdatingStateRef.current)) return;
 
     setIsSyncing(true);
+    fetchDynamicMechanics().catch(() => {});
     if (isAdm) { setIsSummaryLoading(true); setIsAlertsLoading(true); setIsVandalizedLoading(true); }
 
     const applyData = (d: any) => {
@@ -4488,7 +4512,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       setIsSyncing(false);
       if (isAdm) { setIsSummaryLoading(false); setIsAlertsLoading(false); setIsVandalizedLoading(false); }
     }
-  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate, alertsVersion, canSheetsOverride]);
+  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate, alertsVersion, canSheetsOverride, fetchDynamicMechanics]);
 
   // Busca baterias em tempo real para bikes na mecânica conforme o Firebase atualiza a lista
   useEffect(() => {
@@ -6272,6 +6296,17 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             ? ['Em Técnica', 'Aguardando Técnica']
             : ['Em Manutenção', 'Reserva'];
           const byMechanic: Record<string, {manutencao: number, reserva: number, bikesMan: string[], bikesRes: string[]}> = {};
+          const activeMechs = dynamicMechanics.length > 0 ? dynamicMechanics : AUTHORIZED_MECHANICS_NORMALIZED;
+          
+          if (!isTecnica) {
+            activeMechs.forEach(mName => {
+              const u = mName.toUpperCase();
+              if (u !== 'MECANICA' && u !== 'TODOS' && u !== '—' && u !== '') {
+                byMechanic[mName] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
+              }
+            });
+          }
+
           sourceList.filter(b => activeStatuses.includes(b.status)).forEach(b => {
             // Técnica: usa responsável (técnico que recebeu) para Em Técnica,
             // e mecanico (origem) para Aguardando Técnica
@@ -6279,11 +6314,21 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             const m = isTecnica && isMainStatus
               ? (b.responsavel || b.tecnico || b.mecanico || '—')
               : (b.mecanico || '—');
-            if (!byMechanic[m]) byMechanic[m] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
+            const mUpper = m.toUpperCase();
+            if (mUpper === 'MECANICA' || mUpper === 'TODOS' || mUpper === '—' || mUpper === '') return;
+            
+            // Only count if it belongs to one of our dynamic/fallback mechanics (or isTecnica)
+            const exists = isTecnica || activeMechs.some(auth => auth.toUpperCase() === mUpper);
+            if (!exists) return; // Ignore old/generic names not in active list
+            
+            const matchedKey = activeMechs.find(auth => auth.toUpperCase() === mUpper) || m;
+            if (!byMechanic[matchedKey]) {
+              byMechanic[matchedKey] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
+            }
             const entryDate = b.dataEntrada ? new Date(b.dataEntrada) : null;
             if (!entryDate || entryDate >= cutoff) {
-              if (isMainStatus) { byMechanic[m].manutencao++; byMechanic[m].bikesMan.push(b.patrimonio); }
-              else { byMechanic[m].reserva++; byMechanic[m].bikesRes.push(b.patrimonio); }
+              if (isMainStatus) { byMechanic[matchedKey].manutencao++; byMechanic[matchedKey].bikesMan.push(b.patrimonio); }
+              else { byMechanic[matchedKey].reserva++; byMechanic[matchedKey].bikesRes.push(b.patrimonio); }
             }
           });
           const mechs = Object.entries(byMechanic);
