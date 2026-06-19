@@ -291,6 +291,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [technicaReceiptModal, setTechnicaReceiptModal] = useState<{ bikeNumber: string; originalMechanic: string } | null>(null);
   const [technicaRepairModal, setTechnicaRepairModal] = useState<{ bike: any } | null>(null);
   const [technicaRepairSelected, setTechnicaRepairSelected] = useState<Set<string>>(new Set());
+
+  // Locker Vandalized states
+  const [lockerVandalizedModal, setLockerVandalizedModal] = useState<{ bike: any } | null>(null);
+  const [lockerVandalizedIssue, setLockerVandalizedIssue] = useState<string>('');
+  const [lockerVandalizedBikeCondition, setLockerVandalizedBikeCondition] = useState<'BOA' | 'RUIM' | null>(null);
+  const [lockerVandalizedBikeRoom, setLockerVandalizedBikeRoom] = useState<string>('');
+  const [lockerVandalizedLockerBox, setLockerVandalizedLockerBox] = useState<string>('');
   const TECNICA_TECHNICIANS = ['Diego', 'Jhonatan'];
   const TECNICA_REPAIR_OPTIONS = [
     'CARCAÇA FRONTAL', 'CARCAÇA TRASEIRA', 'TRAVA', 'MOTOR TRAVADO',
@@ -3014,6 +3021,125 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
     } finally { setIsLoading(false); }
   };
 
+  const handleOpenLockerVandalizedModal = (bike: any) => {
+    setLockerVandalizedModal({ bike });
+    setLockerVandalizedIssue('');
+    setLockerVandalizedBikeCondition(null);
+    setLockerVandalizedBikeRoom('');
+    setLockerVandalizedLockerBox('');
+  };
+
+  const handleLockerVandalizedSubmit = async () => {
+    if (!lockerVandalizedModal) return;
+    if (!lockerVandalizedIssue) {
+      alert("Por favor, selecione o problema do locker.");
+      return;
+    }
+    if (!lockerVandalizedBikeCondition) {
+      alert("Por favor, selecione a condição da bike.");
+      return;
+    }
+    if (!lockerVandalizedBikeRoom) {
+      alert("Por favor, selecione o local da bike.");
+      return;
+    }
+    if (!lockerVandalizedLockerBox) {
+      alert("Por favor, selecione o local do locker.");
+      return;
+    }
+
+    const { bike } = lockerVandalizedModal;
+    const bikePat = bike.patrimonio;
+
+    setLockerVandalizedModal(null);
+    setIsLoading(true);
+
+    const fullDefect = `Locker Vandalizado: ${lockerVandalizedIssue}`;
+    const bikeConditionText = lockerVandalizedBikeCondition === 'BOA' ? 'BOA' : 'RUIM';
+    const observation = `Locker: ${lockerVandalizedIssue} (Bike ${bikeConditionText}) | Box: ${lockerVandalizedLockerBox} | Sala: ${lockerVandalizedBikeRoom}`;
+
+    try {
+      // 1. Remove do fluxo da técnica no Firebase
+      try {
+        const { deleteDoc: _deleteDoc } = await import('firebase/firestore');
+        await _deleteDoc(doc(db, 'technical_flow', bikePat));
+      } catch (e) {
+        console.warn('[Firebase] technical_flow delete failed:', e);
+      }
+
+      // 2. Atualiza a bike no Firebase
+      try {
+        await setDoc(doc(db, 'bikes', bikePat), { 
+          status: 'Vandalizada', 
+          responsavel: driverName, 
+          observacao: observation,
+          localFinal: lockerVandalizedBikeRoom,
+          lockerIssue: lockerVandalizedIssue,
+          bikeCondition: bikeConditionText,
+          lockerLocation: lockerVandalizedLockerBox,
+          ultimaAtualizacao: serverTimestamp() 
+        }, { merge: true });
+
+        // Adiciona à coleção 'vandalized'
+        await setDoc(doc(db, 'vandalized', bikePat), {
+          patrimonio: bikePat,
+          data: new Date().toISOString(),
+          defeito: fullDefect,
+          local: lockerVandalizedBikeRoom,
+          status: 'pendente',
+          responsavel: driverName,
+          timestamp: serverTimestamp(),
+          condicaoBike: bikeConditionText,
+          caixaLocker: lockerVandalizedLockerBox
+        });
+
+        // Adiciona ao relatório Firebase
+        try {
+          const bikeDetails = await fetchBikeDetailsForReport(bikePat, 3000);
+          await addDoc(collection(db, 'reports'), {
+            patrimonio: bikePat,
+            status: 'Vandalizada',
+            motorista: driverName,
+            observacao: observation,
+            timestamp: serverTimestamp(),
+            type: 'Técnica',
+            statusSistema: bikeDetails?.['Status'] || bikeDetails?.statusSistema || '',
+            bateria: bikeDetails?.['Bateria'] || bikeDetails?.bateria || '',
+            trava: bikeDetails?.['Trava'] || bikeDetails?.trava || '',
+            localidade: bikeDetails?.['Localidade'] || bikeDetails?.localidade || ''
+          });
+        } catch (e) {
+          console.warn('[Firebase] reports write failed:', e);
+        }
+      } catch (e) {
+        handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikePat}`);
+      }
+
+      // 3. Envia para o Sheets com a observação bem formatada
+      apiCall({ 
+        action: 'markAsVandalizedNoRecovery', 
+        bikeNumber: bikePat, 
+        mechanicName: driverName, 
+        room: lockerVandalizedBikeRoom, 
+        reasons: observation 
+      }).catch(e => {
+        console.error('[Sheets] markAsVandalizedNoRecovery failed:', e);
+        setSyncAlert(`Falha ao registrar locker vandalizado no Sheets. Salvo no Firebase.`);
+      });
+
+      setSuccessMessage(`Bike ${bikePat} marcada como Locker Vandalizado na ${lockerVandalizedBikeRoom}.`);
+      refreshAll(true);
+    } catch (err: any) {
+      setError('Erro: ' + err.message);
+    } finally {
+      setIsLoading(false);
+      setLockerVandalizedIssue('');
+      setLockerVandalizedBikeCondition(null);
+      setLockerVandalizedBikeRoom('');
+      setLockerVandalizedLockerBox('');
+    }
+  };
+
   const handleMarkAsVandalizedNoRecovery = async (bikePat: string, reasons: string, room: string) => {
     setIsLoading(true);
     const observation = [reasons, room ? `Local: ${room}` : ''].filter(Boolean).join(' | ');
@@ -5555,6 +5681,167 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
         </div>
       )}
 
+      {/* Modal - Locker Vandalizado (Técnica) */}
+      {lockerVandalizedModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 animate-fade-in animate-duration-150">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col max-h-[90vh] overflow-hidden animate-scale-in">
+            {/* Header */}
+            <div className="bg-rose-600 p-4 text-white flex-shrink-0 relative">
+              <p className="text-xs font-bold uppercase opacity-80">Locker Vandalizado</p>
+              <h2 className="text-xl font-black">{lockerVandalizedModal.bike.patrimonio ? `Bike ${lockerVandalizedModal.bike.patrimonio}` : 'Locker Vandalizado'}</h2>
+              <button
+                onClick={() => setLockerVandalizedModal(null)}
+                className="absolute top-4 right-4 text-white/80 hover:text-white"
+              >
+                <XIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Form Content */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* Opções de Problema */}
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">
+                  Selecione o Problema do Locker
+                </label>
+                <div className="space-y-1.5">
+                  {['Não liga', 'Em curto', 'Chip sem comunicação', 'Software corrompido'].map(opt => {
+                    const isSelected = lockerVandalizedIssue === opt;
+                    return (
+                      <button
+                        key={opt}
+                        type="button"
+                        onClick={() => setLockerVandalizedIssue(opt)}
+                        className={`w-full text-left px-3.5 py-2.5 rounded-xl border-2 font-bold text-xs transition-all active:scale-95 flex items-center gap-3 ${
+                          isSelected
+                            ? 'bg-rose-50 border-rose-400 text-rose-700'
+                            : 'bg-white border-gray-200 text-gray-600 hover:border-rose-200'
+                        }`}
+                      >
+                        <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 text-[10px] font-black flex items-center justify-center ${
+                          isSelected ? 'bg-rose-500 border-rose-500 text-white' : 'border-gray-300'
+                        }`}>
+                          {isSelected ? '✓' : ''}
+                        </span>
+                        {opt}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Condição da Bike */}
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">
+                  Condição da Bike
+                </label>
+                <div className="flex gap-3 bg-gray-50 rounded-xl p-2 border border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => setLockerVandalizedBikeCondition('BOA')}
+                    className={`flex-1 py-1.5 rounded-lg font-bold text-xs uppercase flex items-center justify-center gap-1.5 border-2 transition-all ${
+                      lockerVandalizedBikeCondition === 'BOA'
+                        ? 'bg-green-100 text-green-700 border-green-400 shadow-sm'
+                        : 'bg-white text-gray-500 border-gray-200 hover:border-green-200'
+                    }`}
+                  >
+                    😊 Boa
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLockerVandalizedBikeCondition('RUIM')}
+                    className={`flex-1 py-1.5 rounded-lg font-bold text-xs uppercase flex items-center justify-center gap-1.5 border-2 transition-all ${
+                      lockerVandalizedBikeCondition === 'RUIM'
+                        ? 'bg-red-100 text-red-700 border-red-400 shadow-sm'
+                        : 'bg-white text-gray-500 border-gray-200 hover:border-red-200'
+                    }`}
+                  >
+                    😔 Ruim
+                  </button>
+                </div>
+              </div>
+
+              {/* Local da Bike */}
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">
+                  Local da Bike
+                </label>
+                <div className="flex gap-2">
+                  {['Sala 2', 'Sala 3', 'Sala 4'].map(room => {
+                    const isSelected = lockerVandalizedBikeRoom === room;
+                    return (
+                      <button
+                        key={room}
+                        type="button"
+                        onClick={() => setLockerVandalizedBikeRoom(room)}
+                        className={`flex-1 py-1.5 rounded-lg font-black text-xs uppercase border-2 transition-all text-center ${
+                          isSelected
+                            ? 'bg-blue-100 border-blue-400 text-blue-700 shadow-sm'
+                            : 'bg-white border-gray-200 text-gray-500 hover:border-blue-200'
+                        }`}
+                      >
+                        {room}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Local do Locker */}
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">
+                  Local do Locker
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {['Caixa 1', 'Caixa 2', 'Caixa 3', 'Caixa 4', 'Caixa 5', 'Caixa 6', 'Caixa 7', 'Caixa 8', 'Caixa 9'].map(box => {
+                    const isSelected = lockerVandalizedLockerBox === box;
+                    return (
+                      <button
+                        key={box}
+                        type="button"
+                        onClick={() => setLockerVandalizedLockerBox(box)}
+                        className={`py-1.5 rounded-lg font-bold text-xs border-1.5 transition-all text-center ${
+                          isSelected
+                            ? 'bg-purple-100 border-purple-400 text-purple-700 shadow-sm'
+                            : 'bg-white border-gray-200 text-gray-500 hover:border-purple-250'
+                        }`}
+                      >
+                        {box}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t flex-shrink-0 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setLockerVandalizedModal(null)}
+                className="flex-1 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase hover:bg-gray-200"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleLockerVandalizedSubmit}
+                disabled={
+                  !lockerVandalizedIssue ||
+                  !lockerVandalizedBikeCondition ||
+                  !lockerVandalizedBikeRoom ||
+                  !lockerVandalizedLockerBox ||
+                  isLoading
+                }
+                className="flex-1 py-2.5 bg-rose-600 text-white rounded-xl font-bold text-xs uppercase shadow-lg hover:bg-rose-700 active:scale-95 disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none transition-all"
+              >
+                Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal Confirmação — Remover bike da carretinha */}
       {removeFromTrailerConfirm && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
@@ -6986,13 +7273,22 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
                           {bike.dataEntrada && <p className="text-[10px] text-gray-400">{new Date(bike.dataEntrada).toLocaleString('pt-BR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</p>}
                           {bike.tratativa && bike.tratativa !== 'MANUAL' && <p className="text-[10px] text-gray-500 italic">Obs: {bike.tratativa}</p>}
                         </div>
-                        <button
-                          onClick={() => handleFinalizeTechnicaRepair(bike)}
-                          disabled={isLoading}
-                          className="px-3 py-1.5 bg-orange-600 text-white text-xs font-bold rounded hover:bg-orange-700 active:scale-95 disabled:bg-gray-400 transition-colors"
-                        >
-                          Finalizar Reparo
-                        </button>
+                        <div className="flex flex-col gap-2 shrink-0">
+                          <button
+                            onClick={() => handleFinalizeTechnicaRepair(bike)}
+                            disabled={isLoading}
+                            className="px-3 py-1.5 bg-orange-600 text-white text-xs font-bold rounded hover:bg-orange-700 active:scale-95 disabled:bg-gray-400 transition-colors w-full text-center"
+                          >
+                            Finalizar Reparo
+                          </button>
+                          <button
+                            onClick={() => handleOpenLockerVandalizedModal(bike)}
+                            disabled={isLoading}
+                            className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded active:scale-95 disabled:bg-gray-400 transition-colors w-full text-center"
+                          >
+                            Locker Vandalizado
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>

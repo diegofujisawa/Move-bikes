@@ -3685,7 +3685,7 @@ function markAsVandalizedNoRecovery(bikeNumber, mechanicName, room, reasons) {
       const row = i + 1;
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.STATUS).setValue('Vandalizada');
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
-      sheet.getRange(row, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue('VANDALIZADA');
+      sheet.getRange(row, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue(reasons || 'VANDALIZADA');
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO).setValue(new Date());
       sheet.getRange(row, COLUMN_INDICES.MECHANICS.CARRETINHA).setValue(room);
       found = true;
