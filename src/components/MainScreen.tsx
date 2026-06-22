@@ -4537,10 +4537,16 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RA
       const fetchTrailersHistory = async () => {
         try {
           const today = localDateStr();
-          const { getDocs: _gd, query: _q, where: _w, collection: _col, orderBy: _ob } = await import('firebase/firestore');
-          const q = _q(_col(db, 'trailers_history'), _w('date', '==', today), _ob('timestamp', 'desc'));
+          const { getDocs: _gd, query: _q, where: _w, collection: _col } = await import('firebase/firestore');
+          const q = _q(_col(db, 'trailers_history'), _w('date', '==', today));
           const snap = await _gd(q);
-          setTrailersHistory(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          list.sort((a: any, b: any) => {
+            const tA = a.timestamp?.toMillis ? a.timestamp.toMillis() : (a.timestamp instanceof Date ? a.timestamp.getTime() : (typeof a.timestamp === 'number' ? a.timestamp : 0));
+            const tB = b.timestamp?.toMillis ? b.timestamp.toMillis() : (b.timestamp instanceof Date ? b.timestamp.getTime() : (typeof b.timestamp === 'number' ? b.timestamp : 0));
+            return tB - tA;
+          });
+          setTrailersHistory(list);
         } catch (err) {
           console.error('Erro ao buscar histórico de carretinhas:', err);
         }
