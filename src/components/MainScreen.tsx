@@ -389,7 +389,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [mechanicHistory, setMechanicHistory] = useState<any[]>([]);
   const [isMechanicHistoryLoading, setIsMechanicHistoryLoading] = useState(false);
   const [mechanicHistoryFilter, setMechanicHistoryFilter] = useState({ mechanic: 'Todos', date: '' });
-  const [dynamicMechanics, setDynamicMechanics] = useState<string[]>(["KAUAN", "JOAO", "FELIPE", "CAIO", "RAFAEL"]);
+  const [dynamicMechanics, setDynamicMechanics] = useState<string[]>(["KAUAN", "JOAO", "FELIPE", "ANDRE", "RAFAEL"]);
   const [isTechnicaHistoryOpen, setIsTechnicaHistoryOpen] = useState(false);
   const [technicaHistory, setTechnicaHistory] = useState<any[]>([]);
   const [isTechnicaHistoryLoading, setIsTechnicaHistoryLoading] = useState(false);
@@ -576,6 +576,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : (sBike.bateria !== undefined ? sBike.bateria : fbBike.bateria),
             carregamento: live?.['Carregando'] !== undefined ? live['Carregando'] : (sBike.carregamento !== undefined ? sBike.carregamento : fbBike.carregamento),
             dataEntrada: fbBike.dataEntrada?.toDate?.() || fbBike.dataEntrada || new Date(),
+            dataSaida: fbBike.dataSaida?.toDate?.() || fbBike.dataSaida || null,
           });
         } 
         // Prioridade 2: Se o status do Firebase NÃO for ativo ou se for a exceção de Manutenção/Servidor mais recente
@@ -600,6 +601,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : fbBike.bateria,
           carregamento: live?.['Carregando'] !== undefined ? live['Carregando'] : fbBike.carregamento,
           dataEntrada: fbBike.dataEntrada?.toDate?.() || fbBike.dataEntrada || new Date(),
+          dataSaida: fbBike.dataSaida?.toDate?.() || fbBike.dataSaida || null,
         });
       }
     });
@@ -2220,7 +2222,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
-const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAFAEL"];
+const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RAFAEL"];
 
   const fetchMechanicHistory = async () => {
     setIsMechanicHistoryLoading(true);
@@ -2268,7 +2270,11 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
       .filter(r => {
         if (!r.bikeNumber) return false;
         const nameClean = normalizeForSearch(r.mecanico || '');
-        const authList = dynamicMechanics.length > 0 ? dynamicMechanics : AUTHORIZED_MECHANICS_NORMALIZED;
+        const authList = Array.from(new Set([...AUTHORIZED_MECHANICS_NORMALIZED, ...dynamicMechanics]))
+          .filter(name => {
+            const u = name.toUpperCase();
+            return u !== 'MECANICA' && u !== 'TODOS' && u !== '—' && u !== '';
+          });
         return authList.some(auth => nameClean.includes(normalizeForSearch(auth)));
       })
       .sort((a: any, b: any) => (b.dataSaida?.toMillis?.() || 0) - (a.dataSaida?.toMillis?.() || 0));
@@ -6296,16 +6302,21 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             ? ['Em Técnica', 'Aguardando Técnica']
             : ['Em Manutenção', 'Reserva'];
           const byMechanic: Record<string, {manutencao: number, reserva: number, bikesMan: string[], bikesRes: string[]}> = {};
-          const activeMechs = dynamicMechanics.length > 0 ? dynamicMechanics : AUTHORIZED_MECHANICS_NORMALIZED;
           
-          if (!isTecnica) {
-            activeMechs.forEach(mName => {
-              const u = mName.toUpperCase();
-              if (u !== 'MECANICA' && u !== 'TODOS' && u !== '—' && u !== '') {
-                byMechanic[mName] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
-              }
-            });
-          }
+          const activeMechs = !isTecnica
+            ? Array.from(new Set([...AUTHORIZED_MECHANICS_NORMALIZED, ...dynamicMechanics]))
+                .filter(name => {
+                  const u = name.toUpperCase();
+                  return u !== 'MECANICA' && u !== 'TODOS' && u !== '—' && u !== '';
+                })
+            : dynamicMechanics;
+          
+          activeMechs.forEach(mName => {
+            const u = mName.toUpperCase();
+            if (u !== 'MECANICA' && u !== 'TODOS' && u !== '—' && u !== '') {
+              byMechanic[mName] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
+            }
+          });
 
           sourceList.filter(b => activeStatuses.includes(b.status)).forEach(b => {
             // Técnica: usa responsável (técnico que recebeu) para Em Técnica,
@@ -6325,10 +6336,28 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
             if (!byMechanic[matchedKey]) {
               byMechanic[matchedKey] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
             }
-            const entryDate = b.dataEntrada ? new Date(b.dataEntrada) : null;
+            
+            const targetDateRaw = isMainStatus ? b.dataEntrada : (b.dataSaida || b.dataEntrada);
+            let entryDate = null;
+            if (targetDateRaw) {
+              if (targetDateRaw.toDate) {
+                entryDate = targetDateRaw.toDate();
+              } else {
+                const parsed = new Date(targetDateRaw);
+                if (!isNaN(parsed.getTime())) {
+                  entryDate = parsed;
+                }
+              }
+            }
+            
             if (!entryDate || entryDate >= cutoff) {
-              if (isMainStatus) { byMechanic[matchedKey].manutencao++; byMechanic[matchedKey].bikesMan.push(b.patrimonio); }
-              else { byMechanic[matchedKey].reserva++; byMechanic[matchedKey].bikesRes.push(b.patrimonio); }
+              if (isMainStatus) { 
+                byMechanic[matchedKey].manutencao++; 
+                byMechanic[matchedKey].bikesMan.push(b.patrimonio); 
+              } else { 
+                byMechanic[matchedKey].reserva++; 
+                byMechanic[matchedKey].bikesRes.push(b.patrimonio); 
+              }
             }
           });
           const mechs = Object.entries(byMechanic);
@@ -9410,26 +9439,40 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "CAIO", "RAF
               </div>
 
               {/* Lista */}
-              <div className="flex-1 overflow-y-auto p-3">
+              <div className="flex-1 overflow-y-auto p-3 flex flex-col">
                 {isMechanicHistoryLoading ? (
                   <div className="text-center py-10 text-gray-400 text-sm">Carregando...</div>
                 ) : filtered.length === 0 ? (
                   <div className="text-center py-10 text-gray-400 text-sm italic">Nenhum registro encontrado.</div>
                 ) : (
-                  <div className="space-y-1">
-                    {filtered.map((r, i) => (
-                      <div key={r.id || i} className="flex items-center gap-1.5 px-2 py-1.5 bg-white border border-gray-100 rounded-lg text-[10px]">
-                        <span className="font-black text-gray-800 font-mono w-9 flex-shrink-0">{r.bikeNumber}</span>
-                        <span className="text-blue-600 font-bold w-14 truncate flex-shrink-0" title={r.mecanico}>{r.mecanico}</span>
-                        <span className="text-gray-500 flex-1 truncate min-w-0" title={r.treatment || '—'}>{r.treatment || '—'}</span>
-                        {r.trailerName && (
-                          <span className="text-purple-600 font-bold flex-shrink-0 bg-purple-50 px-1 rounded text-[9px] whitespace-nowrap">{r.trailerName}</span>
-                        )}
-                        <span className="text-orange-500 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataEntrada)}</span>
-                        <span className="text-gray-300 flex-shrink-0">→</span>
-                        <span className="text-green-600 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataSaida)}</span>
-                      </div>
-                    ))}
+                  <div className="space-y-1 flex-1">
+                    {/* Cabeçalho da Tabela */}
+                    <div className="flex items-center gap-1.5 px-3 py-1 bg-gray-100 rounded-lg text-[9px] font-black text-gray-400 uppercase tracking-wider mb-1 flex-shrink-0">
+                      <span className="w-12 flex-shrink-0">Patrimônio</span>
+                      <span className="w-20 flex-shrink-0">Mecânico</span>
+                      <span className="flex-1 min-w-0">Reparo Realizado</span>
+                      <span className="w-22 flex-shrink-0 text-center">Entrada</span>
+                      <span className="w-4 flex-shrink-0"></span>
+                      <span className="w-22 flex-shrink-0 text-center">Saída</span>
+                    </div>
+
+                    <div className="space-y-1 overflow-y-auto">
+                      {filtered.map((r, i) => (
+                        <div key={r.id || i} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-100 rounded-lg text-[10px] hover:bg-gray-50/50">
+                          <span className="font-black text-gray-800 font-mono w-12 flex-shrink-0">{r.bikeNumber}</span>
+                          <span className="text-blue-600 font-bold w-20 truncate flex-shrink-0" title={r.mecanico}>{r.mecanico}</span>
+                          <div className="flex-1 min-w-0 flex items-center gap-1">
+                            <span className="text-gray-600 truncate" title={r.treatment || '—'}>{r.treatment || '—'}</span>
+                            {r.trailerName && (
+                              <span className="text-purple-600 font-bold flex-shrink-0 bg-purple-50 px-1 rounded text-[8px] whitespace-nowrap">{r.trailerName}</span>
+                            )}
+                          </div>
+                          <span className="text-orange-500 font-mono w-22 flex-shrink-0 text-center whitespace-nowrap">{fmt(r.dataEntrada)}</span>
+                          <span className="text-gray-300 w-4 flex-shrink-0 text-center flex-shrink-0">→</span>
+                          <span className="text-green-600 font-mono w-22 flex-shrink-0 text-center whitespace-nowrap">{fmt(r.dataSaida)}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
