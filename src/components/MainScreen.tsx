@@ -7999,7 +7999,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RA
                     <div className="flex justify-between items-center mb-2 border-b pb-1">
                       <h3 className="font-black text-gray-900 text-sm uppercase">Visão Geral</h3>
                     </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 mb-3.5">
                       {[
                         { 
                           l: 'Status', 
@@ -8016,6 +8016,81 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RA
                         </div>
                       ))}
                     </div>
+
+                    {/* Detalhes de Bateria e Carregamento */}
+                    {(() => {
+                      const activeWorkshopBikes = mechanicsList.filter(b => 
+                        b.status === 'Aguardando Manutenção' || 
+                        b.status === 'Em Manutenção' || 
+                        b.status === 'Alterar Status'
+                      );
+                      return (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-gray-100">
+                          {/* Bateria: 100%, 95%, 90% */}
+                          <div>
+                            <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1.5 flex items-center gap-1">
+                              🔋 Nível de Bateria
+                            </p>
+                            <div className="grid grid-cols-3 gap-1.5">
+                              {[
+                                { 
+                                  pct: '100%', 
+                                  v: activeWorkshopBikes.filter(b => formatBattery(b.bateria) === 100).length, 
+                                  bg: 'bg-emerald-50/60 border-emerald-100 text-emerald-800' 
+                                },
+                                { 
+                                  pct: '95%', 
+                                  v: activeWorkshopBikes.filter(b => formatBattery(b.bateria) === 95).length, 
+                                  bg: 'bg-teal-50/60 border-teal-100 text-teal-800' 
+                                },
+                                { 
+                                  pct: '90%', 
+                                  v: activeWorkshopBikes.filter(b => formatBattery(b.bateria) === 90).length, 
+                                  bg: 'bg-sky-50/60 border-sky-100 text-sky-800' 
+                                }
+                              ].map(item => (
+                                <div key={item.pct} className={`p-1.5 border rounded-lg text-center ${item.bg}`}>
+                                  <p className="text-[8px] font-black uppercase leading-tight mb-0.5">{item.pct}</p>
+                                  <p className="text-sm font-black">{item.v}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Carregamento: Carregando e Não Carregando */}
+                          <div>
+                            <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1.5 flex items-center gap-1">
+                              🔌 Estado de Carregamento
+                            </p>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {[
+                                { 
+                                  l: '⚡ Carregando', 
+                                  v: activeWorkshopBikes.filter(b => {
+                                    const s = String(b.carregamento || '').trim().toUpperCase();
+                                    return (s === 'CARREGANDO' || s.includes('CARREGANDO')) && !s.includes('NÃO') && !s.includes('NAO');
+                                  }).length,
+                                  bg: 'bg-green-50/60 border-green-100 text-green-800' 
+                                },
+                                { 
+                                  l: '🔌 Não Carregando', 
+                                  v: activeWorkshopBikes.filter(b => {
+                                    const s = String(b.carregamento || '').trim().toUpperCase();
+                                    return s === 'NÃO CARREGANDO' || s === 'NAO CARREGANDO' || s.includes('NAO') || s.includes('NÃO');
+                                  }).length,
+                                  bg: 'bg-rose-50/60 border-rose-100 text-rose-800' 
+                                }
+                              ].map(item => (
+                                <div key={item.l} className={`p-1.5 border rounded-lg text-center ${item.bg}`}>
+                                  <p className="text-[8px] font-black uppercase leading-tight mb-0.5">{item.l}</p>
+                                  <p className="text-sm font-black">{item.v}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Carretinhas — ativas e aguardando aceite */}
