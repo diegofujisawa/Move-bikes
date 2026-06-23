@@ -2301,7 +2301,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RA
       const reparos: Record<string, any> = {};
       snapMec.docs.forEach(d => {
         const rec = d.data();
-        const pat = String(rec.bikeNumber);
+        const pat = String(rec.patrimonio || rec.bikeNumber || '');
         const ts = rec.timestamp?.toMillis?.() || 0;
         if (!reparos[pat] || ts > (reparos[pat].timestamp?.toMillis?.() || 0)) {
           reparos[pat] = rec;
@@ -2311,32 +2311,76 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RA
       // Monta histórico a partir dos registros Técnica de saída (Devolvida)
       const devolvidas = snapTec.docs
         .map(d => ({ id: d.id, ...d.data() } as any))
-        .filter(r => (r.status || '').includes('Devolvida') || (r.observation || '').includes('finalizada'));
+        .filter(r => (r.status || '').includes('Devolvida') || (r.observacao || '').includes('finalizada') || (r.observation || '').includes('finalizada'));
 
       // Para cada devolução, busca a entrada (Recebida)
       const entradas: Record<string, any[]> = {};
       snapTec.docs.forEach(d => {
         const rec = d.data();
-        if ((rec.status || '').includes('Em Técnica') || (rec.observation || '').includes('Recebida')) {
-          const pat = String(rec.bikeNumber);
+        if ((rec.status || '').includes('Em Técnica') || (rec.observacao || '').includes('Recebida') || (rec.observation || '').includes('Recebida')) {
+          const pat = String(rec.patrimonio || rec.bikeNumber || '');
           if (!entradas[pat]) entradas[pat] = [];
           entradas[pat].push(rec);
         }
       });
 
       const records = devolvidas.map(rec => {
-        const pat = String(rec.bikeNumber);
+        const pat = String(rec.patrimonio || rec.bikeNumber || '');
         const tsOut = rec.timestamp?.toMillis?.() || 0;
         const entrada = (entradas[pat] || [])
           .filter(e => (e.timestamp?.toMillis?.() || 0) <= tsOut)
           .sort((a: any, b: any) => (b.timestamp?.toMillis?.() || 0) - (a.timestamp?.toMillis?.() || 0))[0];
+
+        // Parser robusto de observacao para extrair reparos e mecânico original
+        let treatment = '—';
+        let originalMechanic = '—';
+        const obs = rec.observacao || rec.observation || '';
+        if (obs) {
+          const dashIndex = obs.indexOf(' — ');
+          const devIndex = obs.indexOf('. Devolvida para ');
+          if (dashIndex !== -1 && devIndex !== -1) {
+            treatment = obs.substring(dashIndex + 3, devIndex).trim();
+            originalMechanic = obs.substring(devIndex + 17).trim();
+          } else if (dashIndex !== -1) {
+            treatment = obs.substring(dashIndex + 3).trim();
+          } else {
+            treatment = obs;
+          }
+        }
+
+        let techName = rec.motorista || rec.mecanico || rec.driverName || '';
+        if ((!techName || techName.toUpperCase() === 'TECNICA' || techName.toUpperCase() === 'TECNICO') && entrada) {
+          techName = entrada.motorista || entrada.mecanico || entrada.driverName || '';
+        }
+        if (!techName || techName.toUpperCase() === 'TECNICA' || techName.toUpperCase() === 'TECNICO') {
+          const obs = rec.observacao || rec.observation || '';
+          if (/finalizada por Diego/i.test(obs)) {
+            techName = 'Diego';
+          } else if (/finalizada por Jhonatan/i.test(obs)) {
+            techName = 'Jhonatan';
+          } else if (entrada) {
+            const entObs = entrada.observacao || entrada.observation || '';
+            if (/Recebida pela Técnica — Diego/i.test(entObs)) {
+              techName = 'Diego';
+            } else if (/Recebida pela Técnica — Jhonatan/i.test(entObs)) {
+              techName = 'Jhonatan';
+            }
+          }
+        }
+        if (techName.toUpperCase() === 'DIEGO') techName = 'Diego';
+        if (techName.toUpperCase() === 'JHONATAN') techName = 'Jhonatan';
+        if (!techName || techName.toUpperCase() === 'TECNICA' || techName.toUpperCase() === 'TECNICO') {
+          techName = '—';
+        }
+
         return {
           ...rec,
-          tecnico: rec.mecanico || rec.driverName || '—',
+          bikeNumber: pat,
+          tecnico: techName,
           dataEntrada: entrada?.timestamp || null,
           dataSaida: rec.timestamp,
-          treatment: rec.treatment || '—',
-          originalMechanic: rec.originalMechanic || '—',
+          treatment: treatment || '—',
+          originalMechanic: originalMechanic || '—',
         };
       }).sort((a: any, b: any) => (b.dataSaida?.toMillis?.() || 0) - (a.dataSaida?.toMillis?.() || 0));
 
@@ -3012,11 +3056,12 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RA
       (async () => {
         try {
           const bikeDetails = await fetchBikeDetailsForReport(bikeNumber, 3000);
+          const techName = bike.tecnico || driverName;
           await addDoc(collection(db, 'reports'), {
             patrimonio: bikeNumber,
             status: 'Devolvida da Técnica',
-            motorista: driverName,
-            observacao: `Técnica finalizada por ${driverName} — ${treatment}. Devolvida para ${originalMechanic || 'Aguardando Manutenção'}`,
+            motorista: techName,
+            observacao: `Técnica finalizada por ${techName} — ${treatment}. Devolvida para ${originalMechanic || 'Aguardando Manutenção'}`,
             timestamp: serverTimestamp(),
             type: 'Técnica',
             statusSistema: bikeDetails?.['Status'] || bikeDetails?.statusSistema || '',
@@ -9420,17 +9465,30 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RA
                   <div className="text-center py-10 text-gray-400 text-sm italic">Nenhum registro encontrado.</div>
                 ) : (
                   <div className="space-y-1">
+                    {/* Header de tabela */}
+                    <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-100 rounded-lg text-[9px] font-black text-gray-400 uppercase tracking-wider mb-1 flex-shrink-0">
+                      <span className="w-12 flex-shrink-0">Bike</span>
+                      <span className="w-16 flex-shrink-0">Técnico</span>
+                      <span className="flex-1 min-w-0">Reparo Realizado</span>
+                      <span className="w-20 flex-shrink-0 text-center">Entrada</span>
+                      <span className="w-4 flex-shrink-0 text-center"></span>
+                      <span className="w-20 flex-shrink-0 text-center">Saída</span>
+                    </div>
                     {filtered.map((r, i) => (
                       <div key={r.id || i} className="flex items-center gap-1.5 px-2 py-1.5 bg-white border border-gray-100 rounded-lg text-[10px]">
-                        <span className="font-black text-gray-800 font-mono w-9 flex-shrink-0">{r.bikeNumber}</span>
-                        <span className="text-blue-700 font-bold w-14 truncate flex-shrink-0" title={r.tecnico}>{r.tecnico}</span>
-                        <span className="text-gray-500 flex-1 truncate min-w-0" title={r.treatment}>{r.treatment}</span>
-                        {r.originalMechanic && r.originalMechanic !== '—' && (
-                          <span className="text-orange-500 font-bold flex-shrink-0 text-[9px] whitespace-nowrap">→ {r.originalMechanic}</span>
-                        )}
-                        <span className="text-orange-500 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataEntrada)}</span>
-                        <span className="text-gray-300 flex-shrink-0">→</span>
-                        <span className="text-green-600 font-mono flex-shrink-0 whitespace-nowrap">{fmt(r.dataSaida)}</span>
+                        <span className="font-black text-gray-800 font-mono w-12 flex-shrink-0">{r.bikeNumber}</span>
+                        <span className="text-blue-700 font-bold w-16 truncate flex-shrink-0" title={r.tecnico}>{r.tecnico}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-gray-500 truncate" title={r.treatment}>{r.treatment}</p>
+                          {r.originalMechanic && r.originalMechanic !== '—' && (
+                            <p className="text-orange-500 font-bold text-[8px] truncate" title={`Devolvida para ${r.originalMechanic}`}>
+                              → Devolvida para {r.originalMechanic}
+                            </p>
+                          )}
+                        </div>
+                        <span className="text-orange-500 font-mono flex-shrink-0 w-20 text-center">{fmt(r.dataEntrada)}</span>
+                        <span className="text-gray-300 flex-shrink-0 w-4 text-center">→</span>
+                        <span className="text-green-600 font-mono flex-shrink-0 w-20 text-center">{fmt(r.dataSaida)}</span>
                       </div>
                     ))}
                   </div>
