@@ -2278,10 +2278,25 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
         const obs = rec.observacao || rec.tratativa || '—';
         const treatment = obs.includes(' — ') ? obs.split(' — ')[1] : obs;
 
+        const rawMecanico = rec.mecanico || rec.motorista || rec.driverName || '—';
+        let mecanicoName = String(rawMecanico).trim();
+        const mNorm = normalizeForSearch(mecanicoName);
+        
+        const foundDynamic = dynamicMechanics.find(name => normalizeForSearch(name) === mNorm);
+        if (foundDynamic) {
+          mecanicoName = foundDynamic;
+        } else {
+          if (mNorm === 'JOAO') mecanicoName = 'João';
+          else if (mNorm === 'ANDRE') mecanicoName = 'André';
+          else if (mNorm === 'KAUAN') mecanicoName = 'Kauan';
+          else if (mNorm === 'FELIPE') mecanicoName = 'Felipe';
+          else if (mNorm === 'RAFAEL') mecanicoName = 'Rafael';
+        }
+
         return {
           ...rec,
           bikeNumber: pat,
-          mecanico: rec.mecanico || rec.motorista || rec.driverName || '—',
+          mecanico: mecanicoName,
           treatment: treatment,
           dataEntrada: entrada?.dataEntrada || entrada?.timestamp || null,
           dataSaida: rec.timestamp,
@@ -2290,12 +2305,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
       .filter(r => {
         if (!r.bikeNumber) return false;
         const nameClean = normalizeForSearch(r.mecanico || '');
-        const authList = Array.from(new Set([...AUTHORIZED_MECHANICS_NORMALIZED, ...dynamicMechanics]))
-          .filter(name => {
-            const u = name.toUpperCase();
-            return u !== 'MECANICA' && u !== 'TODOS' && u !== '—' && u !== '';
-          });
-        return authList.some(auth => nameClean.includes(normalizeForSearch(auth)));
+        return nameClean !== 'MECANICA' && nameClean !== 'TODOS' && nameClean !== '—' && nameClean !== '';
       })
       .sort((a: any, b: any) => (b.dataSaida?.toMillis?.() || 0) - (a.dataSaida?.toMillis?.() || 0));
 
