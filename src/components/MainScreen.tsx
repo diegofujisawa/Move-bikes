@@ -389,7 +389,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [mechanicHistory, setMechanicHistory] = useState<any[]>([]);
   const [isMechanicHistoryLoading, setIsMechanicHistoryLoading] = useState(false);
   const [mechanicHistoryFilter, setMechanicHistoryFilter] = useState({ mechanic: 'Todos', date: '' });
-  const [dynamicMechanics, setDynamicMechanics] = useState<string[]>(["KAUAN", "JOAO", "FELIPE", "ANDRE", "RAFAEL"]);
+  const [dynamicMechanics, setDynamicMechanics] = useState<string[]>(["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "RAFAEL"]);
   const [isTechnicaHistoryOpen, setIsTechnicaHistoryOpen] = useState(false);
   const [technicaHistory, setTechnicaHistory] = useState<any[]>([]);
   const [isTechnicaHistoryLoading, setIsTechnicaHistoryLoading] = useState(false);
@@ -2042,7 +2042,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const mechanicsNames = useMemo(() => {
     const fromList = mechanicsList.filter(b => b.mecanico).map(b => b.mecanico);
     const activeMechs = dynamicMechanics.length > 0 ? dynamicMechanics : AUTHORIZED_MECHANICS_NORMALIZED;
-    return Array.from(new Set([...activeMechs, ...fromList]))
+    
+    const normalizedSeen = new Set<string>();
+    const result: string[] = [];
+    
+    activeMechs.forEach(m => {
+      const norm = normalizeForSearch(m);
+      if (norm && !normalizedSeen.has(norm)) {
+        normalizedSeen.add(norm);
+        result.push(m);
+      }
+    });
+    
+    fromList.forEach(m => {
+      const norm = normalizeForSearch(m);
+      if (norm && !normalizedSeen.has(norm)) {
+        normalizedSeen.add(norm);
+        result.push(m);
+      }
+    });
+
+    return result
       .filter(name => {
         const uppercase = name.toUpperCase();
         return uppercase !== 'MECANICA' && uppercase !== 'TODOS' && uppercase !== '—' && uppercase !== '';
@@ -2222,7 +2242,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
-const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RAFAEL"];
+const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "RAFAEL"];
 
   const fetchMechanicHistory = async () => {
     setIsMechanicHistoryLoading(true);
@@ -6354,19 +6374,22 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RA
             : ['Em Manutenção', 'Reserva'];
           const byMechanic: Record<string, {manutencao: number, reserva: number, bikesMan: string[], bikesRes: string[]}> = {};
           
-          const activeMechs = !isTecnica
-            ? Array.from(new Set([...AUTHORIZED_MECHANICS_NORMALIZED, ...dynamicMechanics]))
-                .filter(name => {
-                  const u = name.toUpperCase();
-                  return u !== 'MECANICA' && u !== 'TODOS' && u !== '—' && u !== '';
-                })
-            : dynamicMechanics;
+          const rawMechs = !isTecnica
+            ? [...AUTHORIZED_MECHANICS_NORMALIZED, ...dynamicMechanics]
+            : TECNICA_TECHNICIANS;
+          
+          const seenNorm = new Set<string>();
+          const activeMechs: string[] = [];
+          rawMechs.forEach(name => {
+            const norm = normalizeForSearch(name);
+            if (norm && norm !== 'MECANICA' && norm !== 'TODOS' && norm !== '—' && !seenNorm.has(norm)) {
+              seenNorm.add(norm);
+              activeMechs.push(name);
+            }
+          });
           
           activeMechs.forEach(mName => {
-            const u = mName.toUpperCase();
-            if (u !== 'MECANICA' && u !== 'TODOS' && u !== '—' && u !== '') {
-              byMechanic[mName] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
-            }
+            byMechanic[mName] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
           });
 
           sourceList.filter(b => activeStatuses.includes(b.status)).forEach(b => {
@@ -6376,14 +6399,14 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOAO", "FELIPE", "ANDRE", "RA
             const m = isTecnica && isMainStatus
               ? (b.responsavel || b.tecnico || b.mecanico || '—')
               : (b.mecanico || '—');
-            const mUpper = m.toUpperCase();
-            if (mUpper === 'MECANICA' || mUpper === 'TODOS' || mUpper === '—' || mUpper === '') return;
+            const mNorm = normalizeForSearch(m);
+            if (mNorm === 'MECANICA' || mNorm === 'TODOS' || mNorm === '—' || mNorm === '') return;
             
-            // Only count if it belongs to one of our dynamic/fallback mechanics (or isTecnica)
-            const exists = isTecnica || activeMechs.some(auth => auth.toUpperCase() === mUpper);
+            // Only count if it belongs to one of our dynamic/fallback mechanics or technicians (accent-insensitive)
+            const exists = activeMechs.some(auth => normalizeForSearch(auth) === mNorm);
             if (!exists) return; // Ignore old/generic names not in active list
             
-            const matchedKey = activeMechs.find(auth => auth.toUpperCase() === mUpper) || m;
+            const matchedKey = activeMechs.find(auth => normalizeForSearch(auth) === mNorm) || m;
             if (!byMechanic[matchedKey]) {
               byMechanic[matchedKey] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
             }
