@@ -4304,7 +4304,10 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
     try {
       const res = await apiCall({ action: 'getMecanicos' });
       if (res.success && Array.isArray(res.data) && res.data.length > 0) {
-        const names = res.data.map((m: any) => String(m).trim().toUpperCase()).filter(Boolean);
+        const names = res.data
+          .map((m: any) => String(m).trim().toUpperCase())
+          .filter(Boolean)
+          .filter((name: string) => name !== 'CAIO');
         setDynamicMechanics(names);
       }
     } catch (err) {
@@ -6384,9 +6387,12 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
             : ['Em Manutenção', 'Reserva'];
           const byMechanic: Record<string, {manutencao: number, reserva: number, bikesMan: string[], bikesRes: string[]}> = {};
           
-          const rawMechs = !isTecnica
+          const rawMechs = (!isTecnica
             ? [...AUTHORIZED_MECHANICS_NORMALIZED, ...dynamicMechanics]
-            : TECNICA_TECHNICIANS;
+            : TECNICA_TECHNICIANS).filter(name => {
+              const norm = normalizeForSearch(name);
+              return norm !== 'CAIO' && norm !== 'JULIANO';
+            });
           
           const seenNorm = new Set<string>();
           const activeMechs: string[] = [];
@@ -9547,7 +9553,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
         };
 
         // Mecânicos únicos do histórico
-        const uniqueMechanics = ['Todos', ...Array.from(new Set(mechanicHistory.map(r => r.mecanico).filter(Boolean))).sort()];
+        const uniqueMechanics = ['Todos', ...Array.from(new Set(mechanicHistory.map(r => r.mecanico).filter(Boolean)))
+          .filter(name => normalizeForSearch(name) !== 'CAIO')
+          .sort()];
 
         // Filtro por mecânico e data de saída
         const filtered = mechanicHistory.filter(r => {

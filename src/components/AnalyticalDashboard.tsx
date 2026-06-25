@@ -161,7 +161,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
           dataEntrada: entrada?.dataEntrada || entrada?.timestamp || null,
           dataSaida: rec.timestamp,
         };
-      }).filter(r => r.mNorm && r.mNorm !== 'MECANICA' && r.mNorm !== 'TODOS' && r.mNorm !== '—' && r.mNorm !== '');
+      }).filter(r => r.mNorm && r.mNorm !== 'MECANICA' && r.mNorm !== 'TODOS' && r.mNorm !== '—' && r.mNorm !== '' && r.mNorm !== 'CAIO');
 
       // --- PROCESS TECHNICIAN DEVOLVIDAS & ENTRADAS ---
       const devolvidas = snapTec.docs
@@ -245,7 +245,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
           treatment: treatment || '—',
           originalMechanic: originalMechanic || '—',
         };
-      }).filter(r => r.techNorm && r.techNorm !== 'TECNICA' && r.techNorm !== 'TECNICO' && r.techNorm !== '—' && r.techNorm !== '');
+      }).filter(r => r.techNorm && r.techNorm !== 'TECNICA' && r.techNorm !== 'TECNICO' && r.techNorm !== '—' && r.techNorm !== '' && r.techNorm !== 'JULIANO');
 
       // --- STATISTICS PREPARATION ---
       const defaultMechanics = ['Kauan', 'João', 'Felipe', 'André', 'Rafael'];
@@ -360,8 +360,8 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
         }
       });
 
-      setMechanicsData(Object.values(mechStats).sort((a, b) => b.mesAtual - a.mesAtual));
-      setTechniciansData(Object.values(techStats).sort((a, b) => b.mesAtual - a.mesAtual));
+      setMechanicsData(Object.values(mechStats).filter(m => normalizeForSearch(m.name) !== 'CAIO').sort((a, b) => b.mesAtual - a.mesAtual));
+      setTechniciansData(Object.values(techStats).filter(t => normalizeForSearch(t.name) !== 'JULIANO').sort((a, b) => b.mesAtual - a.mesAtual));
 
     } catch (err: any) {
       console.error('fetchMaintenanceData error:', err);
