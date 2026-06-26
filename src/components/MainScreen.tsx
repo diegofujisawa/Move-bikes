@@ -261,6 +261,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [newItemDescricao, setNewItemDescricao] = useState('');
   const [newItemFornecedor, setNewItemFornecedor] = useState('');
   const [newItemQuantidade, setNewItemQuantidade] = useState<number | ''>('');
+  const [newItemQtdMinima, setNewItemQtdMinima] = useState<number | ''>('');
   const [isSubmittingNewItem, setIsSubmittingNewItem] = useState(false);
 
   // Stock movement state
@@ -2391,6 +2392,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const desc = newItemDescricao.trim();
     const supplier = newItemFornecedor.trim();
     const qty = newItemQuantidade === '' ? 0 : Number(newItemQuantidade);
+    const minQty = newItemQtdMinima === '' ? 0 : Number(newItemQtdMinima);
 
     if (!code || !desc || !supplier) {
       alert('Por favor, preencha código, descrição e fornecedor.');
@@ -2399,6 +2401,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     if (qty < 0) {
       alert('A quantidade inicial não pode ser negativa.');
+      return;
+    }
+
+    if (minQty < 0) {
+      alert('A quantidade mínima não pode ser negativa.');
       return;
     }
 
@@ -2417,6 +2424,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         descricao: desc,
         fornecedor: supplier,
         quantidade: qty,
+        qtdMinima: minQty,
         historico: []
       });
 
@@ -2425,12 +2433,29 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setNewItemDescricao('');
       setNewItemFornecedor('');
       setNewItemQuantidade('');
+      setNewItemQtdMinima('');
       setIsAddingNewItem(false);
     } catch (e: any) {
       console.error('[Almoxarifado] Error adding item:', e);
       alert('Erro ao cadastrar item: ' + e.message);
     } finally {
       setIsSubmittingNewItem(false);
+    }
+  };
+
+  const handleUpdateMinStock = async (itemId: string, minQty: number) => {
+    if (minQty < 0) {
+      alert('A quantidade mínima não pode ser negativa.');
+      return;
+    }
+    try {
+      await setDoc(doc(db, 'almoxarifado', itemId), {
+        qtdMinima: minQty
+      }, { merge: true });
+      setSuccessMessage(`Quantidade mínima do item atualizada para ${minQty}.`);
+    } catch (e: any) {
+      console.error('[Almoxarifado] Error updating minimum stock level:', e);
+      alert('Erro ao atualizar quantidade mínima: ' + e.message);
     }
   };
 
@@ -10429,7 +10454,92 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
             </div>
 
             {/* Scrollable Body */}
-            <div className="flex-grow overflow-y-auto p-4 sm:p-5 bg-gray-50/50">
+            <div className="flex-grow overflow-y-auto p-4 sm:p-5 bg-gray-50/50 space-y-4">
+              {/* Informative Panel & Alerts */}
+              {(() => {
+                const lowStock = almoxarifadoItems.filter(item => {
+                  const min = item.qtdMinima ?? 0;
+                  return item.quantidade <= min;
+                });
+
+                const itemStats = almoxarifadoItems.map(item => {
+                  const history = item.historico || [];
+                  const retiradas = history.filter((h: any) => h.tipo === 'retirada');
+                  const totalWithdrawn = retiradas.reduce((sum: number, h: any) => sum + Number(h.quantidade), 0);
+                  
+                  // Calculate unique months with withdrawals (e.g. YYYY-MM format)
+                  const monthsWithWithdrawals = new Set<string>();
+                  retiradas.forEach((h: any) => {
+                    if (h.data && h.data.length >= 7) {
+                      monthsWithWithdrawals.add(h.data.substring(0, 7));
+                    }
+                  });
+                  const monthsCount = monthsWithWithdrawals.size || 1;
+                  const avgMonthly = totalWithdrawn / monthsCount;
+
+                  return {
+                    id: item.id,
+                    codigo: item.codigo,
+                    descricao: item.descricao,
+                    totalWithdrawn,
+                    avgMonthly
+                  };
+                }).filter(stat => stat.totalWithdrawn > 0)
+                  .sort((a, b) => b.avgMonthly - a.avgMonthly);
+
+                return (
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 shadow-md flex flex-col md:flex-row gap-4 text-xs">
+                    {/* Alertas / Lembrete de Compra */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-2 font-black text-slate-300 uppercase tracking-wider text-[10px]">
+                        <AlertCircle className="w-3.5 h-3.5 text-red-400" />
+                        <span>Itens com Estoque Crítico ({lowStock.length})</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                        {lowStock.length === 0 ? (
+                          <span className="text-[10px] text-green-400 font-bold bg-green-950/30 px-2 py-0.5 rounded-lg border border-green-900/30">
+                            ✓ Todo o estoque regular
+                          </span>
+                        ) : (
+                          lowStock.map(item => (
+                            <div key={item.id} className="flex items-center gap-1.5 px-2 py-0.5 bg-red-950/40 text-red-200 rounded-lg text-[10px] border border-red-900/30 font-bold">
+                              <span className="font-mono font-black text-red-400 uppercase">{item.codigo}</span>
+                              <span className="opacity-40 font-normal">|</span>
+                              <span>{item.quantidade} un <span className="opacity-40 font-normal">/</span> mín {item.qtdMinima ?? 0}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="hidden md:block w-px bg-slate-800 self-stretch" />
+
+                    {/* Consumo Médio Mensal */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-2 font-black text-slate-300 uppercase tracking-wider text-[10px]">
+                        <TrendingUp className="w-3.5 h-3.5 text-blue-400" />
+                        <span>Consumo Médio Mensal</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                        {itemStats.length === 0 ? (
+                          <span className="text-[10px] text-slate-400 italic bg-slate-850 px-2 py-0.5 rounded-lg border border-slate-800/80">
+                            Sem consumo registrado
+                          </span>
+                        ) : (
+                          itemStats.slice(0, 6).map(stat => (
+                            <div key={stat.id} className="flex items-center gap-1.5 px-2 py-0.5 bg-blue-950/30 text-blue-200 rounded-lg text-[10px] border border-blue-900/30 font-bold">
+                              <span className="font-mono font-black text-blue-400 uppercase">{stat.codigo}</span>
+                              <span className="opacity-40 font-normal">|</span>
+                              <span>{stat.avgMonthly.toFixed(1)} un/mês</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Main List Table / Grid */}
               {(() => {
                 const filtered = almoxarifadoItems.filter(item => {
@@ -10463,6 +10573,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                             <th className="py-3.5 px-4">Descrição</th>
                             <th className="py-3.5 px-4 w-44">Fornecedor</th>
                             <th className="py-3.5 px-4 w-32 text-center">Quantidade</th>
+                            <th className="py-3.5 px-4 w-32 text-center">Mín. Estoque</th>
                             <th className="py-3.5 px-4 w-48 text-right">Ações</th>
                           </tr>
                         </thead>
@@ -10480,14 +10591,33 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                               </td>
                               <td className="py-3 px-4 text-center">
                                 <span className={`inline-block px-3 py-1 rounded-full font-black text-xs font-mono ${
-                                  item.quantidade <= 0 
-                                    ? 'bg-red-100 text-red-700' 
-                                    : item.quantidade < 5 
+                                  item.quantidade <= (item.qtdMinima ?? 0)
+                                    ? 'bg-red-100 text-red-700 font-bold' 
+                                    : item.quantidade < (item.qtdMinima ?? 0) + 5
                                       ? 'bg-orange-100 text-orange-700' 
                                       : 'bg-green-100 text-green-700'
                                 }`}>
                                   {item.quantidade}
                                 </span>
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  defaultValue={item.qtdMinima ?? 0}
+                                  onBlur={async (e) => {
+                                    const val = Number(e.target.value);
+                                    if (val !== (item.qtdMinima ?? 0)) {
+                                      await handleUpdateMinStock(item.id, val);
+                                    }
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      (e.target as HTMLInputElement).blur();
+                                    }
+                                  }}
+                                  className="w-16 p-1 border border-gray-250 rounded-lg text-center text-xs font-black font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+                                />
                               </td>
                               <td className="py-3 px-4 text-right">
                                 <div className="flex items-center justify-end gap-1.5">
@@ -10504,7 +10634,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                                   >
                                     <Plus className="w-4 h-4" />
                                   </button>
-
+ 
                                   {/* Minus Button */}
                                   <button
                                     onClick={() => {
@@ -10518,7 +10648,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                                   >
                                     <Minus className="w-4 h-4" />
                                   </button>
-
+ 
                                   {/* History Button */}
                                   <button
                                     onClick={() => setViewingHistoryItem(item)}
@@ -10526,7 +10656,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                                   >
                                     Histórico
                                   </button>
-
+ 
                                   {/* Trash Button */}
                                   <button
                                     onClick={() => handleDeleteAlmoxarifadoItem(item.id, item.descricao)}
@@ -10542,7 +10672,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                         </tbody>
                       </table>
                     </div>
-
+ 
                     {/* Mobile Card-List View */}
                     <div className="block md:hidden divide-y">
                       {filtered.map((item) => (
@@ -10552,18 +10682,39 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                               <span className="font-mono font-black text-blue-600 uppercase text-xs">{item.codigo}</span>
                               <h4 className="font-bold text-gray-900 text-sm mt-0.5">{item.descricao}</h4>
                               <p className="text-[10px] text-gray-500 font-medium">Fornecedor: {item.fornecedor}</p>
+                              
+                              <div className="flex items-center gap-1.5 mt-2">
+                                <span className="text-[10px] font-black text-gray-500 uppercase">Mín. Estoque:</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  defaultValue={item.qtdMinima ?? 0}
+                                  onBlur={async (e) => {
+                                    const val = Number(e.target.value);
+                                    if (val !== (item.qtdMinima ?? 0)) {
+                                      await handleUpdateMinStock(item.id, val);
+                                    }
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      (e.target as HTMLInputElement).blur();
+                                    }
+                                  }}
+                                  className="w-14 p-0.5 border border-gray-250 rounded text-center text-xs font-black font-mono focus:ring-1 focus:ring-blue-500 outline-none"
+                                />
+                              </div>
                             </div>
                             <span className={`px-2.5 py-1 rounded-full font-black text-xs font-mono ${
-                              item.quantidade <= 0 
+                              item.quantidade <= (item.qtdMinima ?? 0)
                                 ? 'bg-red-100 text-red-700' 
-                                : item.quantidade < 5 
+                                : item.quantidade < (item.qtdMinima ?? 0) + 5
                                   ? 'bg-orange-100 text-orange-700' 
                                   : 'bg-green-100 text-green-700'
                             }`}>
                               {item.quantidade} un
                             </span>
                           </div>
-
+ 
                           <div className="flex items-center justify-between border-t pt-2.5">
                             <button
                               onClick={() => setViewingHistoryItem(item)}
@@ -10571,7 +10722,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                             >
                               Histórico
                             </button>
-
+ 
                             <div className="flex items-center gap-1.5">
                               {/* Plus */}
                               <button
@@ -10586,7 +10737,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                                 <Plus className="w-3.5 h-3.5 text-white" />
                                 Entrada
                               </button>
-
+ 
                               {/* Minus */}
                               <button
                                 onClick={() => {
@@ -10600,7 +10751,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                                 <Minus className="w-3.5 h-3.5 text-white" />
                                 Retirada
                               </button>
-
+ 
                               {/* Trash */}
                               <button
                                 onClick={() => handleDeleteAlmoxarifadoItem(item.id, item.descricao)}
@@ -10690,6 +10841,18 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                   placeholder="Ex: 50"
                   value={newItemQuantidade}
                   onChange={(e) => setNewItemQuantidade(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full p-2.5 border rounded-xl text-xs font-black font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Quantidade Mínima de Estoque</label>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="Ex: 5"
+                  value={newItemQtdMinima}
+                  onChange={(e) => setNewItemQtdMinima(e.target.value === '' ? '' : Number(e.target.value))}
                   className="w-full p-2.5 border rounded-xl text-xs font-black font-mono focus:ring-2 focus:ring-blue-500 outline-none"
                 />
               </div>

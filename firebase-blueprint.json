@@ -188,6 +188,7 @@
         "descricao": { "type": "string", "description": "Description of the item." },
         "fornecedor": { "type": "string", "description": "Supplier of the item." },
         "quantidade": { "type": "number", "description": "Current available quantity." },
+        "qtdMinima": { "type": "number", "description": "Minimum required stock level." },
         "historico": {
           "type": "array",
           "items": {
