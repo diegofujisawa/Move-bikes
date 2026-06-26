@@ -5,7 +5,7 @@ import {
   AlertIcon, CalendarIcon, CarIcon, XIcon, BicycleIcon, MovingIcon,
   UserIcon, AlertTriangleIcon, QrCodeIcon, TrailerIcon, SwitchIcon,
   DatabaseIcon, CheckCircleIcon, DocumentTextIcon, HistoryIcon,
-  SteeringWheelIcon, SirenIcon, ZapIcon
+  SteeringWheelIcon, SirenIcon, ZapIcon, EditIcon, TrashIcon
 } from './icons';
 import { 
   Settings, Battery, Lock, Map as LucideMap, 
@@ -243,6 +243,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const syncFailCountRef = useRef(0); // só exibe erro após 3 falhas consecutivas
   const [lastSyncTime, setLastSyncTime] = useState(new Date().toLocaleTimeString());
   const [backendVersion, setBackendVersion] = useState<string | null>(null);
+
+  // --- ADM Edit Mechanic Bikes State ---
+  const [editingMechanic, setEditingMechanic] = useState<string | null>(null);
+  const [editingStatusChoice, setEditingStatusChoice] = useState<'Em Manutenção' | 'Reserva'>('Em Manutenção');
+  const [newBikeNumber, setNewBikeNumber] = useState('');
+  const [isAdminBikeAdding, setIsAdminBikeAdding] = useState(false);
+  const [adminBikeActionLoading, setAdminBikeActionLoading] = useState<string | null>(null);
 
 
   // --- Dados principais ---
@@ -2208,6 +2215,123 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsBikeSearchLoading(false);
       setManualMechanicModal({ isOpen: false, bikePat: '', targetStatus: '' });
       setManualMechanicName('');
+    }
+  };
+
+  const handleAdminAddBikeToMechanic = async () => {
+    const bikeNum = newBikeNumber.trim().replace(/^0+/, '');
+    if (!bikeNum) {
+      alert('Por favor, informe o número da bike.');
+      return;
+    }
+    if (!editingMechanic) return;
+
+    setIsAdminBikeAdding(true);
+    try {
+      // 1. Update in mechanics_flow
+      await setDoc(doc(db, 'mechanics_flow', bikeNum), {
+        patrimonio: bikeNum,
+        status: editingStatusChoice,
+        mecanico: editingMechanic,
+        dataEntrada: serverTimestamp(),
+        ultimaAtualizacao: serverTimestamp()
+      }, { merge: true });
+
+      // 2. Update in bikes
+      await setDoc(doc(db, 'bikes', bikeNum), {
+        status: 'Mecânica',
+        responsavel: editingMechanic,
+        ultimaAtualizacao: serverTimestamp()
+      }, { merge: true });
+
+      // 3. Log report
+      await addDoc(collection(db, 'reports'), {
+        patrimonio: bikeNum,
+        status: editingStatusChoice,
+        motorista: editingMechanic,
+        observacao: `Adicionada por ADM no perfil de ${editingMechanic}`,
+        timestamp: serverTimestamp(),
+        type: 'Mecânica'
+      });
+
+      // 4. Update optimistic state
+      protectMechanicBike(bikeNum, {
+        status: editingStatusChoice,
+        mecanico: editingMechanic
+      });
+
+      setSuccessMessage(`Bike ${bikeNum} adicionada ao mecânico ${editingMechanic} (${editingStatusChoice}).`);
+      setNewBikeNumber('');
+    } catch (e: any) {
+      console.error('[ADM Edit Mechanics] Failed to add bike:', e);
+      alert('Erro ao adicionar bike: ' + e.message);
+    } finally {
+      setIsAdminBikeAdding(false);
+    }
+  };
+
+  const handleAdminRemoveBikeFromMechanic = async (bikeNum: string, actionType: 'unassign' | 'delete') => {
+    if (!editingMechanic) return;
+    setAdminBikeActionLoading(bikeNum);
+    try {
+      if (actionType === 'unassign') {
+        // Sets status to 'Aguardando Manutenção' and clears mecanico/responsavel
+        await setDoc(doc(db, 'mechanics_flow', bikeNum), {
+          status: 'Aguardando Manutenção',
+          mecanico: null,
+          ultimaAtualizacao: serverTimestamp()
+        }, { merge: true });
+
+        await setDoc(doc(db, 'bikes', bikeNum), {
+          responsavel: null,
+          ultimaAtualizacao: serverTimestamp()
+        }, { merge: true });
+
+        await addDoc(collection(db, 'reports'), {
+          patrimonio: bikeNum,
+          status: 'Aguardando Manutenção',
+          motorista: 'ADM',
+          observacao: `Desvinculada do mecânico ${editingMechanic} e retornada para Aguardando Manutenção por ADM`,
+          timestamp: serverTimestamp(),
+          type: 'Mecânica'
+        });
+
+        protectMechanicBike(bikeNum, {
+          status: 'Aguardando Manutenção',
+          mecanico: null
+        });
+
+        setSuccessMessage(`Bike ${bikeNum} retornada para Aguardando Manutenção.`);
+      } else {
+        // Completely deletes from mechanics_flow
+        await deleteDoc(doc(db, 'mechanics_flow', bikeNum));
+
+        await setDoc(doc(db, 'bikes', bikeNum), {
+          responsavel: null,
+          ultimaAtualizacao: serverTimestamp()
+        }, { merge: true });
+
+        await addDoc(collection(db, 'reports'), {
+          patrimonio: bikeNum,
+          status: 'Removida',
+          motorista: 'ADM',
+          observacao: `Removida do fluxo de oficina por ADM (estava com ${editingMechanic})`,
+          timestamp: serverTimestamp(),
+          type: 'Mecânica'
+        });
+
+        protectMechanicBike(bikeNum, {
+          status: 'Removida',
+          mecanico: null
+        });
+
+        setSuccessMessage(`Bike ${bikeNum} excluída do fluxo de oficina.`);
+      }
+    } catch (e: any) {
+      console.error('[ADM Edit Mechanics] Failed to remove bike:', e);
+      alert('Erro ao remover bike: ' + e.message);
+    } finally {
+      setAdminBikeActionLoading(null);
     }
   };
 
@@ -8291,13 +8415,34 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                   {/* Card por mecânico */}
                   {(() => {
                     const byMechanic: Record<string, {manutencao: number, reserva: number, bikes: string[]}> = {};
+                    
+                    // Initialize all known mechanics
+                    const allMechsList = Array.from(new Set([
+                      ...AUTHORIZED_MECHANICS_NORMALIZED,
+                      ...dynamicMechanics
+                    ])).filter(name => {
+                      const norm = normalizeForSearch(name);
+                      return norm !== 'CAIO' && norm !== 'JULIANO' && norm !== '—';
+                    }).sort();
+
+                    allMechsList.forEach(m => {
+                      byMechanic[m] = { manutencao: 0, reserva: 0, bikes: [] };
+                    });
+
                     mechanicsList.filter(b => b.status === 'Em Manutenção' || b.status === 'Reserva').forEach(b => {
                       const m = b.mecanico || '—';
-                      if (!byMechanic[m]) byMechanic[m] = { manutencao: 0, reserva: 0, bikes: [] };
-                      if (b.status === 'Em Manutenção') byMechanic[m].manutencao++;
-                      else byMechanic[m].reserva++;
-                      byMechanic[m].bikes.push(b.patrimonio);
+                      if (m === '—') return;
+                      const mUpper = m.toUpperCase().trim();
+                      const foundKey = Object.keys(byMechanic).find(k => k.toUpperCase().trim() === mUpper) || m;
+                      
+                      if (!byMechanic[foundKey]) {
+                        byMechanic[foundKey] = { manutencao: 0, reserva: 0, bikes: [] };
+                      }
+                      if (b.status === 'Em Manutenção') byMechanic[foundKey].manutencao++;
+                      else byMechanic[foundKey].reserva++;
+                      byMechanic[foundKey].bikes.push(b.patrimonio);
                     });
+
                     const mechs = Object.entries(byMechanic);
                     if (mechs.length === 0) return (
                       <div className="text-center py-6 bg-white rounded-lg border border-dashed">
@@ -8310,6 +8455,16 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                           <div key={name} className="bg-white p-3 rounded-lg border shadow-sm">
                             <div className="flex justify-between items-center mb-2 border-b pb-1">
                               <h3 className="font-black text-gray-900 text-sm uppercase">{name}</h3>
+                              <button
+                                onClick={() => {
+                                  setEditingMechanic(name);
+                                  setEditingStatusChoice('Em Manutenção');
+                                }}
+                                className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-100 hover:bg-blue-100 rounded transition-all uppercase active:scale-95 shadow-sm"
+                              >
+                                <EditIcon className="w-3 h-3 text-blue-500" />
+                                Editar
+                              </button>
                             </div>
                             <div className="grid grid-cols-2 gap-1.5 mb-2">
                               {[
@@ -8325,13 +8480,16 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                             <div>
                               <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Bikes ({data.bikes.length})</p>
                               <div className="flex flex-wrap gap-1">
-                                {mechanicsList.filter(b => (b.status === 'Em Manutenção' || b.status === 'Reserva') && b.mecanico === name).map((b: any) => (
+                                {mechanicsList.filter(b => (b.status === 'Em Manutenção' || b.status === 'Reserva') && b.mecanico && b.mecanico.toUpperCase() === name.toUpperCase()).map((b: any) => (
                                   <span key={b.patrimonio} className={`px-2 py-0.5 rounded text-[10px] font-black font-mono ${
                                     b.status === 'Em Manutenção'
                                       ? 'bg-orange-500 text-white'
                                       : 'bg-green-600 text-white'
                                   }`}>{b.patrimonio}</span>
                                 ))}
+                                {data.bikes.length === 0 && (
+                                  <span className="text-[10px] text-gray-400 italic font-medium">Nenhuma bike</span>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -9891,6 +10049,141 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADM Edit Mechanic Bikes Modal */}
+      {editingMechanic && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Header */}
+            <div className="p-4 border-b bg-gray-50 flex justify-between items-center flex-shrink-0">
+              <div>
+                <h2 className="text-lg font-black text-gray-800">Gerenciar Mecânico</h2>
+                <p className="text-xs text-blue-600 font-mono uppercase tracking-wider">{editingMechanic}</p>
+              </div>
+              <button 
+                onClick={() => {
+                  setEditingMechanic(null);
+                  setNewBikeNumber('');
+                }} 
+                className="p-1.5 hover:bg-gray-200 rounded-full transition-colors"
+              >
+                <XIcon className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-4 flex-grow overflow-y-auto space-y-4">
+              
+              {/* Add Bike Form */}
+              <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 space-y-2">
+                <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Adicionar Bike para Manutenção</p>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    value={newBikeNumber}
+                    onChange={(e) => setNewBikeNumber(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAdminAddBikeToMechanic()}
+                    placeholder="Nº da bike (ex: 150)"
+                    className="flex-grow p-2 border rounded-lg text-xs font-mono font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                  
+                  {/* Choice Status */}
+                  <select
+                    value={editingStatusChoice}
+                    onChange={(e) => setEditingStatusChoice(e.target.value as any)}
+                    className="p-2 border rounded-lg text-xs font-bold bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  >
+                    <option value="Em Manutenção">Manutenção</option>
+                    <option value="Reserva">Reserva</option>
+                  </select>
+
+                  <button 
+                    onClick={handleAdminAddBikeToMechanic}
+                    disabled={isAdminBikeAdding}
+                    className="p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center min-w-[36px]"
+                  >
+                    {isAdminBikeAdding ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    ) : (
+                      <PlusIcon className="w-4 h-4 text-white" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Current Bikes List */}
+              <div>
+                <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Bikes Atuais</p>
+                <div className="space-y-2">
+                  {(() => {
+                    const currentBikes = mechanicsList.filter(
+                      b => (b.status === 'Em Manutenção' || b.status === 'Reserva') && 
+                           b.mecanico && b.mecanico.toUpperCase() === editingMechanic.toUpperCase()
+                    );
+                    if (currentBikes.length === 0) {
+                      return (
+                        <p className="text-center py-6 text-gray-400 text-xs italic bg-gray-50/50 rounded-lg border border-dashed border-gray-200">
+                          Nenhuma bike em manutenção com {editingMechanic}.
+                        </p>
+                      );
+                    }
+                    return currentBikes.map(b => (
+                      <div key={b.patrimonio} className="flex justify-between items-center p-2.5 bg-white border rounded-xl shadow-sm hover:border-gray-300 transition-all">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm font-black text-gray-800">{b.patrimonio}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase ${
+                            b.status === 'Em Manutenção' ? 'bg-orange-100 text-orange-700 border border-orange-200' : 'bg-green-100 text-green-700 border border-green-200'
+                          }`}>
+                            {b.status}
+                          </span>
+                        </div>
+                        
+                        {/* Remove Actions */}
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleAdminRemoveBikeFromMechanic(b.patrimonio, 'unassign')}
+                            disabled={!!adminBikeActionLoading}
+                            title="Voltar para Aguardando Manutenção"
+                            className="px-2 py-1 text-[9px] font-bold text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-md transition-colors disabled:opacity-50 animate-pulse-subtle"
+                          >
+                            {adminBikeActionLoading === b.patrimonio ? '...' : 'Liberar / Aguardando'}
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm(`Excluir totalmente a bike ${b.patrimonio} do fluxo da oficina?`)) {
+                                handleAdminRemoveBikeFromMechanic(b.patrimonio, 'delete');
+                              }
+                            }}
+                            disabled={!!adminBikeActionLoading}
+                            title="Remover completamente da oficina"
+                            className="p-1 text-red-600 hover:bg-red-50 hover:text-red-700 border border-transparent hover:border-red-200 rounded-md transition-colors disabled:opacity-50 animate-pulse-subtle"
+                          >
+                            <TrashIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              </div>
+
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t bg-gray-50 flex-shrink-0">
+              <button 
+                onClick={() => {
+                  setEditingMechanic(null);
+                  setNewBikeNumber('');
+                }}
+                className="w-full py-2.5 bg-gray-200 text-gray-700 rounded-xl text-xs font-black uppercase hover:bg-gray-300 transition-colors"
+              >
+                Fechar
+              </button>
             </div>
           </div>
         </div>
