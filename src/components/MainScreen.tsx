@@ -8627,13 +8627,28 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                     const byMechanic: Record<string, {manutencao: number, reserva: number, bikes: string[]}> = {};
                     
                     // Initialize all known mechanics
-                    const allMechsList = Array.from(new Set([
-                      ...AUTHORIZED_MECHANICS_NORMALIZED,
-                      ...dynamicMechanics
-                    ])).filter(name => {
+                    const seenNorm = new Set<string>();
+                    const allMechsList: string[] = [];
+                    [...AUTHORIZED_MECHANICS_NORMALIZED, ...dynamicMechanics].forEach(name => {
                       const norm = normalizeForSearch(name);
-                      return norm !== 'CAIO' && norm !== 'JULIANO' && norm !== '—';
-                    }).sort();
+                      if (
+                        norm && 
+                        norm !== 'CAIO' && 
+                        norm !== 'JULIANO' && 
+                        norm !== '—' && 
+                        norm !== 'MECANICA' && 
+                        norm !== 'TODOS' && 
+                        !seenNorm.has(norm)
+                      ) {
+                        seenNorm.add(norm);
+                        let finalName = name.toUpperCase().trim();
+                        if (norm === 'ANDRE') {
+                          finalName = 'ANDRÉ';
+                        }
+                        allMechsList.push(finalName);
+                      }
+                    });
+                    allMechsList.sort();
 
                     allMechsList.forEach(m => {
                       byMechanic[m] = { manutencao: 0, reserva: 0, bikes: [] };
@@ -8642,15 +8657,22 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                     mechanicsList.filter(b => b.status === 'Em Manutenção' || b.status === 'Reserva').forEach(b => {
                       const m = b.mecanico || '—';
                       if (m === '—') return;
-                      const mUpper = m.toUpperCase().trim();
-                      const foundKey = Object.keys(byMechanic).find(k => k.toUpperCase().trim() === mUpper) || m;
+                      const mNorm = normalizeForSearch(m);
+                      if (mNorm === 'MECANICA' || mNorm === 'TODOS' || mNorm === '') return;
+
+                      const foundKey = Object.keys(byMechanic).find(k => normalizeForSearch(k) === mNorm) || m;
                       
-                      if (!byMechanic[foundKey]) {
-                        byMechanic[foundKey] = { manutencao: 0, reserva: 0, bikes: [] };
+                      let finalKey = foundKey;
+                      if (normalizeForSearch(finalKey) === 'ANDRE') {
+                        finalKey = 'ANDRÉ';
                       }
-                      if (b.status === 'Em Manutenção') byMechanic[foundKey].manutencao++;
-                      else byMechanic[foundKey].reserva++;
-                      byMechanic[foundKey].bikes.push(b.patrimonio);
+
+                      if (!byMechanic[finalKey]) {
+                        byMechanic[finalKey] = { manutencao: 0, reserva: 0, bikes: [] };
+                      }
+                      if (b.status === 'Em Manutenção') byMechanic[finalKey].manutencao++;
+                      else byMechanic[finalKey].reserva++;
+                      byMechanic[finalKey].bikes.push(b.patrimonio);
                     });
 
                     const mechs = Object.entries(byMechanic);
@@ -8690,7 +8712,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                             <div>
                               <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Bikes ({data.bikes.length})</p>
                               <div className="flex flex-wrap gap-1">
-                                {mechanicsList.filter(b => (b.status === 'Em Manutenção' || b.status === 'Reserva') && b.mecanico && b.mecanico.toUpperCase() === name.toUpperCase()).map((b: any) => (
+                                {mechanicsList.filter(b => (b.status === 'Em Manutenção' || b.status === 'Reserva') && b.mecanico && normalizeForSearch(b.mecanico) === normalizeForSearch(name)).map((b: any) => (
                                   <span key={b.patrimonio} className={`px-2 py-0.5 rounded text-[10px] font-black font-mono ${
                                     b.status === 'Em Manutenção'
                                       ? 'bg-orange-500 text-white'
