@@ -512,13 +512,22 @@ const MainScreen: React.FC<MainScreenProps> = ({
         .map(p => String(p).trim().replace(/^0+/, ''))
     );
 
-    // Ordem de precedência de status da mecânica
+    // Ordem de precedência de status da mecânica (Normalizada)
     const statusOrder: Record<string, number> = {
-      'Alterar Status': 1,
-      'Não encontrada': 1,
-      'Aguardando Manutenção': 2,
-      'Em Manutenção': 3,
-      'Reserva': 4
+      'ALTERAR STATUS': 1,
+      'NAO ENCONTRADA': 1,
+      'AGUARDANDO MANUTENCAO': 2,
+      'EM MANUTENCAO': 3,
+      'RESERVA': 4,
+      'REMANEJADA': 5,
+      'ESTACAO': 6,
+      'FILIAL': 6,
+      'EM ROTA': 6,
+      'PENDENTE': 6,
+      'ATIVA': 6,
+      'LANCADA': 6,
+      'ESTOQUE': 6,
+      'DISPONIVEL': 6
     };
     
     const fbMap: Record<string, any> = {};
@@ -554,7 +563,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
         // v85.55: Se o status do servidor (Sheets) é mais avançado no fluxo de mecânica do que o do Firebase,
         // o status do servidor deve prevalecer para evitar que dados antigos do Firebase fiquem presos (stale)
         // e façam a bike retornar para estados anteriores (ex: se o servidor já está como 'Reserva' mas o Firebase diz 'Alterar Status').
-        const isServerNewer = (statusOrder[sStatus] || 0) > (statusOrder[fbStatus] || 0);
+        const normSStatus = normalizeForSearch(sStatus);
+        const normFbStatus = normalizeForSearch(fbStatus);
+        const isServerNewer = (statusOrder[normSStatus] || 0) > (statusOrder[normFbStatus] || 0);
 
         if (isServerNewer) {
           // Limpeza assíncrona em background do documento stale no Firestore
@@ -562,8 +573,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
             try {
               const { deleteDoc: _deleteDoc, doc: _doc } = await import('firebase/firestore');
               await _deleteDoc(_doc(db, 'mechanics_flow', pat));
+              await _deleteDoc(_doc(db, 'technical_flow', pat));
             } catch (err) {
-              console.warn('[Firebase] Cleanup of stale mechanics_flow document failed for', pat, err);
+              console.warn('[Firebase] Cleanup of stale mechanics_flow/technical_flow document failed for', pat, err);
             }
           })();
         }
@@ -595,6 +607,25 @@ const MainScreen: React.FC<MainScreenProps> = ({
     fbFlow.forEach(fbBike => {
       const pat = String(fbBike.patrimonio);
       const live = mechanicsLiveDetails[pat];
+      
+      const liveStatus = String(live?.status || live?.statusSistema || fbBike.status || '').trim();
+      const normLiveStatus = normalizeForSearch(liveStatus);
+      const isLiveSystemExit = normLiveStatus && (statusOrder[normLiveStatus] || 0) >= 5;
+
+      if (isLiveSystemExit) {
+        // Limpeza assíncrona em background do documento stale no Firestore
+        (async () => {
+          try {
+            const { deleteDoc: _deleteDoc, doc: _doc } = await import('firebase/firestore');
+            await _deleteDoc(_doc(db, 'mechanics_flow', pat));
+            await _deleteDoc(_doc(db, 'technical_flow', pat));
+          } catch (err) {
+            console.warn('[Firebase] Cleanup of exited fbBike document failed for', pat, err);
+          }
+        })();
+        return; // Pula essa bike! Não adiciona à lista
+      }
+
       if (!serverPatrimonios.has(pat) && activeStatuses.includes(fbBike.status)) {
         result.push({
           ...fbBike,
@@ -1666,6 +1697,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
             const persistPromise = persistDriverState(newRoute, newCollected);
 
+            const deleteMechanicsFlowPromise = deleteDoc(doc(db, 'mechanics_flow', bikeNumber))
+              .catch(e => console.warn('[Firebase] delete mechanics_flow failed:', e));
+            const deleteTechnicalFlowPromise = deleteDoc(doc(db, 'technical_flow', bikeNumber))
+              .catch(e => console.warn('[Firebase] delete technical_flow failed:', e));
+
             // Inicia o relatório em background - aguarda detalhes mas não trava os outros Promise.all
             const reportPromise = (async () => {
               const bikeDetails = await bikeDetailsPromise;
@@ -1723,7 +1759,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
               }
             })().catch(e => console.warn('[Notifications] push failed:', e));
 
-            await Promise.all([firebaseBikesPromise, sheetsPromise, timelinePromise, persistPromise, reportPromise, notificationsPromise]);
+            await Promise.all([
+              firebaseBikesPromise,
+              sheetsPromise,
+              timelinePromise,
+              persistPromise,
+              reportPromise,
+              notificationsPromise,
+              deleteMechanicsFlowPromise,
+              deleteTechnicalFlowPromise
+            ]);
           } catch (e) {
             console.error(`[Background] Erro ao processar bike ${bikeNumber}:`, e);
           } finally {
