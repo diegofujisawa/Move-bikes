@@ -10,7 +10,8 @@ import {
 import { 
   Settings, Battery, Lock, Map as LucideMap, 
   WifiOff, AlertCircle, RefreshCw, ChevronUp, ChevronDown, ChevronLeft, 
-  ChevronRight, Circle, Play, Locate, Wrench, Loader2, TrendingUp, ExternalLink
+  ChevronRight, Circle, Play, Locate, Wrench, Loader2, TrendingUp, ExternalLink,
+  Package, Plus, Minus, Inbox
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
@@ -250,6 +251,34 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [newBikeNumber, setNewBikeNumber] = useState('');
   const [isAdminBikeAdding, setIsAdminBikeAdding] = useState(false);
   const [adminBikeActionLoading, setAdminBikeActionLoading] = useState<string | null>(null);
+
+  // --- Almoxarifado (Warehouse Stock Control) State ---
+  const [isAlmoxarifadoOpen, setIsAlmoxarifadoOpen] = useState(false);
+  const [almoxarifadoItems, setAlmoxarifadoItems] = useState<any[]>([]);
+  const [almoxarifadoSearch, setAlmoxarifadoSearch] = useState('');
+  const [isAddingNewItem, setIsAddingNewItem] = useState(false);
+  const [newItemCodigo, setNewItemCodigo] = useState('');
+  const [newItemDescricao, setNewItemDescricao] = useState('');
+  const [newItemFornecedor, setNewItemFornecedor] = useState('');
+  const [newItemQuantidade, setNewItemQuantidade] = useState<number | ''>('');
+  const [isSubmittingNewItem, setIsSubmittingNewItem] = useState(false);
+
+  // Stock movement state
+  const [movingItem, setMovingItem] = useState<any | null>(null);
+  const [movementTipo, setMovementTipo] = useState<'entrada' | 'retirada'>('retirada');
+  const [movementQuantidade, setMovementQuantidade] = useState<number | ''>('');
+  const [movementUsuario, setMovementUsuario] = useState('');
+  const [movementData, setMovementData] = useState(() => {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  });
+  const [isSubmittingMovement, setIsSubmittingMovement] = useState(false);
+
+  // Item history view state
+  const [viewingHistoryItem, setViewingHistoryItem] = useState<any | null>(null);
 
 
   // --- Dados principais ---
@@ -1217,6 +1246,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
     return () => unsubBikes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [driverName, routeBikesTenKey]); // routeBikesTenKey garante estabilidade, evitando re-inscrições desnecessárias
+
+  // --- Real-time listener for Almoxarifado items ---
+  useEffect(() => {
+    if (!db) return () => {};
+    let unsubscribe = () => {};
+    try {
+      const q = query(collection(db, 'almoxarifado'));
+      unsubscribe = onSnapshot(q, (snapshot) => {
+        const items: any[] = [];
+        snapshot.forEach((docSnap) => {
+          items.push({ id: docSnap.id, ...docSnap.data() });
+        });
+        setAlmoxarifadoItems(items);
+      }, (err) => {
+        console.error('[Almoxarifado] Listener error:', err);
+      });
+    } catch (e) {
+      console.warn('[Almoxarifado] Subscription setup failed:', e);
+    }
+    return () => unsubscribe();
+  }, []);
 
   // =================================================================
   // GARANTIA DE UNICIDADE
@@ -2332,6 +2382,130 @@ const MainScreen: React.FC<MainScreenProps> = ({
       alert('Erro ao remover bike: ' + e.message);
     } finally {
       setAdminBikeActionLoading(null);
+    }
+  };
+
+  // --- Almoxarifado Handlers ---
+  const handleAddNewAlmoxarifadoItem = async () => {
+    const code = newItemCodigo.trim().toUpperCase();
+    const desc = newItemDescricao.trim();
+    const supplier = newItemFornecedor.trim();
+    const qty = newItemQuantidade === '' ? 0 : Number(newItemQuantidade);
+
+    if (!code || !desc || !supplier) {
+      alert('Por favor, preencha código, descrição e fornecedor.');
+      return;
+    }
+
+    if (qty < 0) {
+      alert('A quantidade inicial não pode ser negativa.');
+      return;
+    }
+
+    // Check if code already exists in local list to avoid duplicate codes
+    const exists = almoxarifadoItems.some(item => item.codigo.toUpperCase() === code);
+    if (exists) {
+      alert(`Já existe um item cadastrado com o código ${code}.`);
+      return;
+    }
+
+    setIsSubmittingNewItem(true);
+    try {
+      const docId = code; // Using the code directly as Document ID is extremely elegant for uniqueness
+      await setDoc(doc(db, 'almoxarifado', docId), {
+        codigo: code,
+        descricao: desc,
+        fornecedor: supplier,
+        quantidade: qty,
+        historico: []
+      });
+
+      setSuccessMessage(`Item ${desc} (${code}) cadastrado com sucesso.`);
+      setNewItemCodigo('');
+      setNewItemDescricao('');
+      setNewItemFornecedor('');
+      setNewItemQuantidade('');
+      setIsAddingNewItem(false);
+    } catch (e: any) {
+      console.error('[Almoxarifado] Error adding item:', e);
+      alert('Erro ao cadastrar item: ' + e.message);
+    } finally {
+      setIsSubmittingNewItem(false);
+    }
+  };
+
+  const handleRegisterStockMovement = async () => {
+    if (!movingItem) return;
+
+    const amount = Number(movementQuantidade);
+    const user = movementUsuario.trim();
+    const dateStr = movementData;
+
+    if (!amount || amount <= 0) {
+      alert('A quantidade deve ser um número maior que zero.');
+      return;
+    }
+
+    if (!user) {
+      alert('Por favor, informe quem está consumindo/responsável.');
+      return;
+    }
+
+    if (!dateStr) {
+      alert('Por favor, informe a data.');
+      return;
+    }
+
+    // If removing (retirada), make sure we have enough stock
+    if (movementTipo === 'retirada' && amount > movingItem.quantidade) {
+      alert(`Estoque insuficiente! Saldo atual: ${movingItem.quantidade}.`);
+      return;
+    }
+
+    setIsSubmittingMovement(true);
+    try {
+      const diff = movementTipo === 'entrada' ? amount : -amount;
+      const newQty = movingItem.quantidade + diff;
+
+      // Create new history log
+      const newLog = {
+        id: Math.random().toString(36).substring(2, 9),
+        tipo: movementTipo,
+        quantidade: amount,
+        usuario: user,
+        data: dateStr
+      };
+
+      const existingHistory = movingItem.historico || [];
+      const updatedHistory = [newLog, ...existingHistory];
+
+      await setDoc(doc(db, 'almoxarifado', movingItem.id), {
+        quantidade: newQty,
+        historico: updatedHistory
+      }, { merge: true });
+
+      setSuccessMessage(`Movimentação registrada com sucesso. Novo saldo: ${newQty}.`);
+      setMovingItem(null);
+      setMovementQuantidade('');
+      setMovementUsuario('');
+    } catch (e: any) {
+      console.error('[Almoxarifado] Error saving movement:', e);
+      alert('Erro ao registrar movimentação: ' + e.message);
+    } finally {
+      setIsSubmittingMovement(false);
+    }
+  };
+
+  const handleDeleteAlmoxarifadoItem = async (itemId: string, desc: string) => {
+    if (!confirm(`Tem certeza que deseja excluir permanentemente o item "${desc}"?`)) {
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, 'almoxarifado', itemId));
+      setSuccessMessage(`Item "${desc}" excluído com sucesso.`);
+    } catch (e: any) {
+      console.error('[Almoxarifado] Error deleting item:', e);
+      alert('Erro ao excluir item: ' + e.message);
     }
   };
 
@@ -6300,6 +6474,17 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
             </>}
             <button onClick={() => { fetchReporData(); setIsReporModalOpen(true); }} disabled={isLoading} title="Estações Livres" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><BicycleIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
           </>}
+          {(isMecanica || isAdm) && (
+            <button
+              onClick={() => setIsAlmoxarifadoOpen(true)}
+              disabled={isLoading}
+              title="Almoxarifado"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black uppercase text-blue-700 bg-blue-50 border border-blue-100 hover:bg-blue-100 active:scale-95 transition-all shadow-sm"
+            >
+              <Package className="w-4 h-4 text-blue-600" />
+              <span>Almoxarifado</span>
+            </button>
+          )}
           <button onClick={onLogout} disabled={isLoading} title="Sair" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-red-600 disabled:opacity-50"><LogoutIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
         </div>
       </header>
@@ -10183,6 +10368,514 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                 className="w-full py-2.5 bg-gray-200 text-gray-700 rounded-xl text-xs font-black uppercase hover:bg-gray-300 transition-colors"
               >
                 Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Almoxarifado (Warehouse Stock Control) Main Modal */}
+      {isAlmoxarifadoOpen && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col h-[85vh]">
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b bg-gray-50 flex justify-between items-center flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-blue-100 rounded-xl text-blue-700">
+                  <Package className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-black text-gray-800 uppercase tracking-tight">Controle de Almoxarifado</h2>
+                  <p className="text-xs text-gray-500 font-medium">Estoque, Entradas e Saídas da Oficina</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => {
+                  setIsAlmoxarifadoOpen(false);
+                  setIsAddingNewItem(false);
+                  setMovingItem(null);
+                  setViewingHistoryItem(null);
+                }} 
+                className="p-1.5 hover:bg-gray-200 rounded-full transition-colors"
+              >
+                <XIcon className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            {/* Subheader Toolbar */}
+            <div className="p-4 border-b bg-white flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between flex-shrink-0">
+              {/* Search Box */}
+              <div className="relative flex-grow max-w-md">
+                <input
+                  type="text"
+                  placeholder="Pesquisar por código, descrição ou fornecedor..."
+                  value={almoxarifadoSearch}
+                  onChange={(e) => setAlmoxarifadoSearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all shadow-sm"
+                />
+                <div className="absolute left-3 top-2.5 text-gray-400">
+                  <LucideMap className="w-4 h-4" /> {/* Fallback icon, search/magnifier is fine but we can just use LucideMap or similar */}
+                </div>
+              </div>
+
+              {/* Add Item Button */}
+              <button
+                onClick={() => setIsAddingNewItem(true)}
+                className="flex items-center justify-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-black uppercase rounded-xl shadow-sm transition-all"
+              >
+                <Plus className="w-4 h-4 text-white" />
+                Cadastrar Item
+              </button>
+            </div>
+
+            {/* Scrollable Body */}
+            <div className="flex-grow overflow-y-auto p-4 sm:p-5 bg-gray-50/50">
+              {/* Main List Table / Grid */}
+              {(() => {
+                const filtered = almoxarifadoItems.filter(item => {
+                  const queryLower = almoxarifadoSearch.toLowerCase().trim();
+                  if (!queryLower) return true;
+                  return (
+                    (item.codigo || '').toLowerCase().includes(queryLower) ||
+                    (item.descricao || '').toLowerCase().includes(queryLower) ||
+                    (item.fornecedor || '').toLowerCase().includes(queryLower)
+                  );
+                });
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="flex flex-col items-center justify-center py-12 text-center bg-white rounded-2xl border border-dashed border-gray-200 shadow-sm">
+                      <Inbox className="w-12 h-12 text-gray-300 mb-2" />
+                      <p className="text-gray-500 text-sm font-bold">Nenhum item encontrado</p>
+                      <p className="text-gray-400 text-xs mt-1">Experimente mudar o termo de busca ou cadastre um novo item.</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="bg-white rounded-2xl border border-gray-150 shadow-sm overflow-hidden">
+                    {/* Desktop Table View */}
+                    <div className="hidden md:block overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-gray-50 text-[10px] font-black text-gray-500 uppercase tracking-wider border-b">
+                            <th className="py-3.5 px-4 w-28">Código</th>
+                            <th className="py-3.5 px-4">Descrição</th>
+                            <th className="py-3.5 px-4 w-44">Fornecedor</th>
+                            <th className="py-3.5 px-4 w-32 text-center">Quantidade</th>
+                            <th className="py-3.5 px-4 w-48 text-right">Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 text-xs font-medium text-gray-700">
+                          {filtered.map((item) => (
+                            <tr key={item.id} className="hover:bg-gray-50/50 transition-colors">
+                              <td className="py-3 px-4 font-mono font-black text-blue-600 uppercase">
+                                {item.codigo}
+                              </td>
+                              <td className="py-3 px-4">
+                                <div className="font-bold text-gray-900">{item.descricao}</div>
+                              </td>
+                              <td className="py-3 px-4 text-gray-500">
+                                {item.fornecedor}
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <span className={`inline-block px-3 py-1 rounded-full font-black text-xs font-mono ${
+                                  item.quantidade <= 0 
+                                    ? 'bg-red-100 text-red-700' 
+                                    : item.quantidade < 5 
+                                      ? 'bg-orange-100 text-orange-700' 
+                                      : 'bg-green-100 text-green-700'
+                                }`}>
+                                  {item.quantidade}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {/* Plus Button */}
+                                  <button
+                                    onClick={() => {
+                                      setMovingItem(item);
+                                      setMovementTipo('entrada');
+                                      setMovementQuantidade('');
+                                      setMovementUsuario('');
+                                    }}
+                                    title="Dar Entrada"
+                                    className="p-1.5 bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 active:scale-95 rounded-lg transition-all shadow-sm"
+                                  >
+                                    <Plus className="w-4 h-4" />
+                                  </button>
+
+                                  {/* Minus Button */}
+                                  <button
+                                    onClick={() => {
+                                      setMovingItem(item);
+                                      setMovementTipo('retirada');
+                                      setMovementQuantidade('');
+                                      setMovementUsuario('');
+                                    }}
+                                    title="Retirar Item"
+                                    className="p-1.5 bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100 active:scale-95 rounded-lg transition-all shadow-sm"
+                                  >
+                                    <Minus className="w-4 h-4" />
+                                  </button>
+
+                                  {/* History Button */}
+                                  <button
+                                    onClick={() => setViewingHistoryItem(item)}
+                                    className="px-2 py-1.5 text-[10px] font-black uppercase text-blue-600 hover:bg-blue-50 border border-blue-100 hover:border-blue-200 rounded-lg transition-all"
+                                  >
+                                    Histórico
+                                  </button>
+
+                                  {/* Trash Button */}
+                                  <button
+                                    onClick={() => handleDeleteAlmoxarifadoItem(item.id, item.descricao)}
+                                    className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 border border-transparent hover:border-red-100 rounded-lg transition-all"
+                                    title="Excluir item"
+                                  >
+                                    <TrashIcon className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Mobile Card-List View */}
+                    <div className="block md:hidden divide-y">
+                      {filtered.map((item) => (
+                        <div key={item.id} className="p-4 space-y-3">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="font-mono font-black text-blue-600 uppercase text-xs">{item.codigo}</span>
+                              <h4 className="font-bold text-gray-900 text-sm mt-0.5">{item.descricao}</h4>
+                              <p className="text-[10px] text-gray-500 font-medium">Fornecedor: {item.fornecedor}</p>
+                            </div>
+                            <span className={`px-2.5 py-1 rounded-full font-black text-xs font-mono ${
+                              item.quantidade <= 0 
+                                ? 'bg-red-100 text-red-700' 
+                                : item.quantidade < 5 
+                                  ? 'bg-orange-100 text-orange-700' 
+                                  : 'bg-green-100 text-green-700'
+                            }`}>
+                              {item.quantidade} un
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between border-t pt-2.5">
+                            <button
+                              onClick={() => setViewingHistoryItem(item)}
+                              className="text-[10px] font-black uppercase text-blue-600 bg-blue-50/50 border border-blue-100 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-all"
+                            >
+                              Histórico
+                            </button>
+
+                            <div className="flex items-center gap-1.5">
+                              {/* Plus */}
+                              <button
+                                onClick={() => {
+                                  setMovingItem(item);
+                                  setMovementTipo('entrada');
+                                  setMovementQuantidade('');
+                                  setMovementUsuario('');
+                                }}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-[10px] font-black uppercase transition-all shadow-sm"
+                              >
+                                <Plus className="w-3.5 h-3.5 text-white" />
+                                Entrada
+                              </button>
+
+                              {/* Minus */}
+                              <button
+                                onClick={() => {
+                                  setMovingItem(item);
+                                  setMovementTipo('retirada');
+                                  setMovementQuantidade('');
+                                  setMovementUsuario('');
+                                }}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-[10px] font-black uppercase transition-all shadow-sm"
+                              >
+                                <Minus className="w-3.5 h-3.5 text-white" />
+                                Retirada
+                              </button>
+
+                              {/* Trash */}
+                              <button
+                                onClick={() => handleDeleteAlmoxarifadoItem(item.id, item.descricao)}
+                                className="p-1.5 text-red-500 border border-transparent rounded-lg hover:bg-red-50"
+                              >
+                                <TrashIcon className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 sm:p-5 border-t bg-gray-50 flex-shrink-0">
+              <button 
+                onClick={() => setIsAlmoxarifadoOpen(false)}
+                className="w-full py-2.5 bg-gray-200 text-gray-700 rounded-xl text-xs font-black uppercase hover:bg-gray-300 transition-colors shadow-sm"
+              >
+                Fechar Painel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Almoxarifado: Cadastrar Novo Item Modal */}
+      {isAddingNewItem && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
+            <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
+              <div>
+                <h3 className="text-md font-black text-gray-800 uppercase tracking-tight">Cadastrar Item no Almoxarifado</h3>
+                <p className="text-xs text-gray-500 font-medium">Insira as informações básicas para controle de estoque</p>
+              </div>
+              <button 
+                onClick={() => setIsAddingNewItem(false)} 
+                className="p-1 hover:bg-gray-200 rounded-full transition-colors"
+              >
+                <XIcon className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3.5">
+              <div>
+                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Código do Item *</label>
+                <input
+                  type="text"
+                  placeholder="Ex: PARAFUSO-M8, CORREIA-120"
+                  value={newItemCodigo}
+                  onChange={(e) => setNewItemCodigo(e.target.value)}
+                  className="w-full p-2.5 border rounded-xl text-xs font-bold uppercase focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Descrição / Nome do Item *</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Parafuso Sextavado M8x20mm"
+                  value={newItemDescricao}
+                  onChange={(e) => setNewItemDescricao(e.target.value)}
+                  className="w-full p-2.5 border rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Fornecedor *</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Parafusos LTDA ou Distribuidor X"
+                  value={newItemFornecedor}
+                  onChange={(e) => setNewItemFornecedor(e.target.value)}
+                  className="w-full p-2.5 border rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Quantidade Inicial</label>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="Ex: 50"
+                  value={newItemQuantidade}
+                  onChange={(e) => setNewItemQuantidade(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full p-2.5 border rounded-xl text-xs font-black font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="p-4 border-t bg-gray-50 flex gap-2">
+              <button
+                onClick={() => setIsAddingNewItem(false)}
+                className="flex-1 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-black uppercase hover:bg-gray-300 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleAddNewAlmoxarifadoItem}
+                disabled={isSubmittingNewItem}
+                className="flex-1 py-2 bg-blue-600 text-white rounded-xl text-xs font-black uppercase hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {isSubmittingNewItem ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-white" />
+                ) : (
+                  'Salvar Cadastro'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Almoxarifado: Movimentação (Entrada/Retirada) Modal */}
+      {movingItem && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
+            <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
+              <div>
+                <h3 className="text-md font-black text-gray-800 uppercase tracking-tight flex items-center gap-1.5">
+                  {movementTipo === 'entrada' ? (
+                    <span className="text-green-600 font-black">Registrar Entrada</span>
+                  ) : (
+                    <span className="text-orange-600 font-black">Registrar Retirada / Saída</span>
+                  )}
+                </h3>
+                <p className="text-xs text-gray-500 font-mono mt-0.5 uppercase tracking-wide">
+                  Item: {movingItem.descricao} ({movingItem.codigo})
+                </p>
+              </div>
+              <button 
+                onClick={() => setMovingItem(null)} 
+                className="p-1 hover:bg-gray-200 rounded-full transition-colors"
+              >
+                <XIcon className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              {/* Actual Stock info */}
+              <div className="bg-blue-50/50 p-2.5 rounded-xl border border-blue-100 flex justify-between items-center text-xs">
+                <span className="font-bold text-blue-800">Saldo Atual em Estoque:</span>
+                <span className="font-mono font-black text-blue-700 text-sm">{movingItem.quantidade} un</span>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Quantidade *</label>
+                <input
+                  type="number"
+                  min="1"
+                  placeholder="Ex: 5"
+                  value={movementQuantidade}
+                  onChange={(e) => setMovementQuantidade(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full p-2.5 border rounded-xl text-xs font-black font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">
+                  {movementTipo === 'entrada' ? 'Responsável pela Entrada *' : 'Nome de quem está consumindo *'}
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Kauan, João, Rafael..."
+                  value={movementUsuario}
+                  onChange={(e) => setMovementUsuario(e.target.value)}
+                  className="w-full p-2.5 border rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Data da Retirada/Entrada *</label>
+                <input
+                  type="date"
+                  value={movementData}
+                  onChange={(e) => setMovementData(e.target.value)}
+                  className="w-full p-2.5 border rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="p-4 border-t bg-gray-50 flex gap-2">
+              <button
+                onClick={() => setMovingItem(null)}
+                className="flex-1 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-black uppercase hover:bg-gray-300 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleRegisterStockMovement}
+                disabled={isSubmittingMovement}
+                className={`flex-1 py-2 text-white rounded-xl text-xs font-black uppercase transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 ${
+                  movementTipo === 'entrada' ? 'bg-green-600 hover:bg-green-700' : 'bg-orange-500 hover:bg-orange-600'
+                }`}
+              >
+                {isSubmittingMovement ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-white" />
+                ) : (
+                  'Salvar Movimentação'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Almoxarifado: Histórico do Item Modal */}
+      {viewingHistoryItem && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col h-[70vh]">
+            <div className="p-4 border-b bg-gray-50 flex justify-between items-center flex-shrink-0">
+              <div>
+                <h3 className="text-md font-black text-gray-800 uppercase tracking-tight">Histórico de Movimentações</h3>
+                <p className="text-xs text-gray-500 font-mono mt-0.5 uppercase tracking-wide">
+                  Item: {viewingHistoryItem.descricao} ({viewingHistoryItem.codigo})
+                </p>
+              </div>
+              <button 
+                onClick={() => setViewingHistoryItem(null)} 
+                className="p-1 hover:bg-gray-200 rounded-full transition-colors"
+              >
+                <XIcon className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            {/* Scrollable Logs */}
+            <div className="flex-grow overflow-y-auto p-4 space-y-3 bg-gray-50/50">
+              {(!viewingHistoryItem.historico || viewingHistoryItem.historico.length === 0) ? (
+                <div className="text-center py-12 bg-white rounded-xl border border-dashed border-gray-200">
+                  <p className="text-xs text-gray-400 font-medium italic">Nenhuma movimentação registrada para este item.</p>
+                </div>
+              ) : (
+                viewingHistoryItem.historico.map((log: any) => (
+                  <div key={log.id} className="bg-white p-3.5 rounded-xl border border-gray-150 shadow-sm flex justify-between items-center gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-1.5 rounded-full ${
+                        log.tipo === 'entrada' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'
+                      }`}>
+                        {log.tipo === 'entrada' ? <Plus className="w-4 h-4" /> : <Minus className="w-4 h-4" />}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-xs text-gray-900 capitalize">{log.tipo}</span>
+                          <span className={`text-[10px] font-black font-mono px-1.5 py-0.5 rounded ${
+                            log.tipo === 'entrada' ? 'bg-green-50 text-green-700' : 'bg-orange-50 text-orange-700'
+                          }`}>
+                            {log.tipo === 'entrada' ? '+' : '-'}{log.quantidade} un
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-gray-500 font-medium mt-0.5">
+                          Responsável/Consumidor: <strong className="text-gray-700 font-bold">{log.usuario}</strong>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="text-right flex-shrink-0">
+                      <span className="text-[10px] font-mono font-black text-gray-400 bg-gray-100 px-2 py-0.5 rounded">
+                        {log.data ? log.data.split('-').reverse().join('/') : '—'}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="p-4 border-t bg-gray-50 flex-shrink-0">
+              <button
+                onClick={() => setViewingHistoryItem(null)}
+                className="w-full py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-xl text-xs font-black uppercase transition-colors"
+              >
+                Voltar
               </button>
             </div>
           </div>
