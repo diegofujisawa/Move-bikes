@@ -286,7 +286,8 @@ function doPost(e) {
       'finalizeMechanicsRepair', 'organizeTrailer', 'finalizeTrailer',
       'moveToAguardandoManutencao', 'declineMechanicsReceipt',
       'markAsNotFound', 'editMechanicsBike', 'deleteMechanicsBike', 'clearAlterarStatus', 'removeFromTrailer',
-      'sendToTechnical', 'confirmTechnicaReceipt', 'finalizeTechnicaRepair'
+      'sendToTechnical', 'confirmTechnicaReceipt', 'finalizeTechnicaRepair',
+      'removeBikeFromAlert'
     ];
     const isWriteAction = writeActions.includes(action);
     const lock = LockService.getScriptLock();
@@ -334,6 +335,7 @@ function doPost(e) {
       case 'getChangeStatusData':   response = { ...getChangeStatusData(request.timeRange), version: BACKEND_VERSION }; break;
       case 'getAlerts':             response = { ...getAlerts(false), version: BACKEND_VERSION }; break;
       case 'confirmBikeFound':      response = { ...confirmBikeFound(request.alertId, request.driverName), version: BACKEND_VERSION }; break;
+      case 'removeBikeFromAlert':   response = { ...removeBikeFromAlert(request.alertId, request.driverName, request.reason), version: BACKEND_VERSION }; break;
       case 'getVandalized':         response = { ...getVandalized(), version: BACKEND_VERSION }; break;
       case 'confirmVandalizedFound':response = { ...confirmVandalizedFound(request.alertId, request.driverName), version: BACKEND_VERSION }; break;
       case 'getRouteDetails':       response = { ...getRouteDetails(request.driverName, request.bikeNumbers), version: BACKEND_VERSION }; break;
@@ -1824,6 +1826,31 @@ function confirmBikeFound(alertId, driverName) {
       newRow[COLUMN_INDICES.REPORTS.STATUS - 1]     = STATUS.RECUPERADA;
       newRow[COLUMN_INDICES.REPORTS.MOTORISTA - 1]  = driverName;
       newRow[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = 'Bike recuperada via sistema de alertas';
+      reportSheet.appendRow(newRow);
+    }
+    _clearAlertsCache();
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+function removeBikeFromAlert(alertId, driverName, reason) {
+  try {
+    const alertsSheet = getSpreadsheet().getSheetByName(ALERTS_SHEET_NAME);
+    if (!alertsSheet) return { success: false, error: 'Planilha de alertas não encontrada.' };
+    const row = parseInt(alertId, 10);
+    if (isNaN(row) || row < 2) return { success: false, error: 'ID inválido.' };
+    const patrimonio = alertsSheet.getRange(row, COLUMN_INDICES.ALERTS.PATRIMONIO).getValue();
+    alertsSheet.getRange(row, COLUMN_INDICES.ALERTS.SITUACAO, 1, 3).setValues([['Removida', driverName, new Date()]]);
+    const reportSheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
+    if (reportSheet) {
+      const newRow = new Array(reportSheet.getLastColumn()).fill('');
+      newRow[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]  = new Date();
+      newRow[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] = patrimonio;
+      newRow[COLUMN_INDICES.REPORTS.STATUS - 1]     = 'Removida do Alerta';
+      newRow[COLUMN_INDICES.REPORTS.MOTORISTA - 1]  = driverName;
+      newRow[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = reason || 'Removida do Alerta';
       reportSheet.appendRow(newRow);
     }
     _clearAlertsCache();

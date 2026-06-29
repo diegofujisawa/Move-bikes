@@ -436,6 +436,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string, mechanicName?: string } | null>(null);
   const [manualMechanicModal, setManualMechanicModal] = useState<{ isOpen: boolean; bikePat: string; targetStatus: string }>({ isOpen: false, bikePat: '', targetStatus: '' });
   const [manualMechanicName, setManualMechanicName] = useState('');
+  const [removeAlertModal, setRemoveAlertModal] = useState<{
+    isOpen: boolean;
+    alert: any;
+    reason: string;
+    removerName: string;
+  }>({
+    isOpen: false,
+    alert: null,
+    reason: '',
+    removerName: '',
+  });
   const [isVandalizedConfirmOpen, setIsVandalizedConfirmOpen] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [vandalizedSelected, setVandalizedSelected] = useState<Set<string>>(new Set());
   const [vandalizedRoom, setVandalizedRoom] = useState<string>('');
@@ -4609,6 +4620,59 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
     finally { setIsLoading(false); }
   };
 
+  const handleRemoveAlertSubmit = async () => {
+    const { alert: alertObj, reason, removerName } = removeAlertModal;
+    if (!alertObj) return;
+    if (!removerName.trim()) {
+      alert('Por favor, informe o nome de quem está removendo.');
+      return;
+    }
+    if (!reason.trim()) {
+      alert('Por favor, insira o motivo da remoção.');
+      return;
+    }
+
+    setIsLoading(true);
+    const alertId = alertObj.id;
+    const patrimonio = alertObj.patrimonio || alertObj.id;
+    setAlerts(prev => prev.filter(a => (a.id || a.patrimonio) !== alertId));
+    setRemoveAlertModal(prev => ({ ...prev, isOpen: false }));
+
+    try {
+      const r = await apiCall({ 
+        action: 'removeBikeFromAlert', 
+        alertId, 
+        driverName: removerName.trim().toUpperCase(), 
+        reason: reason.trim() 
+      });
+
+      if (r.success) {
+        try {
+          await addDoc(collection(db, 'reports'), {
+            patrimonio: String(patrimonio),
+            status: 'Removida do Alerta',
+            motorista: removerName.trim().toUpperCase(),
+            observacao: reason.trim(),
+            timestamp: serverTimestamp(),
+            type: 'Alerta'
+          });
+        } catch (firebaseErr) {
+          console.error('[Firebase] Erro ao gravar remoção em Firebase reports:', firebaseErr);
+        }
+
+        setSuccessMessage(`Bike ${patrimonio} removida com sucesso dos alertas.`);
+        fetchAlerts(true);
+      } else {
+        fetchAlerts(true);
+        throw new Error(r.error);
+      }
+    } catch (err: any) {
+      alert('Erro ao remover do alerta: ' + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const runDriversSummaryFallback = useCallback(async () => {
     const range = summaryTimeRange;
     try {
@@ -8185,21 +8249,37 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                               );
                             })}
                             <td className="p-1 text-center">
-                              {alert.situacao === 'Localizada'
-                                ? <button onClick={() => handleConfirmFound(alert.id)} disabled={isLoading} className="px-1 py-0.5 bg-green-600 text-white text-[8px] font-bold rounded hover:bg-green-700 disabled:bg-gray-400 leading-none">{isLoading ? '...' : 'Confirmar'}</button>
-                                : (alert.check1 && alert.check2 && alert.check3)
-                                  ? <span className="text-[9px] text-red-600 font-black uppercase">Boletim</span>
-                                  : (
-                                    <button 
-                                      onClick={() => { 
-                                        setPrefilledBikeNumber(alert.patrimonio || alert.id); 
-                                        setRequestModalOpen(true); 
-                                      }} 
-                                      className="px-1.5 py-1 bg-blue-600 text-white text-[8px] font-bold rounded hover:bg-blue-700 active:scale-95 transition-transform"
-                                    >
-                                      Solicitar
-                                    </button>
-                                  )}
+                              <div className="flex items-center justify-center gap-1.5">
+                                {alert.situacao === 'Localizada'
+                                  ? <button onClick={() => handleConfirmFound(alert.id)} disabled={isLoading} className="px-1 py-0.5 bg-green-600 text-white text-[8px] font-bold rounded hover:bg-green-700 disabled:bg-gray-400 leading-none">{isLoading ? '...' : 'Confirmar'}</button>
+                                  : (alert.check1 && alert.check2 && alert.check3)
+                                    ? <span className="text-[9px] text-red-600 font-black uppercase">Boletim</span>
+                                    : (
+                                      <button 
+                                        onClick={() => { 
+                                          setPrefilledBikeNumber(alert.patrimonio || alert.id); 
+                                          setRequestModalOpen(true); 
+                                        }} 
+                                        className="px-1.5 py-1 bg-blue-600 text-white text-[8px] font-bold rounded hover:bg-blue-700 active:scale-95 transition-transform"
+                                      >
+                                        Solicitar
+                                      </button>
+                                    )}
+                                <button
+                                  onClick={() => {
+                                    setRemoveAlertModal({
+                                      isOpen: true,
+                                      alert: alert,
+                                      reason: '',
+                                      removerName: driverName || '',
+                                    });
+                                  }}
+                                  className="w-5 h-5 flex items-center justify-center bg-red-50 hover:bg-red-100 text-red-500 hover:text-red-700 rounded-full transition-colors font-bold text-[10px]"
+                                  title="Remover do Alerta"
+                                >
+                                  ✕
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         )) : (
@@ -9640,6 +9720,63 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                 className="flex-1 px-4 py-2.5 bg-orange-600 text-white text-xs font-bold rounded-lg hover:bg-orange-700 disabled:bg-gray-300 transition-colors flex items-center justify-center gap-2"
               >
                 {isBikeSearchLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Remoção de Bike de Alerta */}
+      {removeAlertModal.isOpen && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="bg-red-600 p-4 text-white">
+              <h3 className="text-lg font-bold flex items-center gap-2">
+                <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6 6 18M6 6l12 12"/>
+                </svg>
+                Remover Bike do Alerta
+              </h3>
+              <p className="text-xs opacity-90 mt-1">Insira os dados para remover a bike {removeAlertModal.alert?.patrimonio || removeAlertModal.alert?.id} do alerta</p>
+            </div>
+            
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Quem está removendo?</label>
+                <input
+                  type="text"
+                  value={removeAlertModal.removerName}
+                  onChange={e => setRemoveAlertModal(prev => ({ ...prev, removerName: e.target.value.toUpperCase() }))}
+                  placeholder="Seu Nome"
+                  className="w-full p-2.5 border border-gray-300 rounded-lg text-sm font-bold focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none uppercase"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Motivo da remoção</label>
+                <textarea
+                  value={removeAlertModal.reason}
+                  onChange={e => setRemoveAlertModal(prev => ({ ...prev, reason: e.target.value }))}
+                  placeholder="Descreva brevemente o motivo da remoção..."
+                  rows={3}
+                  className="w-full p-2.5 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none resize-none"
+                />
+              </div>
+            </div>
+            
+            <div className="p-4 bg-gray-50 flex gap-3">
+              <button
+                onClick={() => setRemoveAlertModal({ isOpen: false, alert: null, reason: '', removerName: '' })}
+                className="flex-1 px-4 py-2.5 bg-white border border-gray-300 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleRemoveAlertSubmit}
+                disabled={!removeAlertModal.removerName.trim() || !removeAlertModal.reason.trim() || isLoading}
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white text-xs font-bold rounded-lg hover:bg-red-700 disabled:bg-gray-300 transition-colors flex items-center justify-center gap-2"
+              >
+                {isLoading ? 'Removendo...' : 'Confirmar'}
               </button>
             </div>
           </div>
