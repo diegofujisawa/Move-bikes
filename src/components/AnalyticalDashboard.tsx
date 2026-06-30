@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { 
   Bike, ArrowLeft, Download, RefreshCw, AlertCircle, Wrench, Clock, Users, TrendingUp,
-  Battery, AlertTriangle, MapPin, Activity, HelpCircle
+  Battery, AlertTriangle, MapPin, Activity, HelpCircle, CheckCircle
 } from 'lucide-react';
 import { db } from '../firebase';
 import { collection, query, where, getDocs } from 'firebase/firestore';
@@ -64,6 +64,9 @@ const classifyReport = (rec: any) => {
   const status = rec.status || '';
   const obs = (rec.observacao || rec.observation || '').toLowerCase();
   
+  if (rec.type === 'Alerta' || status === 'Removida do Alerta' || status.includes('Alerta') || status === 'RECUPERADA') {
+    return 'Bike Recuperada (Alerta)';
+  }
   if (status === 'Não encontrada' || obs.includes('não encontrada') || obs.includes('não encont')) {
     return 'Não Encontrada';
   }
@@ -489,19 +492,31 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
     setBikesLoading(true);
     setBikesError(null);
     try {
-      const snapFinalizacao = await getDocs(query(collection(db, 'reports'), where('type', '==', 'Finalização')));
-      const records = snapFinalizacao.docs.map(doc => ({
+      const [snapFinalizacao, snapAlerta, sheetsRecoveredRes] = await Promise.all([
+        getDocs(query(collection(db, 'reports'), where('type', '==', 'Finalização'))),
+        getDocs(query(collection(db, 'reports'), where('type', '==', 'Alerta'))),
+        apiCall({ action: 'getSheetsRecoveredBikes' }).catch(err => {
+          console.error('Failed to fetch sheets recovered bikes:', err);
+          return { success: false, data: [] };
+        })
+      ]);
+      const recordsFinalizacao = snapFinalizacao.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
-      setFinalizacaoRecords(records);
+      const recordsAlerta = snapAlerta.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      const sheetsRecovered = sheetsRecoveredRes?.success ? sheetsRecoveredRes.data : [];
+      setFinalizacaoRecords([...recordsFinalizacao, ...recordsAlerta, ...sheetsRecovered]);
     } catch (err: any) {
       console.error('fetchBikesData error:', err);
       setBikesError(err.message || 'Erro ao carregar dados de bicicletas.');
     } finally {
       setBikesLoading(false);
     }
-  }, []);
+  }, [apiCall]);
 
   // Tab 3 Memoized Processed Bike Data
   const processedBikesData = useMemo(() => {
@@ -511,6 +526,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
       'Bateria Baixa': { hoje: 0, semana: 0, mes: 0 },
       'Vandalizada': { hoje: 0, semana: 0, mes: 0 },
       'Não Encontrada': { hoje: 0, semana: 0, mes: 0 },
+      'Bike Recuperada (Alerta)': { hoje: 0, semana: 0, mes: 0 },
     };
 
     const stationsCounts: Record<string, number> = {};
@@ -1278,8 +1294,8 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
             ) : (
               <div className="space-y-6">
                 
-                {/* 5 Cards de Motivos de Recolha */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                {/* 6 Cards de Motivos de Recolha e Alertas */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
                   {Object.entries(processedBikesData.reasonsCounts).map(([name, counts]) => {
                     let icon = <Wrench className="w-5 h-5 text-blue-600" />;
                     let colorTheme = 'border-blue-100 bg-blue-50/10';
@@ -1306,9 +1322,15 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                       colorTheme = 'border-slate-200 bg-slate-50/50';
                       bgIcon = 'bg-slate-100 text-slate-600';
                       headerColor = 'text-slate-950';
+                    } else if (name === 'Bike Recuperada (Alerta)') {
+                      icon = <CheckCircle className="w-5 h-5 text-emerald-600" />;
+                      colorTheme = 'border-emerald-100 bg-emerald-50/10';
+                      bgIcon = 'bg-emerald-50 text-emerald-600';
+                      headerColor = 'text-emerald-950';
                     }
 
                     const selectedValue = bikeTimeRange === 'day' ? counts.hoje : bikeTimeRange === 'week' ? counts.semana : counts.mes;
+                    const labelSuffix = name === 'Bike Recuperada (Alerta)' ? 'recuperações' : 'recolhas';
 
                     return (
                       <div key={name} className={`bg-white p-5 rounded-xl border shadow-sm flex flex-col justify-between transition-all hover:shadow-md ${colorTheme}`}>
@@ -1319,7 +1341,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                         <div className="mt-4">
                           <div className="flex items-baseline gap-1">
                             <span className="text-3xl font-black text-gray-900">{selectedValue}</span>
-                            <span className="text-[10px] font-bold text-gray-400">recolhas ({bikeTimeRange === 'day' ? 'hoje' : bikeTimeRange === 'week' ? 'semana' : 'mês'})</span>
+                            <span className="text-[10px] font-bold text-gray-400">{labelSuffix} ({bikeTimeRange === 'day' ? 'hoje' : bikeTimeRange === 'week' ? 'semana' : 'mês'})</span>
                           </div>
                           
                           {/* Micro-breakdown inside the card */}
@@ -1362,6 +1384,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                             if (entry.name === 'Bateria Baixa') barColor = '#f59e0b';
                             if (entry.name === 'Vandalizada') barColor = '#ef4444';
                             if (entry.name === 'Não Encontrada') barColor = '#64748b';
+                            if (entry.name === 'Bike Recuperada (Alerta)') barColor = '#10b981';
                             return <Cell key={`cell-${index}`} fill={barColor} />;
                           })}
                         </Bar>

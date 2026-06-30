@@ -19,7 +19,7 @@ const READ_ACTIONS = new Set([
   'getAlerts', 'getVandalized', 'getRouteDetails', 'getVehiclePlates',
   'getDriversSummary', 'getAdminAlerts', 'getMechanicsList', 'getChassiInfo',
   'getTechnicaList', 'getBicycles', 'getAnalyticalDashboardData',
-  'getDirections', 'getBikeMovement',
+  'getDirections', 'getBikeMovement', 'getSheetsRecoveredBikes',
   'exportAllData', 'sync',
 ]);
 

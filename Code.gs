@@ -367,6 +367,7 @@ function doPost(e) {
       case 'organizeTrailer':       response = { ...organizeTrailer(request.bikeNumbers, request.trailerName), version: BACKEND_VERSION }; break;
       case 'finalizeTrailer':       response = { ...finalizeTrailer(request.trailerName), version: BACKEND_VERSION }; break;
       case 'getAnalyticalDashboardData': response = { ...getAnalyticalDashboardData(request.timeRange), version: BACKEND_VERSION }; break;
+      case 'getSheetsRecoveredBikes': response = { ...getSheetsRecoveredBikes(), version: BACKEND_VERSION }; break;
       default: response = { success: false, error: 'Ação desconhecida: ' + action, version: BACKEND_VERSION }; break;
     }
     if (lockAcquired) lock.releaseLock();
@@ -3910,5 +3911,42 @@ function getNextTrailerNumber() {
     return { success: true, next: nextNum };
   } catch (e) {
     return { success: false, error: 'Erro ao gerar número de carretinha: ' + e.message, next: 1 };
+  }
+}
+
+/**
+ * Busca ocorrências de status "RECUPERADA" na planilha "Relatorio" (últimas 10000 linhas)
+ */
+function getSheetsRecoveredBikes() {
+  try {
+    const ss = getSpreadsheet();
+    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
+    if (!reportSheet) return { success: false, error: 'Aba Relatorio nao encontrada.' };
+    const lastRow = reportSheet.getLastRow();
+    if (lastRow < 2) return { success: true, data: [] };
+    
+    // Lê as últimas 10000 linhas para garantir cobertura do mês corrente
+    const rowsToRead = Math.min(lastRow - 1, 10000);
+    const startRow = lastRow - rowsToRead + 1;
+    const data = reportSheet.getRange(startRow, 1, rowsToRead, 5).getValues();
+    
+    const results = [];
+    data.forEach(function(row) {
+      const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toUpperCase();
+      if (status === 'RECUPERADA') {
+        const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+        if (!ts) return;
+        results.push({
+          timestamp: ts.toISOString(),
+          patrimonio: (row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim(),
+          status: 'RECUPERADA',
+          observacao: (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString(),
+          motorista: (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim().toUpperCase(),
+        });
+      }
+    });
+    return { success: true, data: results };
+  } catch (e) {
+    return { success: false, error: 'Erro em getSheetsRecoveredBikes: ' + e.message };
   }
 }
