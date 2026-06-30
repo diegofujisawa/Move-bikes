@@ -128,6 +128,45 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
 const getDistanceInMeters = (lat1: number, lon1: number, lat2: number, lon2: number) =>
   calculateDistance(lat1, lon1, lat2, lon2) * 1000;
 
+const STATUS_COLORS: Record<string, { bg: string; border: string; textLabel: string; textVal: string }> = {
+  blue: {
+    bg: 'bg-sky-50/70',
+    border: 'border-sky-200/50',
+    textLabel: 'text-sky-600 font-bold',
+    textVal: 'text-sky-800 font-black'
+  },
+  green: {
+    bg: 'bg-emerald-50/70',
+    border: 'border-emerald-200/50',
+    textLabel: 'text-emerald-600 font-bold',
+    textVal: 'text-emerald-900 font-black'
+  },
+  indigo: {
+    bg: 'bg-violet-50/70',
+    border: 'border-violet-200/50',
+    textLabel: 'text-violet-600 font-bold',
+    textVal: 'text-violet-800 font-black'
+  },
+  red: {
+    bg: 'bg-rose-50/70',
+    border: 'border-rose-200/50',
+    textLabel: 'text-rose-600 font-bold',
+    textVal: 'text-rose-800 font-black'
+  },
+  orange: {
+    bg: 'bg-amber-50/70',
+    border: 'border-amber-200/50',
+    textLabel: 'text-amber-600 font-bold',
+    textVal: 'text-amber-800 font-black'
+  }
+};
+
+const QUADRANT_COLORS: Record<string, string> = {
+  blue: 'bg-blue-600 hover:bg-blue-700',
+  orange: 'bg-orange-600 hover:bg-orange-700',
+  purple: 'bg-purple-600 hover:bg-purple-700',
+};
+
 // =================================================================
 // FIREBASE ERROR HANDLING & UTILS
 // =================================================================
@@ -6624,19 +6663,22 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
               return (
                 <div key={`driver-resume-${driver.name}-${i}`} className="space-y-4">
                   {/* Grid de Estatísticas */}
-                  <div className="grid grid-cols-5 gap-1.5">
+                  <div className="grid grid-cols-5 gap-2">
                     {[
                       { label: 'Notif.', value: driver.pendingRequests, c: 'blue' },
                       { label: 'Recolh.', value: recolhidas, c: 'green' },
                       { label: 'Remanej.', value: remanejada, c: 'indigo' },
                       { label: 'Não Enc.', value: naoEncontrada, c: 'red' },
                       { label: 'Total', value: total, c: 'orange' },
-                    ].map((item, i) => (
-                      <div key={`stat-${item.label}-${i}`} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
-                        <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.label}</p>
-                        <p className={`text-sm font-black text-${item.c}-800`}>{item.value}</p>
-                      </div>
-                    ))}
+                    ].map((item, i) => {
+                      const styles = STATUS_COLORS[item.c] || STATUS_COLORS.blue;
+                      return (
+                        <div key={`stat-${item.label}-${i}`} className={`${styles.bg} p-2 rounded-xl border ${styles.border} text-center shadow-sm hover:scale-105 transition-all duration-200`}>
+                          <p className={`text-[8px] ${styles.textLabel} uppercase tracking-wider mb-0.5`}>{item.label}</p>
+                          <p className={`text-base font-black ${styles.textVal} leading-none`}>{item.value}</p>
+                        </div>
+                      );
+                    })}
                   </div>
 
                   {/* Seletor de data da Linha do Tempo */}
@@ -6905,38 +6947,55 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
           const mechs = Object.entries(byMechanic);
           return (
             <>
-            <div className="mb-3 px-3 py-2 border rounded-lg bg-white shadow-sm">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] font-black text-gray-600 uppercase tracking-widest">Produção</span>
-                <div className="flex bg-gray-100 rounded-full p-0.5 gap-0.5">
+            <div className="mb-4 p-4 border border-gray-100 rounded-2xl bg-white shadow-md">
+              <div className="flex items-center justify-between mb-3.5 pb-2 border-b border-gray-100/80">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-amber-50 rounded-lg text-amber-600">
+                    <TrendingUp className="w-4 h-4" />
+                  </div>
+                  <span className="text-xs font-black text-gray-700 uppercase tracking-wider">Produção de {isTecnica ? 'Técnicos' : 'Mecânicos'}</span>
+                </div>
+                <div className="flex bg-gray-100 rounded-xl p-0.5 gap-0.5 shadow-inner">
                   {periods.map(p => (
                     <button key={p.key} onClick={() => setMechanicSummaryPeriod(p.key)}
-                      className={`text-[8px] font-bold px-2 py-0.5 rounded-full transition-all ${mechanicSummaryPeriod === p.key ? 'bg-white text-gray-700 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
+                      className={`text-[9px] font-black uppercase px-2.5 py-1 rounded-lg transition-all duration-200 ${
+                        mechanicSummaryPeriod === p.key 
+                          ? 'bg-white text-gray-800 shadow-sm font-black' 
+                          : 'text-gray-400 hover:text-gray-600'
+                      }`}
                     >{p.label}</button>
                   ))}
                 </div>
               </div>
               {mechs.length === 0 ? (
-                <p className="text-[9px] text-gray-400 italic text-center py-1">Sem dados</p>
+                <p className="text-xs text-gray-400 italic text-center py-4">Nenhum dado registrado para o período</p>
               ) : (
-                <div className="space-y-1.5">
+                <div className="space-y-2.5">
                   {mechs.map(([name, counts]) => (
-                    <div key={name} className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold text-gray-500 uppercase w-16 truncate flex-shrink-0">{name}</span>
-                      <div className="flex gap-1.5 flex-1">
+                    <div key={name} className="flex items-center gap-3 p-2 rounded-xl bg-gray-50/50 hover:bg-gray-50 transition-colors duration-150 border border-transparent hover:border-gray-100">
+                      <span className="text-xs font-bold text-gray-700 uppercase w-20 truncate flex-shrink-0">{name}</span>
+                      <div className="flex gap-2 flex-1">
                         <button
                           onClick={() => counts.manutencao > 0 && setProductionDrillDown({ mechanic: name, type: 'man', bikes: counts.bikesMan })}
-                          className={`flex flex-col items-center py-0.5 px-2 bg-orange-50 border border-orange-100 rounded-md flex-1 transition-all ${counts.manutencao > 0 ? 'hover:bg-orange-100 active:scale-95 cursor-pointer' : 'cursor-default'}`}
+                          className={`flex flex-col items-center py-1 px-3 bg-amber-50/60 border border-amber-100 rounded-xl flex-1 transition-all ${
+                            counts.manutencao > 0 
+                              ? 'hover:bg-amber-100 hover:border-amber-200 active:scale-95 shadow-sm cursor-pointer' 
+                              : 'opacity-60 cursor-default'
+                          }`}
                         >
-                          <span className="text-[7px] font-bold text-orange-400 uppercase leading-none">{isTecnica ? 'Téc' : 'Man'}</span>
-                          <span className="text-sm font-black text-orange-500 leading-tight">{counts.manutencao}</span>
+                          <span className="text-[8px] font-black text-amber-600 uppercase tracking-wide leading-none mb-0.5">{isTecnica ? 'Em Técnica' : 'Em Manut.'}</span>
+                          <span className="text-base font-black text-amber-800 leading-tight">{counts.manutencao}</span>
                         </button>
                         <button
                           onClick={() => counts.reserva > 0 && setProductionDrillDown({ mechanic: name, type: 'res', bikes: counts.bikesRes })}
-                          className={`flex flex-col items-center py-0.5 px-2 bg-green-50 border border-green-100 rounded-md flex-1 transition-all ${counts.reserva > 0 ? 'hover:bg-green-100 active:scale-95 cursor-pointer' : 'cursor-default'}`}
+                          className={`flex flex-col items-center py-1 px-3 bg-emerald-50/60 border border-emerald-100 rounded-xl flex-1 transition-all ${
+                            counts.reserva > 0 
+                              ? 'hover:bg-emerald-100 hover:border-emerald-200 active:scale-95 shadow-sm cursor-pointer' 
+                              : 'opacity-60 cursor-default'
+                          }`}
                         >
-                          <span className="text-[7px] font-bold text-green-500 uppercase leading-none">{isTecnica ? 'Agu' : 'Res'}</span>
-                          <span className="text-sm font-black text-green-600 leading-tight">{counts.reserva}</span>
+                          <span className="text-[8px] font-black text-emerald-600 uppercase tracking-wide leading-none mb-0.5">{isTecnica ? 'Aguardando' : 'Reserva'}</span>
+                          <span className="text-base font-black text-emerald-800 leading-tight">{counts.reserva}</span>
                         </button>
                       </div>
                     </div>
@@ -7944,7 +8003,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
               ].map(({ key, icon, color, title }) => (
                 <button key={key} onClick={() => setActiveQuadrant(key as any)}
                   title={title}
-                  className={`p-2 rounded-full transition-all ${activeQuadrant === key ? `bg-${color}-600 text-white shadow-md` : 'bg-gray-200 text-gray-500'}`}>
+                  className={`p-2 rounded-full transition-all ${activeQuadrant === key ? `${QUADRANT_COLORS[color] || 'bg-gray-600'} text-white shadow-md` : 'bg-gray-200 text-gray-500 hover:bg-gray-300'}`}>
                   {icon}
                 </button>
               ))}
@@ -8165,7 +8224,7 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                               </div>
                             );
                           })()}
-                          <div className="grid grid-cols-5 gap-1.5 mb-3">
+                          <div className="grid grid-cols-5 gap-2 mb-3">
                             {(() => {
                               const recolhidas = driver.stats?.recolhidas || 0;
                               const remanejada = driver.stats?.remanejada || 0;
@@ -8178,12 +8237,15 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
                                 { l: 'Remanej.', v: remanejada, c: 'indigo' },
                                 { l: 'Não Enc.', v: naoEncontrada, c: 'red' },
                                 { l: 'Total', v: total, c: 'orange' },
-                              ].map((item, i) => (
-                                <div key={`adm-stat-${item.l}-${i}`} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
-                                  <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.l}</p>
-                                  <p className={`text-sm font-black text-${item.c}-800`}>{item.v}</p>
-                                </div>
-                              ));
+                              ].map((item, i) => {
+                                const styles = STATUS_COLORS[item.c] || STATUS_COLORS.blue;
+                                return (
+                                  <div key={`adm-stat-${item.l}-${i}`} className={`${styles.bg} p-2 rounded-xl border ${styles.border} text-center shadow-sm hover:scale-105 transition-all duration-200`}>
+                                    <p className={`text-[8px] ${styles.textLabel} uppercase tracking-wider mb-0.5`}>{item.l}</p>
+                                    <p className={`text-base font-black ${styles.textVal} leading-none`}>{item.v}</p>
+                                  </div>
+                                );
+                              });
                             })()}
                           </div>
                           <div className="mb-2">
