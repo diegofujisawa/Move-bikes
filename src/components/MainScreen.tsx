@@ -2198,6 +2198,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const processManualInsert = async (bikePat: string, mechanicName: string, targetStatus: string) => {
     setIsBikeSearchLoading(true);
     try {
+      let finalName = mechanicName || driverName;
+      if (targetStatus === 'Reserva') {
+        const existingBikeInFlow = mechanicsList.find(b => String(b.patrimonio).trim().replace(/^0+/, '') === String(bikePat).trim().replace(/^0+/, ''));
+        if (existingBikeInFlow && existingBikeInFlow.status === 'Em Manutenção' && existingBikeInFlow.mecanico) {
+          const existingMecNorm = normalizeForSearch(existingBikeInFlow.mecanico);
+          if (existingMecNorm && existingMecNorm !== 'mecanica' && existingMecNorm !== 'mecanico') {
+            finalName = existingBikeInFlow.mecanico;
+          }
+        }
+      }
+
       if (isMecanica || isTecnica) {
         const directStatuses = isTecnica 
           ? ['Aguardando Técnica', 'Em Técnica']
@@ -2205,7 +2216,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
           
         if (directStatuses.includes(targetStatus)) {
           protectMechanicBike(bikePat, targetStatus);
-          const finalName = mechanicName || driverName;
           
           // Tenta pegar a bateria do resultado da consulta atual se o patrimônio bater
           let currentBattery = undefined;
@@ -2259,7 +2269,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const res = await apiCall({
         action: 'insertBikeMechanics',
         bikeNumber: bikePat,
-        mechanicName,
+        mechanicName: finalName,
         targetStatus
       });
       
@@ -6568,10 +6578,9 @@ const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "
               onClick={() => setIsAlmoxarifadoOpen(true)}
               disabled={isLoading}
               title="Almoxarifado"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black uppercase text-blue-700 bg-blue-50 border border-blue-100 hover:bg-blue-100 active:scale-95 transition-all shadow-sm"
+              className="p-1.5 sm:p-2 rounded-full text-blue-700 bg-blue-50 border border-blue-100 hover:bg-blue-100 active:scale-95 transition-all shadow-sm"
             >
-              <Package className="w-4 h-4 text-blue-600" />
-              <span>Almoxarifado</span>
+              <Package className="w-6 h-6 sm:w-7 sm:h-7 text-blue-600" />
             </button>
           )}
           <button onClick={onLogout} disabled={isLoading} title="Sair" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-red-600 disabled:opacity-50"><LogoutIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>

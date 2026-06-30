@@ -3434,8 +3434,18 @@ function insertBikeMechanics(bikeNumber, mechanicName, targetStatus) {
     const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
     if (rowPat === pStr && rowStatus !== 'Remanejada') {
       if (tsMs && tsMs < CUTOFF_MS) continue;
+      
+      let finalMecanico = mechanicName;
+      if (targetStatus === 'Reserva' && rowStatus === 'Em Manutenção') {
+        const existingMec = (data[i][COLUMN_INDICES.MECHANICS.MECANICO - 1] || '').toString().trim();
+        const existingMecNorm = existingMec.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+        if (existingMec && existingMecNorm !== 'mecanica' && existingMecNorm !== 'mecanico' && existingMecNorm !== '') {
+          finalMecanico = existingMec;
+        }
+      }
+
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue(targetStatus);
-      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
+      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(finalMecanico);
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue('MANUAL');
       _clearMechanicsCache();
