@@ -249,6 +249,8 @@ const normalizeName = (name: string) => {
   return name.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 };
 
+const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "RAFAEL"];
+
 // =================================================================
 // COMPONENTE PRINCIPAL
 // =================================================================
@@ -2669,8 +2671,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsBoletimLoading(false);
     }
   };
-
-const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "RAFAEL"];
 
   const fetchMechanicHistory = async () => {
     setIsMechanicHistoryLoading(true);
