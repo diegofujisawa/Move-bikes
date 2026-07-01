@@ -2443,17 +2443,19 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
     const lastRowSt = stateSheet.getLastRow();
     const stateData = lastRowSt > 1 ? stateSheet.getRange(2, 1, lastRowSt - 1, stateSheet.getLastColumn()).getValues() : [];
     const realTime = {};
+    drivers.forEach(d => { realTime[d] = { route: [], collected: [] }; });
     const deliveredRecently = getFinalizedBikesToday(500, ['estação', 'estacao', 'filial', 'vandalizada', 'remanejada', 'mecanica', 'manutenção', 'técnica', 'recuperada', 'encontrada']);
     stateData.forEach(row => {
-      const driver = row[COLUMN_INDICES.STATE.MOTORISTA - 1];
-      if (drivers.includes(driver)) {
+      const driverRaw = (row[COLUMN_INDICES.STATE.MOTORISTA - 1] || '').toString().trim();
+      const driverKey = driverLookup[driverRaw.toLowerCase()];
+      if (driverKey) {
         let route     = (row[COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
         let collected = (row[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
         
         route = route.filter(b => !deliveredRecently.has(b));
         collected = collected.filter(b => !deliveredRecently.has(b));
 
-        realTime[driver] = { route, collected };
+        realTime[driverKey] = { route, collected };
       }
     });
     const pendingCounts = {};
@@ -3915,7 +3917,7 @@ function getNextTrailerNumber() {
 }
 
 /**
- * Busca ocorrências de status "RECUPERADA" na planilha "Relatorio" (últimas 10000 linhas)
+ * Busca ocorrências de status "RECUPERADA" na planilha "Relatorio" cobrindo todo o mês corrente
  */
 function getSheetsRecoveredBikes() {
   try {
@@ -3925,26 +3927,51 @@ function getSheetsRecoveredBikes() {
     const lastRow = reportSheet.getLastRow();
     if (lastRow < 2) return { success: true, data: [] };
     
-    // Lê as últimas 10000 linhas para garantir cobertura do mês corrente
-    const rowsToRead = Math.min(lastRow - 1, 10000);
-    const startRow = lastRow - rowsToRead + 1;
-    const data = reportSheet.getRange(startRow, 1, rowsToRead, 5).getValues();
+    // Filtra para o mês corrente utilizando timezone correto do script
+    const baseLocal = getScriptTzDate ? getScriptTzDate() : new Date();
+    const startOfCurrentMonth = new Date(baseLocal.getFullYear(), baseLocal.getMonth(), 1, 0, 0, 0, 0);
     
     const results = [];
-    data.forEach(function(row) {
-      const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toUpperCase();
-      if (status === 'RECUPERADA') {
+    let currentRow = lastRow;
+    const blockSize = 5000;
+    
+    while (currentRow > 1) {
+      const readSize = Math.min(currentRow - 1, blockSize);
+      const startRow = currentRow - readSize + 1;
+      const data = reportSheet.getRange(startRow, 1, readSize, 5).getValues();
+      
+      let reachedBeforeCurrentMonth = false;
+      
+      // Varrer de trás para frente no bloco (mais recente para mais antigo)
+      for (let i = data.length - 1; i >= 0; i--) {
+        const row = data[i];
         const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
-        if (!ts) return;
-        results.push({
-          timestamp: ts.toISOString(),
-          patrimonio: (row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim(),
-          status: 'RECUPERADA',
-          observacao: (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString(),
-          motorista: (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim().toUpperCase(),
-        });
+        if (!ts) continue;
+        
+        if (ts < startOfCurrentMonth) {
+          reachedBeforeCurrentMonth = true;
+          break;
+        }
+        
+        const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toUpperCase();
+        if (status === 'RECUPERADA') {
+          results.push({
+            timestamp: ts.toISOString(),
+            patrimonio: (row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim(),
+            status: 'RECUPERADA',
+            observacao: (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString(),
+            motorista: (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim().toUpperCase(),
+          });
+        }
       }
-    });
+      
+      if (reachedBeforeCurrentMonth) {
+        break;
+      }
+      
+      currentRow -= readSize;
+    }
+    
     return { success: true, data: results };
   } catch (e) {
     return { success: false, error: 'Erro em getSheetsRecoveredBikes: ' + e.message };
