@@ -13,7 +13,7 @@ if (!SCRIPT_URL || !SCRIPT_URL.startsWith('https://script.google.com')) {
 // =================================================================
 const READ_ACTIONS = new Set([
   'health', 'search', 'debugSearch', 'getRequests', 'getRequestsHistory', 'getStations',
-  'getMotoristas', 'getAllPatrimonioNumbers', 'getDriverLocations',
+  'getMotoristas', 'getMecanicos', 'getAllPatrimonioNumbers', 'getDriverLocations',
   'getDriverState', 'getBikeDetailsBatch', 'getDailyReportData',
   'getSchedule', 'getBikeStatuses', 'getReporData', 'getChangeStatusData',
   'getAlerts', 'getVandalized', 'getRouteDetails', 'getVehiclePlates',
@@ -28,7 +28,7 @@ const READ_ACTIONS = new Set([
 // TTL padrão: 30 segundos
 // =================================================================
 const CACHEABLE_ACTIONS = new Set([
-  'getStations', 'getBikeStatuses', 'getMotoristas',
+  'getStations', 'getBikeStatuses', 'getMotoristas', 'getMecanicos',
   'getVehiclePlates', 'getMechanicsList',
 ]);
 

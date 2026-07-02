@@ -4725,32 +4725,84 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const runDriversSummaryFallback = useCallback(async () => {
     const range = summaryTimeRange;
     try {
-      const drivers: string[] = category.includes('ADM')
-        ? ((await apiCall({ action: 'getMotoristas' })).data || []).filter((m: string) => m.toUpperCase() !== 'MECANICA')
-        : [driverName];
-      const reqResult = await apiCall({ action: 'getRequests', driverName, category }, 1, true);
-      const allPending = reqResult.success ? reqResult.data : [];
+      // 1. Obtém a lista de motoristas de forma segura (API ou estado local)
+      let drivers: string[] = [];
+      if (category.includes('ADM')) {
+        try {
+          const res = await apiCall({ action: 'getMotoristas' }, 1, true);
+          drivers = (res?.data || []).filter((m: string) => m.toUpperCase() !== 'MECANICA');
+        } catch (err) {
+          console.warn('[Fallback] Falha ao buscar motoristas via API, usando estado local:', err);
+          drivers = motoristas.filter((m: string) => m.toUpperCase() !== 'MECANICA');
+        }
+      } else {
+        drivers = [driverName];
+      }
+
+      if (drivers.length === 0) {
+        console.warn('[Fallback] Nenhum motorista disponível para gerar resumo.');
+        return;
+      }
+
+      // 2. Busca solicitações pendentes de forma segura
+      let allPending: any[] = [];
+      try {
+        const reqResult = await apiCall({ action: 'getRequests', driverName, category }, 1, true);
+        allPending = reqResult.success ? reqResult.data : [];
+      } catch (err) {
+        console.warn('[Fallback] Falha ao buscar solicitações pendentes:', err);
+      }
+
+      // 3. Busca os estados e estatísticas de cada motorista de forma individualizada para evitar que falhas isoladas quebrem tudo
       const summary = await Promise.all(drivers.map(async (d: string) => {
-        const [stateRes, reportRes] = await Promise.all([
-          apiCall({ action: 'getDriverState', driverName: d }),
-          apiCall({ action: 'getDailyReportData', driverName: d, timeRange: range })
-        ]);
+        let stateRes = { success: false, data: { routeBikes: [], collectedBikes: [] } };
+        let reportRes = { success: false, data: { recolhidas: [], remanejadas: [], naoEncontrada: [], naoAtendida: [] } };
+
+        try {
+          stateRes = await apiCall({ action: 'getDriverState', driverName: d }, 1, true);
+        } catch (err) {
+          console.warn(`[Fallback] Falha ao carregar estado de ${d}:`, err);
+        }
+
+        try {
+          reportRes = await apiCall({ action: 'getDailyReportData', driverName: d, timeRange: range }, 1, true);
+        } catch (err) {
+          console.warn(`[Fallback] Falha ao carregar relatório diário de ${d}:`, err);
+        }
+
         const stats = { recolhidas: 0, remanejada: 0, naoEncontrada: 0, naoAtendida: 0 };
-        if (reportRes.success) {
+        if (reportRes && reportRes.success && reportRes.data) {
           stats.recolhidas = reportRes.data.recolhidas?.length || 0;
           stats.remanejada = reportRes.data.remanejadas?.length || 0;
           stats.naoEncontrada = reportRes.data.naoEncontrada?.length || 0;
           stats.naoAtendida = reportRes.data.naoAtendida?.length || 0;
         }
+
         const pendingCount = allPending.filter((r: any) => {
           const rec = (r.recipient || 'Todos').toLowerCase();
           return rec === 'todos' || rec === d.toLowerCase();
         }).length;
-        return { name: d, stats, realTime: { route: stateRes.success ? stateRes.data.routeBikes : [], collected: stateRes.success ? stateRes.data.collectedBikes : [] }, pendingRequests: pendingCount };
+
+        return {
+          name: d,
+          stats,
+          realTime: {
+            route: stateRes && stateRes.success ? stateRes.data.routeBikes : [],
+            collected: stateRes && stateRes.success ? stateRes.data.collectedBikes : []
+          },
+          pendingRequests: pendingCount,
+          timeline: [],
+          timelineWindow: null
+        };
       }));
-      if (summaryTimeRange === range) setDriversSummary(summary);
-    } catch (err) { console.error('Fallback summary:', err); }
-  }, [summaryTimeRange, category, driverName]);
+
+      if (summaryTimeRange === range) {
+        setDriversSummary(summary);
+      }
+    } catch (err) {
+      console.error('[Fallback] Erro crítico no resumo dos motoristas:', err);
+    }
+  }, [summaryTimeRange, category, driverName, motoristas]);
 
   const fetchDriversSummary = useCallback(async () => {
     const range = summaryTimeRange;
@@ -4774,8 +4826,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
           });
         });
       }
-      else if (!r.success) await runDriversSummaryFallback();
-    } catch { await runDriversSummaryFallback(); }
+      else if (!r.success) {
+        console.warn('[API] getDriversSummary retornou erro, tentando fallback:', r.error);
+        await runDriversSummaryFallback();
+      }
+    } catch (err) {
+      console.error('[API] getDriversSummary falhou, tentando fallback:', err);
+      await runDriversSummaryFallback();
+    }
     finally { setIsSummaryLoading(false); }
   }, [summaryTimeRange, timelineDate, runDriversSummaryFallback]);
 
@@ -4783,7 +4841,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const fetchDynamicMechanics = useCallback(async () => {
     try {
-      const res = await apiCall({ action: 'getMecanicos' });
+      const res = await apiGetCall('getMecanicos');
       if (res.success && Array.isArray(res.data) && res.data.length > 0) {
         const names = res.data
           .map((m: any) => String(m).trim().toUpperCase())
@@ -4792,7 +4850,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setDynamicMechanics(names);
       }
     } catch (err) {
-      console.error('getMecanicos failed:', err);
+      console.warn('getMecanicos failed (using default static mechanics list):', err);
     }
   }, []);
 
@@ -8263,7 +8321,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         </div>
                       ))}
                     </div>
-                  ) : <div className="text-center py-6 bg-white rounded-lg border border-dashed"><p className="text-gray-400 text-xs">Carregando...</p></div>}
+                  ) : <div className="text-center py-6 bg-white rounded-lg border border-dashed"><p className="text-gray-400 text-xs">{isSummaryLoading ? 'Carregando...' : 'Nenhum motorista disponível'}</p></div>}
                 </div>
 
                 {/* Quadrante 2: Alertas */}

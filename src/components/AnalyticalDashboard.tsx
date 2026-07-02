@@ -145,7 +145,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
   const [bikesLoading, setBikesLoading] = useState(true);
   const [bikesError, setBikesError] = useState<string | null>(null);
   const [finalizacaoRecords, setFinalizacaoRecords] = useState<any[]>([]);
-  const [bikeTimeRange, setBikeTimeRange] = useState<'day' | 'yesterday' | 'week' | 'previous_week' | 'month' | 'previous_month'>('month');
+  const [bikeTimeRange, setBikeTimeRange] = useState<'month' | 'week' | 'day'>('month');
 
   const timeRanges = [
     { key: 'day', label: 'Hoje' },
@@ -521,12 +521,12 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
   // Tab 3 Memoized Processed Bike Data
   const processedBikesData = useMemo(() => {
     const reasonsCounts = {
-      'Manutenção Bicicleta': { hoje: 0, ontem: 0, semana: 0, semanaAnterior: 0, mes: 0, mesAnterior: 0 },
-      'Manutenção Locker': { hoje: 0, ontem: 0, semana: 0, semanaAnterior: 0, mes: 0, mesAnterior: 0 },
-      'Bateria Baixa': { hoje: 0, ontem: 0, semana: 0, semanaAnterior: 0, mes: 0, mesAnterior: 0 },
-      'Vandalizada': { hoje: 0, ontem: 0, semana: 0, semanaAnterior: 0, mes: 0, mesAnterior: 0 },
-      'Não Encontrada': { hoje: 0, ontem: 0, semana: 0, semanaAnterior: 0, mes: 0, mesAnterior: 0 },
-      'Bike Recuperada (Alerta)': { hoje: 0, ontem: 0, semana: 0, semanaAnterior: 0, mes: 0, mesAnterior: 0 },
+      'Manutenção Bicicleta': { hoje: 0, semana: 0, mes: 0 },
+      'Manutenção Locker': { hoje: 0, semana: 0, mes: 0 },
+      'Bateria Baixa': { hoje: 0, semana: 0, mes: 0 },
+      'Vandalizada': { hoje: 0, semana: 0, mes: 0 },
+      'Não Encontrada': { hoje: 0, semana: 0, mes: 0 },
+      'Bike Recuperada (Alerta)': { hoje: 0, semana: 0, mes: 0 },
     };
 
     const stationsCounts: Record<string, number> = {};
@@ -542,21 +542,15 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
       const reason = classifyReport(rec);
       if (reason && reasonsCounts[reason as keyof typeof reasonsCounts]) {
         if (periods.isCurrentDay) reasonsCounts[reason as keyof typeof reasonsCounts].hoje++;
-        if (periods.isPreviousDay) reasonsCounts[reason as keyof typeof reasonsCounts].ontem++;
         if (periods.isCurrentWeek) reasonsCounts[reason as keyof typeof reasonsCounts].semana++;
-        if (periods.isPreviousWeek) reasonsCounts[reason as keyof typeof reasonsCounts].semanaAnterior++;
         if (periods.isCurrentMonth) reasonsCounts[reason as keyof typeof reasonsCounts].mes++;
-        if (periods.isPreviousMonth) reasonsCounts[reason as keyof typeof reasonsCounts].mesAnterior++;
       }
 
       // Check matching period for top lists
       let matchesTimeframe = false;
       if (bikeTimeRange === 'day' && periods.isCurrentDay) matchesTimeframe = true;
-      if (bikeTimeRange === 'yesterday' && periods.isPreviousDay) matchesTimeframe = true;
       if (bikeTimeRange === 'week' && periods.isCurrentWeek) matchesTimeframe = true;
-      if (bikeTimeRange === 'previous_week' && periods.isPreviousWeek) matchesTimeframe = true;
       if (bikeTimeRange === 'month' && periods.isCurrentMonth) matchesTimeframe = true;
-      if (bikeTimeRange === 'previous_month' && periods.isPreviousMonth) matchesTimeframe = true;
 
       if (matchesTimeframe) {
         const status = rec.status || '';
@@ -588,9 +582,9 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
 
     const topBikes = Object.entries(bikesFilialCounts)
       .map(([bike, data]) => ({ 
-         bike, 
-         count: data.count, 
-         lastObs: data.lastObs.slice(0, 2).join(', ') || '—'
+        bike, 
+        count: data.count, 
+        lastObs: data.lastObs.slice(0, 2).join(', ') || '—'
       }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
@@ -605,27 +599,18 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
   const bikeChartData = useMemo(() => {
     return Object.entries(processedBikesData.reasonsCounts).map(([name, counts]) => ({
       name,
-      'Quantidade': 
-        bikeTimeRange === 'day' ? counts.hoje :
-        bikeTimeRange === 'yesterday' ? counts.ontem :
-        bikeTimeRange === 'week' ? counts.semana :
-        bikeTimeRange === 'previous_week' ? counts.semanaAnterior :
-        bikeTimeRange === 'month' ? counts.mes :
-        counts.mesAnterior
+      'Quantidade': bikeTimeRange === 'day' ? counts.hoje : bikeTimeRange === 'week' ? counts.semana : counts.mes
     }));
   }, [processedBikesData, bikeTimeRange]);
 
   // CSV Export for Bikes Tab
   const exportBikesSummaryCSV = () => {
-    const headers = ['Categoria de Recolha', 'Hoje', 'Ontem', 'Semana Atual', 'Semana Anterior', 'Mês Atual', 'Mês Anterior'];
+    const headers = ['Categoria de Recolha', 'Hoje', 'Semana Atual', 'Mês Atual'];
     const rows = Object.entries(processedBikesData.reasonsCounts).map(([name, counts]) => [
       name,
       counts.hoje,
-      counts.ontem,
       counts.semana,
-      counts.semanaAnterior,
-      counts.mes,
-      counts.mesAnterior
+      counts.mes
     ]);
 
     const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
@@ -1241,7 +1226,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
               </div>
               
               <div className="flex flex-wrap items-center gap-2">
-                <div className="flex flex-wrap bg-white rounded-lg border p-1 shadow-sm gap-1">
+                <div className="flex bg-white rounded-lg border p-1 shadow-sm">
                   <button
                     onClick={() => setBikeTimeRange('day')}
                     className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${
@@ -1251,16 +1236,6 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                     }`}
                   >
                     Hoje
-                  </button>
-                  <button
-                    onClick={() => setBikeTimeRange('yesterday')}
-                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${
-                      bikeTimeRange === 'yesterday'
-                        ? 'bg-blue-600 text-white shadow-sm'
-                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                    }`}
-                  >
-                    Ontem
                   </button>
                   <button
                     onClick={() => setBikeTimeRange('week')}
@@ -1273,16 +1248,6 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                     Semana
                   </button>
                   <button
-                    onClick={() => setBikeTimeRange('previous_week')}
-                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${
-                      bikeTimeRange === 'previous_week'
-                        ? 'bg-blue-600 text-white shadow-sm'
-                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                    }`}
-                  >
-                    Semana Ant.
-                  </button>
-                  <button
                     onClick={() => setBikeTimeRange('month')}
                     className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${
                       bikeTimeRange === 'month'
@@ -1291,16 +1256,6 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                     }`}
                   >
                     Mês
-                  </button>
-                  <button
-                    onClick={() => setBikeTimeRange('previous_month')}
-                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${
-                      bikeTimeRange === 'previous_month'
-                        ? 'bg-blue-600 text-white shadow-sm'
-                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                    }`}
-                  >
-                    Mês Ant.
                   </button>
                 </div>
 
@@ -1374,13 +1329,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                       headerColor = 'text-emerald-950';
                     }
 
-                    const selectedValue = 
-                      bikeTimeRange === 'day' ? counts.hoje :
-                      bikeTimeRange === 'yesterday' ? counts.ontem :
-                      bikeTimeRange === 'week' ? counts.semana :
-                      bikeTimeRange === 'previous_week' ? counts.semanaAnterior :
-                      bikeTimeRange === 'month' ? counts.mes :
-                      counts.mesAnterior;
+                    const selectedValue = bikeTimeRange === 'day' ? counts.hoje : bikeTimeRange === 'week' ? counts.semana : counts.mes;
                     const labelSuffix = name === 'Bike Recuperada (Alerta)' ? 'recuperações' : 'recolhas';
 
                     return (
@@ -1392,31 +1341,22 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                         <div className="mt-4">
                           <div className="flex items-baseline gap-1">
                             <span className="text-3xl font-black text-gray-900">{selectedValue}</span>
-                            <span className="text-[10px] font-bold text-gray-400">
-                              {labelSuffix} ({
-                                bikeTimeRange === 'day' ? 'hoje' :
-                                bikeTimeRange === 'yesterday' ? 'ontem' :
-                                bikeTimeRange === 'week' ? 'semana' :
-                                bikeTimeRange === 'previous_week' ? 'semana anterior' :
-                                bikeTimeRange === 'month' ? 'mês' :
-                                'mês anterior'
-                              })
-                            </span>
+                            <span className="text-[10px] font-bold text-gray-400">{labelSuffix} ({bikeTimeRange === 'day' ? 'hoje' : bikeTimeRange === 'week' ? 'semana' : 'mês'})</span>
                           </div>
                           
                           {/* Micro-breakdown inside the card */}
                           <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-3 gap-1 text-[10px] text-gray-500 font-semibold text-center">
                             <div>
-                              <p className="text-gray-400 font-normal">Hoje / Ontem</p>
-                              <p className="text-gray-800 font-black">{counts.hoje} <span className="text-gray-400 font-medium">/ {counts.ontem}</span></p>
+                              <p className="text-gray-400 font-normal">Hoje</p>
+                              <p className="text-gray-800 font-black">{counts.hoje}</p>
                             </div>
                             <div className="border-x border-gray-100">
-                              <p className="text-gray-400 font-normal">Semana / Ant.</p>
-                              <p className="text-gray-800 font-black">{counts.semana} <span className="text-gray-400 font-medium">/ {counts.semanaAnterior}</span></p>
+                              <p className="text-gray-400 font-normal">Semana</p>
+                              <p className="text-gray-800 font-black">{counts.semana}</p>
                             </div>
                             <div>
-                              <p className="text-gray-400 font-normal">Mês / Ant.</p>
-                              <p className="text-gray-800 font-black">{counts.mes} <span className="text-gray-400 font-medium">/ {counts.mesAnterior}</span></p>
+                              <p className="text-gray-400 font-normal">Mês</p>
+                              <p className="text-gray-800 font-black">{counts.mes}</p>
                             </div>
                           </div>
                         </div>
@@ -1428,14 +1368,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                 {/* Grafico Comparativo de Coleta */}
                 <div className="bg-white p-6 rounded-xl border shadow-sm">
                   <h3 className="font-extrabold text-gray-900 text-sm sm:text-base mb-1">Volumetria de Coletas por Tipo</h3>
-                  <p className="text-xs text-gray-500 mb-6">Comparativo das categorias de recolha de bicicletas para o período de <strong>{
-                    bikeTimeRange === 'day' ? 'Hoje' :
-                    bikeTimeRange === 'yesterday' ? 'Ontem' :
-                    bikeTimeRange === 'week' ? 'Semana Atual' :
-                    bikeTimeRange === 'previous_week' ? 'Semana Anterior' :
-                    bikeTimeRange === 'month' ? 'Mês Atual' :
-                    'Mês Anterior'
-                  }</strong></p>
+                  <p className="text-xs text-gray-500 mb-6">Comparativo das categorias de recolha de bicicletas para o período de <strong>{bikeTimeRange === 'day' ? 'Hoje' : bikeTimeRange === 'week' ? 'Semana Atual' : 'Mês Atual'}</strong></p>
                   
                   <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
@@ -1471,14 +1404,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                           <MapPin className="w-5 h-5 text-emerald-600" />
                           <div>
                             <h3 className="font-extrabold text-gray-900 text-sm sm:text-base">Estações de Destino</h3>
-                            <p className="text-[10px] sm:text-xs text-gray-500">Estações que mais receberam bicicletas remanejadas ({
-                              bikeTimeRange === 'day' ? 'hoje' :
-                              bikeTimeRange === 'yesterday' ? 'ontem' :
-                              bikeTimeRange === 'week' ? 'semana' :
-                              bikeTimeRange === 'previous_week' ? 'semana anterior' :
-                              bikeTimeRange === 'month' ? 'mês' :
-                              'mês anterior'
-                            }).</p>
+                            <p className="text-[10px] sm:text-xs text-gray-500">Estações que mais receberam bicicletas remanejadas ({bikeTimeRange === 'day' ? 'hoje' : bikeTimeRange === 'week' ? 'semana' : 'mês'}).</p>
                           </div>
                         </div>
                       </div>
@@ -1522,14 +1448,7 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
                           <Bike className="w-5 h-5 text-red-600" />
                           <div>
                             <h3 className="font-extrabold text-gray-900 text-sm sm:text-base">Top 10 Bikes Críticas — Filial</h3>
-                            <p className="text-[10px] sm:text-xs text-gray-500">Bicicletas que mais retornaram para a Recolhida Filial ({
-                              bikeTimeRange === 'day' ? 'hoje' :
-                              bikeTimeRange === 'yesterday' ? 'ontem' :
-                              bikeTimeRange === 'week' ? 'semana' :
-                              bikeTimeRange === 'previous_week' ? 'semana anterior' :
-                              bikeTimeRange === 'month' ? 'mês' :
-                              'mês anterior'
-                            }).</p>
+                            <p className="text-[10px] sm:text-xs text-gray-500">Bicicletas que mais retornaram para a Recolhida Filial ({bikeTimeRange === 'day' ? 'hoje' : bikeTimeRange === 'week' ? 'semana' : 'mês'}).</p>
                           </div>
                         </div>
                       </div>
