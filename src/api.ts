@@ -221,7 +221,8 @@ function normalizeError(err: any): Error {
 export const apiGetCall = async (
   action: string,
   params: Record<string, string> = {},
-  retries = 3  // ← aumentado de 1 para 3
+  retries = 3,  // ← aumentado de 1 para 3
+  customTimeout?: number
 ): Promise<any> => {
 
   // Verifica cache antes de fazer a requisição
@@ -255,7 +256,7 @@ export const apiGetCall = async (
       credentials: 'omit',
       cache: 'no-store',
       redirect: 'follow',
-      timeout: 90000,
+      timeout: customTimeout || 90000,
     });
 
     if (!response.ok) {
@@ -286,7 +287,7 @@ export const apiGetCall = async (
       const backoff = calcBackoff(attempt);
       console.warn(`[GET] Tentando novamente (${retries} restantes) em ${Math.round(backoff)}ms...`);
       await delay(backoff);
-      return apiGetCall(action, params, retries - 1);
+      return apiGetCall(action, params, retries - 1, customTimeout);
     }
     throw normalizeError(err);
   }
@@ -423,7 +424,7 @@ export const apiCall = async (
 // =================================================================
 export const checkApiConnection = async (): Promise<any> => {
   try {
-    return await apiGetCall('health');
+    return await apiGetCall('health', {}, 1, 10000);
   } catch (err: any) {
     throw normalizeError(err);
   }
