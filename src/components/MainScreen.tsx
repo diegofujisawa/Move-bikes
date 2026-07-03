@@ -3808,31 +3808,92 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally { setIsLoading(false); }
   };
 
+  const getOrCreateActiveTrailer = async (currentList: any[]): Promise<string> => {
+    const activeTrailerGroups: Record<string, any[]> = {};
+    currentList.forEach(b => {
+      if (b.status === 'Reserva' && b.carretinha && b.carretinha !== 'Sem Carretinha' && !b.trailerStatus) {
+        if (!activeTrailerGroups[b.carretinha]) {
+          activeTrailerGroups[b.carretinha] = [];
+        }
+        activeTrailerGroups[b.carretinha].push(b);
+      }
+    });
+
+    const activeTrailerNames = Object.keys(activeTrailerGroups).sort((a, b) => {
+      const numA = parseInt(a.replace(/^\D+/g, ''), 10) || 0;
+      const numB = parseInt(b.replace(/^\D+/g, ''), 10) || 0;
+      return numA - numB;
+    });
+
+    const availableTrailer = activeTrailerNames.find(name => activeTrailerGroups[name].length < 14);
+
+    if (availableTrailer) {
+      return availableTrailer;
+    }
+
+    let nextNum = 1;
+    try {
+      const r = await apiCall({ action: 'getNextTrailerNumber' });
+      if (r.success) {
+        nextNum = r.next;
+      }
+    } catch (err) {
+      console.error('Erro ao buscar próximo número de carretinha:', err);
+      const todayStr = localDateStr();
+      const lastDate = localStorage.getItem('trailer_seq_date');
+      let lastUsed = 0;
+      if (lastDate === todayStr) {
+        lastUsed = parseInt(localStorage.getItem('trailer_seq_last') || '0');
+      } else {
+        localStorage.setItem('trailer_seq_date', todayStr);
+      }
+      nextNum = (lastUsed % 5) + 1;
+      localStorage.setItem('trailer_seq_last', nextNum.toString());
+    }
+
+    if (nextNum < 1 || nextNum > 5) {
+      nextNum = 1;
+    }
+
+    return `Carretinha ${nextNum}`;
+  };
+
   const handleFinalizeMechanicsRepair = async (treatment: string) => {
     if (!treatment) { alert('Descreva a tratativa.'); return; }
     setIsLoading(true);
     const bikeNumber = selectedMechanicBike.patrimonio;
 
-    // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
-    // Atualização otimista
-    const mechanicName = selectedMechanicBike?.mecanico || driverName;
-    protectMechanicBike(bikeNumber, {
-      status: 'Reserva',
-      mecanico: mechanicName,
-      tratativa: treatment,
-      dataFinalizacao: new Date().toISOString(),
-    });
-    setIsMechanicRepairModalOpen(false);
     try {
+      const targetTrailer = await getOrCreateActiveTrailer(mechanicsList);
+
+      // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
+      // Atualização otimista
+      const mechanicName = selectedMechanicBike?.mecanico || driverName;
+      protectMechanicBike(bikeNumber, {
+        status: 'Reserva',
+        mecanico: mechanicName,
+        tratativa: treatment,
+        dataFinalizacao: new Date().toISOString(),
+        carretinha: targetTrailer,
+      });
+      setIsMechanicRepairModalOpen(false);
+
       // Atualiza no Firebase mechanics_flow
       await setDoc(doc(db, 'mechanics_flow', bikeNumber), {
         status: 'Reserva',
         tratativa: treatment,
+        carretinha: targetTrailer,
         dataSaida: serverTimestamp()
       }, { merge: true });
 
       try {
-        await setDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, observacao: treatment, ultimaAtualizacao: serverTimestamp() }, { merge: true });
+        await setDoc(doc(db, 'bikes', bikeNumber), { 
+          status: 'Mecânica', 
+          responsavel: mechanicName, 
+          observacao: treatment, 
+          carretinha: targetTrailer,
+          ultimaAtualizacao: serverTimestamp() 
+        }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikeNumber}`);
       }
@@ -3844,7 +3905,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             patrimonio: bikeNumber,
             status: 'Reserva',
             motorista: mechanicName,
-            observacao: `Reparo finalizado por ${mechanicName} — ${treatment}`,
+            observacao: `Reparo finalizado por ${mechanicName} — ${treatment} (Alocada automaticamente na ${targetTrailer})`,
             timestamp: serverTimestamp(),
             type: 'Reparo',
             statusSistema: bikeDetails?.['Status'] || bikeDetails?.statusSistema || '',
@@ -3857,10 +3918,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }
       })();
 
-      setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
+      // Verifique se com essa bike adicionada, a carretinha atingiu 14 bikes
+      const currentBikesInThisTrailer = mechanicsList.filter(
+        b => b.carretinha === targetTrailer && b.status === 'Reserva' && !b.trailerStatus
+      );
+      const totalCountWithNewBike = currentBikesInThisTrailer.length + 1;
+
+      setSuccessMessage(`Bike ${bikeNumber} movida para Reserva e alocada automaticamente na ${targetTrailer} (${totalCountWithNewBike}/14).`);
+
+      if (totalCountWithNewBike >= 14) {
+        setTimeout(() => {
+          handleFinalizeTrailer(targetTrailer);
+        }, 800);
+      }
     } catch (err: any) {
       alert('Erro: ' + err.message);
-    } finally { setIsLoading(false); }
+    } finally { 
+      setIsLoading(false); 
+    }
   };
 
   const handleOrganizeTrailer = async (bikeNumbers: string[], trailerName: string) => {
@@ -3868,6 +3943,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     setIsLoading(true);
     try {
+      // Enforce 14-bike limit on manual additions/creation
+      const existingBikes = mechanicsList.filter(b => b.carretinha === trailerName && b.status === 'Reserva' && !b.trailerStatus);
+      if (existingBikes.length + bikeNumbers.length > 14) {
+        alert(`A ${trailerName} suporta no máximo 14 bikes. Atualmente possui ${existingBikes.length} bikes. Não é possível adicionar mais ${bikeNumbers.length} bikes.`);
+        setIsLoading(false);
+        return;
+      }
+
       // Organiza localmente a carretinha
       bikeNumbers.forEach(id => {
         protectMechanicBike(id, { status: 'Reserva', carretinha: trailerName });
@@ -3923,8 +4006,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }));
       } else if (action.type === 'status_change') {
         if (action.targetStatus === 'Reserva') {
+          const targetTrailer = await getOrCreateActiveTrailer(mechanicsList);
+
           try {
-            await setDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }, { merge: true });
+            await setDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, carretinha: targetTrailer, ultimaAtualizacao: serverTimestamp() }, { merge: true });
           } catch (e) {
             handleFirestoreError(e, OperationType.UPDATE, `bikes/${action.bikeNumber}`);
           }
@@ -3934,9 +4019,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
               const bikeDetails = await fetchBikeDetailsForReport(action.bikeNumber, 3000);
               await addDoc(collection(db, 'reports'), {
                 patrimonio: action.bikeNumber,
-                status: 'Em Estação',
+                status: 'Reserva',
                 motorista: action.mechanicName,
-                observacao: action.treatment || 'Reparo finalizado',
+                observacao: `${action.treatment || 'Reparo finalizado'} (Alocada automaticamente na ${targetTrailer})`,
                 timestamp: serverTimestamp(),
                 type: 'Reparo',
                 statusSistema: bikeDetails?.['Status'] || bikeDetails?.statusSistema || '',
@@ -3954,10 +4039,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
               status: 'Reserva',
               mecanico: action.mechanicName,
               tratativa: action.treatment,
+              carretinha: targetTrailer,
               ultimaAtualizacao: serverTimestamp()
             }, { merge: true });
           } catch (e) {
             console.warn('[Firebase] finalizeMechanicsRepair flow update failed:', e);
+          }
+
+          const currentBikesInThisTrailer = mechanicsList.filter(
+            b => b.carretinha === targetTrailer && b.status === 'Reserva' && !b.trailerStatus
+          );
+          const totalCountWithNewBike = currentBikesInThisTrailer.length + 1;
+          if (totalCountWithNewBike >= 14) {
+            setTimeout(() => {
+              handleFinalizeTrailer(targetTrailer);
+            }, 800);
           }
         } else {
           try {
@@ -7702,111 +7798,122 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   return (
                     <div className="space-y-3">
                       {/* Carretinhas ativas — edição completa */}
-                      {activeEntries.map(([trailer, bikes]) => (
-                      <div key={trailer} className="border border-green-200 rounded-xl bg-white p-3 shadow-sm">
-                        <div className="flex justify-between items-center mb-2 border-b pb-1.5">
-                          <h3 className="font-bold text-green-700 flex items-center gap-2 text-sm"><TrailerIcon className="w-4 h-4"/>{trailer}</h3>
-                          {trailer !== 'Sem Carretinha' && (
-                            <button onClick={() => handleFinalizeTrailer(trailer)}
-                              className="text-[10px] px-2 py-0.5 rounded font-bold bg-green-600 hover:bg-green-700 text-white transition-all">
-                              Finalizar Carretinha
-                            </button>
-                          )}
-                        </div>
-                        <div className="space-y-1">
-                          {(bikes as any[]).map((bike, i) => (
-                            <div key={`tr-${bike.patrimonio}-${i}`} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 border rounded-lg text-[11px]">
-                              <span className="font-black text-gray-800 font-mono w-10 flex-shrink-0">{bike.patrimonio}</span>
-                              {bike.mecanico && <span className="text-blue-600 font-bold flex-shrink-0 truncate max-w-[80px]">{bike.mecanico}</span>}
-                              {bike.tratativa && bike.tratativa !== 'MANUAL' && <span className="text-gray-400 flex-1 truncate text-[9px]">{bike.tratativa}</span>}
-                              <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
-                                {bike.bateria !== undefined && (
-                                  <span className={`text-[10px] font-bold ${Number(formatBattery(bike.bateria)) < trailerBatteryLimit ? 'text-red-500' : 'text-gray-500'}`}>🔋{formatBattery(bike.bateria)}%</span>
+                      {activeEntries.map(([trailer, bikes]) => {
+                        const isFull = trailer !== 'Sem Carretinha' && (bikes as any[]).length >= 14;
+                        return (
+                          <div key={trailer} className={`border rounded-xl p-3 shadow-sm transition-all duration-300 ${isFull ? 'border-orange-300 bg-orange-50/20' : 'border-green-200 bg-white'}`}>
+                            <div className="flex justify-between items-center mb-2 border-b pb-1.5">
+                              <h3 className="font-bold text-green-700 flex items-center gap-2 text-sm">
+                                <TrailerIcon className={`w-4 h-4 ${isFull ? 'text-orange-500 animate-pulse' : 'text-green-600'}`}/>
+                                {trailer}
+                                {isFull && (
+                                  <span className="ml-1 text-[9px] bg-orange-500 text-white px-1.5 py-0.5 rounded-full font-black animate-pulse">
+                                    🔒 FECHADA (14/14)
+                                  </span>
                                 )}
-                                {trailer !== 'Sem Carretinha' ? (
-                                  <button onClick={async () => {
-                                    const mechanicName = bike.mecanico || driverName;
-                                    protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
-                                    setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
-                                    try {
-                                      await setDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
-                                        status: 'Em Manutenção',
-                                        carretinha: null,
-                                        dataEntrada: serverTimestamp()
-                                      }, { merge: true });
-                                    } catch (e) {
-                                      console.warn('[Firebase] removeFromTrailer failed:', e);
-                                    }
-                                  }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95">
-                                    <XIcon className="w-3 h-3"/>
-                                  </button>
-                                ) : (
-                                  <button onClick={async () => {
-                                    const mechanicName = bike.mecanico || driverName;
-                                    protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
-                                    
-                                    try {
-                                      await setDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
-                                        status: 'Em Manutenção',
-                                        carretinha: null,
-                                        dataEntrada: serverTimestamp()
-                                      }, { merge: true });
-                                    } catch (e) {
-                                      console.warn('[Firebase] deleteMechanicsBike (move to maintenance) failed:', e);
-                                    }
-
-                                    setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
-                                  }} className="p-0.5 bg-orange-100 text-orange-600 rounded hover:bg-orange-200 active:scale-95" title="Voltar para Manutenção">
-                                    <XIcon className="w-3 h-3"/>
-                                  </button>
-                                )}
-                              </div>
+                              </h3>
+                              {trailer !== 'Sem Carretinha' && (
+                                <button onClick={() => handleFinalizeTrailer(trailer)}
+                                  className={`text-[10px] px-2.5 py-1 rounded font-bold transition-all ${isFull ? 'bg-orange-500 hover:bg-orange-600 text-white shadow-md shadow-orange-100 animate-bounce' : 'bg-green-600 hover:bg-green-700 text-white'}`}>
+                                  {isFull ? '⚡ Conferir & Finalizar' : 'Finalizar Carretinha'}
+                                </button>
+                              )}
                             </div>
-                          ))}
-                        </div>
-                        {trailer === 'Sem Carretinha' && (
-                          <div className="mt-3 space-y-2">
-                            {/* Se houver uma carretinha ativa (não finalizada), permite adicionar a ela */}
-                            {activeEntries.filter(([t]) => t !== 'Sem Carretinha').map(([activeTrailer]) => (
-                              <button
-                                key={`add-to-${activeTrailer}`}
-                                onClick={() => handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), activeTrailer)}
-                                className="w-full py-1.5 bg-green-600 text-white text-[10px] font-bold rounded hover:bg-green-700 active:scale-95 transition-all"
-                              >
-                                Adicionar à {activeTrailer}
-                              </button>
-                            ))}
+                            <div className="space-y-1">
+                              {(bikes as any[]).map((bike, i) => (
+                                <div key={`tr-${bike.patrimonio}-${i}`} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 border rounded-lg text-[11px]">
+                                  <span className="font-black text-gray-800 font-mono w-10 flex-shrink-0">{bike.patrimonio}</span>
+                                  {bike.mecanico && <span className="text-blue-600 font-bold flex-shrink-0 truncate max-w-[80px]">{bike.mecanico}</span>}
+                                  {bike.tratativa && bike.tratativa !== 'MANUAL' && <span className="text-gray-400 flex-1 truncate text-[9px]">{bike.tratativa}</span>}
+                                  <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
+                                    {bike.bateria !== undefined && (
+                                      <span className={`text-[10px] font-bold ${Number(formatBattery(bike.bateria)) < trailerBatteryLimit ? 'text-red-500' : 'text-gray-500'}`}>🔋{formatBattery(bike.bateria)}%</span>
+                                    )}
+                                    {trailer !== 'Sem Carretinha' ? (
+                                      <button onClick={async () => {
+                                        const mechanicName = bike.mecanico || driverName;
+                                        protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
+                                        setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
+                                        try {
+                                          await setDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
+                                            status: 'Em Manutenção',
+                                            carretinha: null,
+                                            dataEntrada: serverTimestamp()
+                                          }, { merge: true });
+                                        } catch (e) {
+                                          console.warn('[Firebase] removeFromTrailer failed:', e);
+                                        }
+                                      }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95">
+                                        <XIcon className="w-3 h-3"/>
+                                      </button>
+                                    ) : (
+                                      <button onClick={async () => {
+                                        const mechanicName = bike.mecanico || driverName;
+                                        protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
+                                        
+                                        try {
+                                          await setDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
+                                            status: 'Em Manutenção',
+                                            carretinha: null,
+                                            dataEntrada: serverTimestamp()
+                                          }, { merge: true });
+                                        } catch (e) {
+                                          console.warn('[Firebase] deleteMechanicsBike (move to maintenance) failed:', e);
+                                        }
 
-                            <button onClick={async () => {
-                              setIsLoading(true);
-                              try {
-                                const r = await apiCall({ action: 'getNextTrailerNumber' });
-                                const next = r.success ? r.next : 1;
-                                handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
-                              } catch (err: any) {
-                                console.error('Erro ao calcular sequência de carretinha:', err);
-                                const todayStr = localDateStr();
-                                const lastDate = localStorage.getItem('trailer_seq_date');
-                                let lastUsed = 0;
-                                if (lastDate === todayStr) {
-                                  lastUsed = parseInt(localStorage.getItem('trailer_seq_last') || '0');
-                                } else {
-                                  localStorage.setItem('trailer_seq_date', todayStr);
-                                }
-                                const nextLocal = (lastUsed % 4) + 1;
-                                localStorage.setItem('trailer_seq_last', nextLocal.toString());
-                                handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${nextLocal}`);
-                              } finally {
-                                setIsLoading(false);
-                              }
-                            }}
-                              className="w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700 active:scale-95 transition-all">
-                              Criar Nova Carretinha
-                            </button>
+                                        setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
+                                      }} className="p-0.5 bg-orange-100 text-orange-600 rounded hover:bg-orange-200 active:scale-95" title="Voltar para Manutenção">
+                                        <XIcon className="w-3 h-3"/>
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            {trailer === 'Sem Carretinha' && (
+                              <div className="mt-3 space-y-2">
+                                {/* Se houver uma carretinha ativa (não finalizada e não cheia), permite adicionar a ela */}
+                                {activeEntries.filter(([t, b]) => t !== 'Sem Carretinha' && b.length < 14).map(([activeTrailer]) => (
+                                  <button
+                                    key={`add-to-${activeTrailer}`}
+                                    onClick={() => handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), activeTrailer)}
+                                    className="w-full py-1.5 bg-green-600 text-white text-[10px] font-bold rounded hover:bg-green-700 active:scale-95 transition-all"
+                                  >
+                                    Adicionar à {activeTrailer}
+                                  </button>
+                                ))}
+
+                                <button onClick={async () => {
+                                  setIsLoading(true);
+                                  try {
+                                    const r = await apiCall({ action: 'getNextTrailerNumber' });
+                                    const next = r.success ? r.next : 1;
+                                    handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
+                                  } catch (err: any) {
+                                    console.error('Erro ao calcular sequência de carretinha:', err);
+                                    const todayStr = localDateStr();
+                                    const lastDate = localStorage.getItem('trailer_seq_date');
+                                    let lastUsed = 0;
+                                    if (lastDate === todayStr) {
+                                      lastUsed = parseInt(localStorage.getItem('trailer_seq_last') || '0');
+                                    } else {
+                                      localStorage.setItem('trailer_seq_date', todayStr);
+                                    }
+                                    const nextLocal = (lastUsed % 5) + 1;
+                                    localStorage.setItem('trailer_seq_last', nextLocal.toString());
+                                    handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${nextLocal}`);
+                                  } finally {
+                                    setIsLoading(false);
+                                  }
+                                }}
+                                  className="w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700 active:scale-95 transition-all">
+                                  Criar Nova Carretinha
+                                </button>
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    ))}
+                        );
+                      })}
 
                       {/* ── Carretinhas enviadas — resumo até aceite do motorista ── */}
                       {sentEntries.length > 0 && (

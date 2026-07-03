@@ -3892,7 +3892,7 @@ function _clearMechanicsCache() {
 }
 
 /**
- * Retorna o próximo número de carretinha (1-4) de forma sequencial persistente.
+ * Retorna o próximo número de carretinha (1-5) de forma sequencial persistente.
  */
 function getNextTrailerNumber() {
   try {
@@ -3908,7 +3908,7 @@ function getNextTrailerNumber() {
       lastNum = parseInt(props.getProperty('LAST_TRAILER_NUM') || '0', 10);
     }
     
-    let nextNum = (lastNum % 4) + 1;
+    let nextNum = (lastNum % 5) + 1;
     props.setProperty('LAST_TRAILER_NUM', nextNum.toString());
     return { success: true, next: nextNum };
   } catch (e) {
