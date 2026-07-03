@@ -177,6 +177,33 @@
         "bikeCount": { "type": "number" }
       },
       "required": ["trailerName", "timestamp", "date"]
+    },
+    "AlmoxarifadoItem": {
+      "title": "Almoxarifado Item",
+      "description": "Represents an inventory item in the warehouse.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "codigo": { "type": "string", "description": "Unique code of the item." },
+        "descricao": { "type": "string", "description": "Description of the item." },
+        "fornecedor": { "type": "string", "description": "Supplier of the item." },
+        "quantidade": { "type": "number", "description": "Current available quantity." },
+        "qtdMinima": { "type": "number", "description": "Minimum required stock level." },
+        "historico": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "tipo": { "type": "string", "enum": ["entrada", "retirada"] },
+              "quantidade": { "type": "number" },
+              "usuario": { "type": "string" },
+              "data": { "type": "string" }
+            }
+          }
+        }
+      },
+      "required": ["codigo", "descricao", "fornecedor", "quantidade"]
     }
   },
   "firestore": {
@@ -223,6 +250,10 @@
     "/trailers_history/{id}": {
       "schema": "TrailerHistory",
       "description": "Collection of released trailers history."
+    },
+    "/almoxarifado/{id}": {
+      "schema": "AlmoxarifadoItem",
+      "description": "Collection of inventory items."
     }
   }
 }

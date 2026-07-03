@@ -12,7 +12,14 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const [password, setPassword] = useState('');
   const [plate, setPlate] = useState('');
   const [kmInicial, setKmInicial] = useState('');
-  const [plates, setPlates] = useState<{ plate: string }[]>([]);
+  const [plates, setPlates] = useState<{ plate: string }[]>(() => {
+    try {
+      const cached = localStorage.getItem('vehicle_plates_cache');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingPlates, setIsLoadingPlates] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,9 +30,15 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const fetchPlates = useCallback(async () => {
     setIsLoadingPlates(true);
     try {
-      const result = await apiCall({ action: 'getVehiclePlates' });
+      const result = await apiCall({ action: 'getVehiclePlates' }, 1, true);
       if (result.success) {
         setPlates(result.data);
+        setConnectionStatus('ok'); // Se buscou as placas, a API está respondendo perfeitamente
+        try {
+          localStorage.setItem('vehicle_plates_cache', JSON.stringify(result.data));
+        } catch (e) {
+          console.warn("Failed to cache vehicle plates:", e);
+        }
       }
     } catch (err) {
       console.error("Failed to fetch plates:", err);
@@ -45,14 +58,19 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
         throw new Error('Resposta de teste inválida.');
       }
     } catch (err: any) {
-      setConnectionStatus('error');
-      setConnectionError(err.message || 'Erro desconhecido.');
+      // Se já obtivemos as placas com sucesso, não vamos sobrescrever o status de ok para erro
+      setConnectionStatus(prev => {
+        if (prev === 'ok') return 'ok';
+        setConnectionError(err.message || 'Erro desconhecido.');
+        return 'error';
+      });
     }
   }, [fetchPlates]);
 
   useEffect(() => {
     testConnection();
-  }, [testConnection]);
+    fetchPlates();
+  }, [testConnection, fetchPlates]);
 
   const handleRetryConnectionTest = () => {
     setConnectionStatus('testing');
@@ -77,6 +95,8 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
         plate: plate,
         kmInicial: kmInicial ? parseFloat(kmInicial) : undefined
       });
+
+      setConnectionStatus('ok');
 
       if (result.user) {
         onLogin({
@@ -198,7 +218,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 placeholder="Digite seu login"
                 required
                 autoCapitalize="none"
-                disabled={connectionStatus !== 'ok'}
+                disabled={isLoading}
               />
             </div>
           </div>
@@ -218,7 +238,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                 placeholder="Digite sua senha"
                 required
-                disabled={connectionStatus !== 'ok'}
+                disabled={isLoading}
               />
             </div>
           </div>
@@ -239,7 +259,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 value={plate}
                 onChange={handlePlateChange}
                 className="mt-1 block w-full pl-3 pr-10 py-3 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
-                disabled={connectionStatus !== 'ok' || isLoadingPlates}
+                disabled={isLoading || isLoadingPlates}
               >
                 <option value="">Selecione a placa</option>
                 {plates.map((p) => (
@@ -261,7 +281,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 onChange={(e) => setKmInicial(e.target.value)}
                 className="mt-1 block w-full px-3 py-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                 placeholder="KM do odômetro"
-                disabled={connectionStatus !== 'ok'}
+                disabled={isLoading}
               />
             </div>
           </div>
@@ -275,7 +295,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
 
         <button
           type="submit"
-          disabled={!login.trim() || isLoading || connectionStatus !== 'ok'}
+          disabled={!login.trim() || isLoading}
           className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors mt-6"
         >
           {isLoading ? (

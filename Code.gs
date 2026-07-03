@@ -286,7 +286,8 @@ function doPost(e) {
       'finalizeMechanicsRepair', 'organizeTrailer', 'finalizeTrailer',
       'moveToAguardandoManutencao', 'declineMechanicsReceipt',
       'markAsNotFound', 'editMechanicsBike', 'deleteMechanicsBike', 'clearAlterarStatus', 'removeFromTrailer',
-      'sendToTechnical', 'confirmTechnicaReceipt', 'finalizeTechnicaRepair'
+      'sendToTechnical', 'confirmTechnicaReceipt', 'finalizeTechnicaRepair',
+      'removeBikeFromAlert'
     ];
     const isWriteAction = writeActions.includes(action);
     const lock = LockService.getScriptLock();
@@ -334,6 +335,7 @@ function doPost(e) {
       case 'getChangeStatusData':   response = { ...getChangeStatusData(request.timeRange), version: BACKEND_VERSION }; break;
       case 'getAlerts':             response = { ...getAlerts(false), version: BACKEND_VERSION }; break;
       case 'confirmBikeFound':      response = { ...confirmBikeFound(request.alertId, request.driverName), version: BACKEND_VERSION }; break;
+      case 'removeBikeFromAlert':   response = { ...removeBikeFromAlert(request.alertId, request.driverName, request.reason), version: BACKEND_VERSION }; break;
       case 'getVandalized':         response = { ...getVandalized(), version: BACKEND_VERSION }; break;
       case 'confirmVandalizedFound':response = { ...confirmVandalizedFound(request.alertId, request.driverName), version: BACKEND_VERSION }; break;
       case 'getRouteDetails':       response = { ...getRouteDetails(request.driverName, request.bikeNumbers), version: BACKEND_VERSION }; break;
@@ -365,6 +367,7 @@ function doPost(e) {
       case 'organizeTrailer':       response = { ...organizeTrailer(request.bikeNumbers, request.trailerName), version: BACKEND_VERSION }; break;
       case 'finalizeTrailer':       response = { ...finalizeTrailer(request.trailerName), version: BACKEND_VERSION }; break;
       case 'getAnalyticalDashboardData': response = { ...getAnalyticalDashboardData(request.timeRange), version: BACKEND_VERSION }; break;
+      case 'getSheetsRecoveredBikes': response = { ...getSheetsRecoveredBikes(), version: BACKEND_VERSION }; break;
       default: response = { success: false, error: 'Ação desconhecida: ' + action, version: BACKEND_VERSION }; break;
     }
     if (lockAcquired) lock.releaseLock();
@@ -1833,6 +1836,31 @@ function confirmBikeFound(alertId, driverName) {
   }
 }
 
+function removeBikeFromAlert(alertId, driverName, reason) {
+  try {
+    const alertsSheet = getSpreadsheet().getSheetByName(ALERTS_SHEET_NAME);
+    if (!alertsSheet) return { success: false, error: 'Planilha de alertas não encontrada.' };
+    const row = parseInt(alertId, 10);
+    if (isNaN(row) || row < 2) return { success: false, error: 'ID inválido.' };
+    const patrimonio = alertsSheet.getRange(row, COLUMN_INDICES.ALERTS.PATRIMONIO).getValue();
+    alertsSheet.getRange(row, COLUMN_INDICES.ALERTS.SITUACAO, 1, 3).setValues([['Removida', driverName, new Date()]]);
+    const reportSheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
+    if (reportSheet) {
+      const newRow = new Array(reportSheet.getLastColumn()).fill('');
+      newRow[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]  = new Date();
+      newRow[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] = patrimonio;
+      newRow[COLUMN_INDICES.REPORTS.STATUS - 1]     = 'Removida do Alerta';
+      newRow[COLUMN_INDICES.REPORTS.MOTORISTA - 1]  = driverName;
+      newRow[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] = reason || 'Removida do Alerta';
+      reportSheet.appendRow(newRow);
+    }
+    _clearAlertsCache();
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
 /**
  * Helpler para limpar caches de alertas (v13, v14, v15 etc)
  */
@@ -2415,17 +2443,19 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
     const lastRowSt = stateSheet.getLastRow();
     const stateData = lastRowSt > 1 ? stateSheet.getRange(2, 1, lastRowSt - 1, stateSheet.getLastColumn()).getValues() : [];
     const realTime = {};
+    drivers.forEach(d => { realTime[d] = { route: [], collected: [] }; });
     const deliveredRecently = getFinalizedBikesToday(500, ['estação', 'estacao', 'filial', 'vandalizada', 'remanejada', 'mecanica', 'manutenção', 'técnica', 'recuperada', 'encontrada']);
     stateData.forEach(row => {
-      const driver = row[COLUMN_INDICES.STATE.MOTORISTA - 1];
-      if (drivers.includes(driver)) {
+      const driverRaw = (row[COLUMN_INDICES.STATE.MOTORISTA - 1] || '').toString().trim();
+      const driverKey = driverLookup[driverRaw.toLowerCase()];
+      if (driverKey) {
         let route     = (row[COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
         let collected = (row[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
         
         route = route.filter(b => !deliveredRecently.has(b));
         collected = collected.filter(b => !deliveredRecently.has(b));
 
-        realTime[driver] = { route, collected };
+        realTime[driverKey] = { route, collected };
       }
     });
     const pendingCounts = {};
@@ -3407,8 +3437,18 @@ function insertBikeMechanics(bikeNumber, mechanicName, targetStatus) {
     const tsMs = toMs(data[i][COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1]);
     if (rowPat === pStr && rowStatus !== 'Remanejada') {
       if (tsMs && tsMs < CUTOFF_MS) continue;
+      
+      let finalMecanico = mechanicName;
+      if (targetStatus === 'Reserva' && rowStatus === 'Em Manutenção') {
+        const existingMec = (data[i][COLUMN_INDICES.MECHANICS.MECANICO - 1] || '').toString().trim();
+        const existingMecNorm = existingMec.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+        if (existingMec && existingMecNorm !== 'mecanica' && existingMecNorm !== 'mecanico' && existingMecNorm !== '') {
+          finalMecanico = existingMec;
+        }
+      }
+
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.STATUS).setValue(targetStatus);
-      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(mechanicName);
+      sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.MECANICO).setValue(finalMecanico);
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.DATA_ENTRADA).setValue(new Date());
       sheet.getRange(i + 1, COLUMN_INDICES.MECHANICS.TRATATIVA).setValue('MANUAL');
       _clearMechanicsCache();
@@ -3852,7 +3892,7 @@ function _clearMechanicsCache() {
 }
 
 /**
- * Retorna o próximo número de carretinha (1-4) de forma sequencial persistente.
+ * Retorna o próximo número de carretinha (1-5) de forma sequencial persistente.
  */
 function getNextTrailerNumber() {
   try {
@@ -3868,10 +3908,72 @@ function getNextTrailerNumber() {
       lastNum = parseInt(props.getProperty('LAST_TRAILER_NUM') || '0', 10);
     }
     
-    let nextNum = (lastNum % 4) + 1;
+    let nextNum = (lastNum % 5) + 1;
     props.setProperty('LAST_TRAILER_NUM', nextNum.toString());
     return { success: true, next: nextNum };
   } catch (e) {
     return { success: false, error: 'Erro ao gerar número de carretinha: ' + e.message, next: 1 };
+  }
+}
+
+/**
+ * Busca ocorrências de status "RECUPERADA" na planilha "Relatorio" cobrindo todo o mês corrente
+ */
+function getSheetsRecoveredBikes() {
+  try {
+    const ss = getSpreadsheet();
+    const reportSheet = ss.getSheetByName(REPORT_SHEET_NAME);
+    if (!reportSheet) return { success: false, error: 'Aba Relatorio nao encontrada.' };
+    const lastRow = reportSheet.getLastRow();
+    if (lastRow < 2) return { success: true, data: [] };
+    
+    // Filtra para o mês corrente utilizando timezone correto do script
+    const baseLocal = getScriptTzDate ? getScriptTzDate() : new Date();
+    const startOfCurrentMonth = new Date(baseLocal.getFullYear(), baseLocal.getMonth(), 1, 0, 0, 0, 0);
+    
+    const results = [];
+    let currentRow = lastRow;
+    const blockSize = 5000;
+    
+    while (currentRow > 1) {
+      const readSize = Math.min(currentRow - 1, blockSize);
+      const startRow = currentRow - readSize + 1;
+      const data = reportSheet.getRange(startRow, 1, readSize, 5).getValues();
+      
+      let reachedBeforeCurrentMonth = false;
+      
+      // Varrer de trás para frente no bloco (mais recente para mais antigo)
+      for (let i = data.length - 1; i >= 0; i--) {
+        const row = data[i];
+        const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+        if (!ts) continue;
+        
+        if (ts < startOfCurrentMonth) {
+          reachedBeforeCurrentMonth = true;
+          break;
+        }
+        
+        const status = (row[COLUMN_INDICES.REPORTS.STATUS - 1] || '').toString().trim().toUpperCase();
+        if (status === 'RECUPERADA') {
+          results.push({
+            timestamp: ts.toISOString(),
+            patrimonio: (row[COLUMN_INDICES.REPORTS.PATRIMONIO - 1] || '').toString().trim(),
+            status: 'RECUPERADA',
+            observacao: (row[COLUMN_INDICES.REPORTS.OBSERVACAO - 1] || '').toString(),
+            motorista: (row[COLUMN_INDICES.REPORTS.MOTORISTA - 1] || '').toString().trim().toUpperCase(),
+          });
+        }
+      }
+      
+      if (reachedBeforeCurrentMonth) {
+        break;
+      }
+      
+      currentRow -= readSize;
+    }
+    
+    return { success: true, data: results };
+  } catch (e) {
+    return { success: false, error: 'Erro em getSheetsRecoveredBikes: ' + e.message };
   }
 }
