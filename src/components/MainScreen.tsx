@@ -10,8 +10,7 @@ import {
 import { 
   Settings, Battery, Lock, Map as LucideMap, 
   WifiOff, AlertCircle, RefreshCw, ChevronUp, ChevronDown, ChevronLeft, 
-  ChevronRight, Circle, Play, Locate, Wrench, Loader2, TrendingUp, ExternalLink,
-  Package, Plus, Minus, Inbox
+  ChevronRight, Circle, Play, Locate, Wrench, Loader2, TrendingUp, ExternalLink
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db } from '../firebase';
@@ -128,45 +127,6 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
 const getDistanceInMeters = (lat1: number, lon1: number, lat2: number, lon2: number) =>
   calculateDistance(lat1, lon1, lat2, lon2) * 1000;
 
-const STATUS_COLORS: Record<string, { bg: string; border: string; textLabel: string; textVal: string }> = {
-  blue: {
-    bg: 'bg-sky-50/70',
-    border: 'border-sky-200/50',
-    textLabel: 'text-sky-600 font-bold',
-    textVal: 'text-sky-800 font-black'
-  },
-  green: {
-    bg: 'bg-emerald-50/70',
-    border: 'border-emerald-200/50',
-    textLabel: 'text-emerald-600 font-bold',
-    textVal: 'text-emerald-900 font-black'
-  },
-  indigo: {
-    bg: 'bg-violet-50/70',
-    border: 'border-violet-200/50',
-    textLabel: 'text-violet-600 font-bold',
-    textVal: 'text-violet-800 font-black'
-  },
-  red: {
-    bg: 'bg-rose-50/70',
-    border: 'border-rose-200/50',
-    textLabel: 'text-rose-600 font-bold',
-    textVal: 'text-rose-800 font-black'
-  },
-  orange: {
-    bg: 'bg-amber-50/70',
-    border: 'border-amber-200/50',
-    textLabel: 'text-amber-600 font-bold',
-    textVal: 'text-amber-800 font-black'
-  }
-};
-
-const QUADRANT_COLORS: Record<string, string> = {
-  blue: 'bg-blue-600 hover:bg-blue-700',
-  orange: 'bg-orange-600 hover:bg-orange-700',
-  purple: 'bg-purple-600 hover:bg-purple-700',
-};
-
 // =================================================================
 // FIREBASE ERROR HANDLING & UTILS
 // =================================================================
@@ -249,8 +209,6 @@ const normalizeName = (name: string) => {
   return name.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 };
 
-const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "RAFAEL"];
-
 // =================================================================
 // COMPONENTE PRINCIPAL
 // =================================================================
@@ -292,35 +250,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [newBikeNumber, setNewBikeNumber] = useState('');
   const [isAdminBikeAdding, setIsAdminBikeAdding] = useState(false);
   const [adminBikeActionLoading, setAdminBikeActionLoading] = useState<string | null>(null);
-
-  // --- Almoxarifado (Warehouse Stock Control) State ---
-  const [isAlmoxarifadoOpen, setIsAlmoxarifadoOpen] = useState(false);
-  const [almoxarifadoItems, setAlmoxarifadoItems] = useState<any[]>([]);
-  const [almoxarifadoSearch, setAlmoxarifadoSearch] = useState('');
-  const [isAddingNewItem, setIsAddingNewItem] = useState(false);
-  const [newItemCodigo, setNewItemCodigo] = useState('');
-  const [newItemDescricao, setNewItemDescricao] = useState('');
-  const [newItemFornecedor, setNewItemFornecedor] = useState('');
-  const [newItemQuantidade, setNewItemQuantidade] = useState<number | ''>('');
-  const [newItemQtdMinima, setNewItemQtdMinima] = useState<number | ''>('');
-  const [isSubmittingNewItem, setIsSubmittingNewItem] = useState(false);
-
-  // Stock movement state
-  const [movingItem, setMovingItem] = useState<any | null>(null);
-  const [movementTipo, setMovementTipo] = useState<'entrada' | 'retirada'>('retirada');
-  const [movementQuantidade, setMovementQuantidade] = useState<number | ''>('');
-  const [movementUsuario, setMovementUsuario] = useState('');
-  const [movementData, setMovementData] = useState(() => {
-    const today = new Date();
-    const yyyy = today.getFullYear();
-    const mm = String(today.getMonth() + 1).padStart(2, '0');
-    const dd = String(today.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  });
-  const [isSubmittingMovement, setIsSubmittingMovement] = useState(false);
-
-  // Item history view state
-  const [viewingHistoryItem, setViewingHistoryItem] = useState<any | null>(null);
 
 
   // --- Dados principais ---
@@ -477,17 +406,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [isTechnicalConfirmOpen, setIsTechnicalConfirmOpen] = useState<{ isOpen: boolean, bikePat: string, mechanicName?: string } | null>(null);
   const [manualMechanicModal, setManualMechanicModal] = useState<{ isOpen: boolean; bikePat: string; targetStatus: string }>({ isOpen: false, bikePat: '', targetStatus: '' });
   const [manualMechanicName, setManualMechanicName] = useState('');
-  const [removeAlertModal, setRemoveAlertModal] = useState<{
-    isOpen: boolean;
-    alert: any;
-    reason: string;
-    removerName: string;
-  }>({
-    isOpen: false,
-    alert: null,
-    reason: '',
-    removerName: '',
-  });
   const [isVandalizedConfirmOpen, setIsVandalizedConfirmOpen] = useState<{ isOpen: boolean, bikePat: string } | null>(null);
   const [vandalizedSelected, setVandalizedSelected] = useState<Set<string>>(new Set());
   const [vandalizedRoom, setVandalizedRoom] = useState<string>('');
@@ -1299,27 +1217,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     return () => unsubBikes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [driverName, routeBikesTenKey]); // routeBikesTenKey garante estabilidade, evitando re-inscrições desnecessárias
-
-  // --- Real-time listener for Almoxarifado items ---
-  useEffect(() => {
-    if (!db) return () => {};
-    let unsubscribe = () => {};
-    try {
-      const q = query(collection(db, 'almoxarifado'));
-      unsubscribe = onSnapshot(q, (snapshot) => {
-        const items: any[] = [];
-        snapshot.forEach((docSnap) => {
-          items.push({ id: docSnap.id, ...docSnap.data() });
-        });
-        setAlmoxarifadoItems(items);
-      }, (err) => {
-        console.error('[Almoxarifado] Listener error:', err);
-      });
-    } catch (e) {
-      console.warn('[Almoxarifado] Subscription setup failed:', e);
-    }
-    return () => unsubscribe();
-  }, []);
 
   // =================================================================
   // GARANTIA DE UNICIDADE
@@ -2239,17 +2136,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const processManualInsert = async (bikePat: string, mechanicName: string, targetStatus: string) => {
     setIsBikeSearchLoading(true);
     try {
-      let finalName = mechanicName || driverName;
-      if (targetStatus === 'Reserva') {
-        const existingBikeInFlow = mechanicsList.find(b => String(b.patrimonio).trim().replace(/^0+/, '') === String(bikePat).trim().replace(/^0+/, ''));
-        if (existingBikeInFlow && existingBikeInFlow.status === 'Em Manutenção' && existingBikeInFlow.mecanico) {
-          const existingMecNorm = normalizeForSearch(existingBikeInFlow.mecanico);
-          if (existingMecNorm && existingMecNorm !== 'mecanica' && existingMecNorm !== 'mecanico') {
-            finalName = existingBikeInFlow.mecanico;
-          }
-        }
-      }
-
       if (isMecanica || isTecnica) {
         const directStatuses = isTecnica 
           ? ['Aguardando Técnica', 'Em Técnica']
@@ -2257,6 +2143,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           
         if (directStatuses.includes(targetStatus)) {
           protectMechanicBike(bikePat, targetStatus);
+          const finalName = mechanicName || driverName;
           
           // Tenta pegar a bateria do resultado da consulta atual se o patrimônio bater
           let currentBattery = undefined;
@@ -2310,7 +2197,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const res = await apiCall({
         action: 'insertBikeMechanics',
         bikeNumber: bikePat,
-        mechanicName: finalName,
+        mechanicName,
         targetStatus
       });
       
@@ -2448,154 +2335,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
-  // --- Almoxarifado Handlers ---
-  const handleAddNewAlmoxarifadoItem = async () => {
-    const code = newItemCodigo.trim().toUpperCase();
-    const desc = newItemDescricao.trim();
-    const supplier = newItemFornecedor.trim();
-    const qty = newItemQuantidade === '' ? 0 : Number(newItemQuantidade);
-    const minQty = newItemQtdMinima === '' ? 0 : Number(newItemQtdMinima);
-
-    if (!code || !desc || !supplier) {
-      alert('Por favor, preencha código, descrição e fornecedor.');
-      return;
-    }
-
-    if (qty < 0) {
-      alert('A quantidade inicial não pode ser negativa.');
-      return;
-    }
-
-    if (minQty < 0) {
-      alert('A quantidade mínima não pode ser negativa.');
-      return;
-    }
-
-    // Check if code already exists in local list to avoid duplicate codes
-    const exists = almoxarifadoItems.some(item => item.codigo.toUpperCase() === code);
-    if (exists) {
-      alert(`Já existe um item cadastrado com o código ${code}.`);
-      return;
-    }
-
-    setIsSubmittingNewItem(true);
-    try {
-      const docId = code; // Using the code directly as Document ID is extremely elegant for uniqueness
-      await setDoc(doc(db, 'almoxarifado', docId), {
-        codigo: code,
-        descricao: desc,
-        fornecedor: supplier,
-        quantidade: qty,
-        qtdMinima: minQty,
-        historico: []
-      });
-
-      setSuccessMessage(`Item ${desc} (${code}) cadastrado com sucesso.`);
-      setNewItemCodigo('');
-      setNewItemDescricao('');
-      setNewItemFornecedor('');
-      setNewItemQuantidade('');
-      setNewItemQtdMinima('');
-      setIsAddingNewItem(false);
-    } catch (e: any) {
-      console.error('[Almoxarifado] Error adding item:', e);
-      alert('Erro ao cadastrar item: ' + e.message);
-    } finally {
-      setIsSubmittingNewItem(false);
-    }
-  };
-
-  const handleUpdateMinStock = async (itemId: string, minQty: number) => {
-    if (minQty < 0) {
-      alert('A quantidade mínima não pode ser negativa.');
-      return;
-    }
-    try {
-      await setDoc(doc(db, 'almoxarifado', itemId), {
-        qtdMinima: minQty
-      }, { merge: true });
-      setSuccessMessage(`Quantidade mínima do item atualizada para ${minQty}.`);
-    } catch (e: any) {
-      console.error('[Almoxarifado] Error updating minimum stock level:', e);
-      alert('Erro ao atualizar quantidade mínima: ' + e.message);
-    }
-  };
-
-  const handleRegisterStockMovement = async () => {
-    if (!movingItem) return;
-
-    const amount = Number(movementQuantidade);
-    const user = movementUsuario.trim();
-    const dateStr = movementData;
-
-    if (!amount || amount <= 0) {
-      alert('A quantidade deve ser um número maior que zero.');
-      return;
-    }
-
-    if (!user) {
-      alert('Por favor, informe quem está consumindo/responsável.');
-      return;
-    }
-
-    if (!dateStr) {
-      alert('Por favor, informe a data.');
-      return;
-    }
-
-    // If removing (retirada), make sure we have enough stock
-    if (movementTipo === 'retirada' && amount > movingItem.quantidade) {
-      alert(`Estoque insuficiente! Saldo atual: ${movingItem.quantidade}.`);
-      return;
-    }
-
-    setIsSubmittingMovement(true);
-    try {
-      const diff = movementTipo === 'entrada' ? amount : -amount;
-      const newQty = movingItem.quantidade + diff;
-
-      // Create new history log
-      const newLog = {
-        id: Math.random().toString(36).substring(2, 9),
-        tipo: movementTipo,
-        quantidade: amount,
-        usuario: user,
-        data: dateStr
-      };
-
-      const existingHistory = movingItem.historico || [];
-      const updatedHistory = [newLog, ...existingHistory];
-
-      await setDoc(doc(db, 'almoxarifado', movingItem.id), {
-        quantidade: newQty,
-        historico: updatedHistory
-      }, { merge: true });
-
-      setSuccessMessage(`Movimentação registrada com sucesso. Novo saldo: ${newQty}.`);
-      setMovingItem(null);
-      setMovementQuantidade('');
-      setMovementUsuario('');
-    } catch (e: any) {
-      console.error('[Almoxarifado] Error saving movement:', e);
-      alert('Erro ao registrar movimentação: ' + e.message);
-    } finally {
-      setIsSubmittingMovement(false);
-    }
-  };
-
-  const handleDeleteAlmoxarifadoItem = async (itemId: string, desc: string) => {
-    if (!confirm(`Tem certeza que deseja excluir permanentemente o item "${desc}"?`)) {
-      return;
-    }
-    try {
-      await deleteDoc(doc(db, 'almoxarifado', itemId));
-      setSuccessMessage(`Item "${desc}" excluído com sucesso.`);
-    } catch (e: any) {
-      console.error('[Almoxarifado] Error deleting item:', e);
-      alert('Erro ao excluir item: ' + e.message);
-    }
-  };
-
   const [isBoletimModalOpen, setIsBoletimModalOpen] = useState(false);
   const [boletimSearchTerm, setBoletimSearchTerm] = useState('');
   const [boletimResult, setBoletimResult] = useState<any>(null);
@@ -2671,6 +2410,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsBoletimLoading(false);
     }
   };
+
+const AUTHORIZED_MECHANICS_NORMALIZED = ["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "RAFAEL"];
 
   const fetchMechanicHistory = async () => {
     setIsMechanicHistoryLoading(true);
@@ -3808,92 +3549,31 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally { setIsLoading(false); }
   };
 
-  const getOrCreateActiveTrailer = async (currentList: any[]): Promise<string> => {
-    const activeTrailerGroups: Record<string, any[]> = {};
-    currentList.forEach(b => {
-      if (b.status === 'Reserva' && b.carretinha && b.carretinha !== 'Sem Carretinha' && !b.trailerStatus) {
-        if (!activeTrailerGroups[b.carretinha]) {
-          activeTrailerGroups[b.carretinha] = [];
-        }
-        activeTrailerGroups[b.carretinha].push(b);
-      }
-    });
-
-    const activeTrailerNames = Object.keys(activeTrailerGroups).sort((a, b) => {
-      const numA = parseInt(a.replace(/^\D+/g, ''), 10) || 0;
-      const numB = parseInt(b.replace(/^\D+/g, ''), 10) || 0;
-      return numA - numB;
-    });
-
-    const availableTrailer = activeTrailerNames.find(name => activeTrailerGroups[name].length < 14);
-
-    if (availableTrailer) {
-      return availableTrailer;
-    }
-
-    let nextNum = 1;
-    try {
-      const r = await apiCall({ action: 'getNextTrailerNumber' });
-      if (r.success) {
-        nextNum = r.next;
-      }
-    } catch (err) {
-      console.error('Erro ao buscar próximo número de carretinha:', err);
-      const todayStr = localDateStr();
-      const lastDate = localStorage.getItem('trailer_seq_date');
-      let lastUsed = 0;
-      if (lastDate === todayStr) {
-        lastUsed = parseInt(localStorage.getItem('trailer_seq_last') || '0');
-      } else {
-        localStorage.setItem('trailer_seq_date', todayStr);
-      }
-      nextNum = (lastUsed % 5) + 1;
-      localStorage.setItem('trailer_seq_last', nextNum.toString());
-    }
-
-    if (nextNum < 1 || nextNum > 5) {
-      nextNum = 1;
-    }
-
-    return `Carretinha ${nextNum}`;
-  };
-
   const handleFinalizeMechanicsRepair = async (treatment: string) => {
     if (!treatment) { alert('Descreva a tratativa.'); return; }
     setIsLoading(true);
     const bikeNumber = selectedMechanicBike.patrimonio;
 
+    // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
+    // Atualização otimista
+    const mechanicName = selectedMechanicBike?.mecanico || driverName;
+    protectMechanicBike(bikeNumber, {
+      status: 'Reserva',
+      mecanico: mechanicName,
+      tratativa: treatment,
+      dataFinalizacao: new Date().toISOString(),
+    });
+    setIsMechanicRepairModalOpen(false);
     try {
-      const targetTrailer = await getOrCreateActiveTrailer(mechanicsList);
-
-      // Mecânico e ADM seguem o mesmo fluxo: move para Reserva.
-      // Atualização otimista
-      const mechanicName = selectedMechanicBike?.mecanico || driverName;
-      protectMechanicBike(bikeNumber, {
-        status: 'Reserva',
-        mecanico: mechanicName,
-        tratativa: treatment,
-        dataFinalizacao: new Date().toISOString(),
-        carretinha: targetTrailer,
-      });
-      setIsMechanicRepairModalOpen(false);
-
       // Atualiza no Firebase mechanics_flow
       await setDoc(doc(db, 'mechanics_flow', bikeNumber), {
         status: 'Reserva',
         tratativa: treatment,
-        carretinha: targetTrailer,
         dataSaida: serverTimestamp()
       }, { merge: true });
 
       try {
-        await setDoc(doc(db, 'bikes', bikeNumber), { 
-          status: 'Mecânica', 
-          responsavel: mechanicName, 
-          observacao: treatment, 
-          carretinha: targetTrailer,
-          ultimaAtualizacao: serverTimestamp() 
-        }, { merge: true });
+        await setDoc(doc(db, 'bikes', bikeNumber), { status: 'Mecânica', responsavel: mechanicName, observacao: treatment, ultimaAtualizacao: serverTimestamp() }, { merge: true });
       } catch (e) {
         handleFirestoreError(e, OperationType.UPDATE, `bikes/${bikeNumber}`);
       }
@@ -3905,7 +3585,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
             patrimonio: bikeNumber,
             status: 'Reserva',
             motorista: mechanicName,
-            observacao: `Reparo finalizado por ${mechanicName} — ${treatment} (Alocada automaticamente na ${targetTrailer})`,
+            observacao: `Reparo finalizado por ${mechanicName} — ${treatment}`,
             timestamp: serverTimestamp(),
             type: 'Reparo',
             statusSistema: bikeDetails?.['Status'] || bikeDetails?.statusSistema || '',
@@ -3918,24 +3598,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }
       })();
 
-      // Verifique se com essa bike adicionada, a carretinha atingiu 14 bikes
-      const currentBikesInThisTrailer = mechanicsList.filter(
-        b => b.carretinha === targetTrailer && b.status === 'Reserva' && !b.trailerStatus
-      );
-      const totalCountWithNewBike = currentBikesInThisTrailer.length + 1;
-
-      setSuccessMessage(`Bike ${bikeNumber} movida para Reserva e alocada automaticamente na ${targetTrailer} (${totalCountWithNewBike}/14).`);
-
-      if (totalCountWithNewBike >= 14) {
-        setTimeout(() => {
-          handleFinalizeTrailer(targetTrailer);
-        }, 800);
-      }
+      setSuccessMessage(`Bike ${bikeNumber} movida para Reserva. Organize em uma carretinha para finalizar.`);
     } catch (err: any) {
       alert('Erro: ' + err.message);
-    } finally { 
-      setIsLoading(false); 
-    }
+    } finally { setIsLoading(false); }
   };
 
   const handleOrganizeTrailer = async (bikeNumbers: string[], trailerName: string) => {
@@ -3943,14 +3609,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     setIsLoading(true);
     try {
-      // Enforce 14-bike limit on manual additions/creation
-      const existingBikes = mechanicsList.filter(b => b.carretinha === trailerName && b.status === 'Reserva' && !b.trailerStatus);
-      if (existingBikes.length + bikeNumbers.length > 14) {
-        alert(`A ${trailerName} suporta no máximo 14 bikes. Atualmente possui ${existingBikes.length} bikes. Não é possível adicionar mais ${bikeNumbers.length} bikes.`);
-        setIsLoading(false);
-        return;
-      }
-
       // Organiza localmente a carretinha
       bikeNumbers.forEach(id => {
         protectMechanicBike(id, { status: 'Reserva', carretinha: trailerName });
@@ -4006,10 +3664,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }));
       } else if (action.type === 'status_change') {
         if (action.targetStatus === 'Reserva') {
-          const targetTrailer = await getOrCreateActiveTrailer(mechanicsList);
-
           try {
-            await setDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, carretinha: targetTrailer, ultimaAtualizacao: serverTimestamp() }, { merge: true });
+            await setDoc(doc(db, 'bikes', action.bikeNumber), { status: 'Em Estação', responsavel: null, observacao: action.treatment, ultimaAtualizacao: serverTimestamp() }, { merge: true });
           } catch (e) {
             handleFirestoreError(e, OperationType.UPDATE, `bikes/${action.bikeNumber}`);
           }
@@ -4019,9 +3675,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
               const bikeDetails = await fetchBikeDetailsForReport(action.bikeNumber, 3000);
               await addDoc(collection(db, 'reports'), {
                 patrimonio: action.bikeNumber,
-                status: 'Reserva',
+                status: 'Em Estação',
                 motorista: action.mechanicName,
-                observacao: `${action.treatment || 'Reparo finalizado'} (Alocada automaticamente na ${targetTrailer})`,
+                observacao: action.treatment || 'Reparo finalizado',
                 timestamp: serverTimestamp(),
                 type: 'Reparo',
                 statusSistema: bikeDetails?.['Status'] || bikeDetails?.statusSistema || '',
@@ -4039,21 +3695,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
               status: 'Reserva',
               mecanico: action.mechanicName,
               tratativa: action.treatment,
-              carretinha: targetTrailer,
               ultimaAtualizacao: serverTimestamp()
             }, { merge: true });
           } catch (e) {
             console.warn('[Firebase] finalizeMechanicsRepair flow update failed:', e);
-          }
-
-          const currentBikesInThisTrailer = mechanicsList.filter(
-            b => b.carretinha === targetTrailer && b.status === 'Reserva' && !b.trailerStatus
-          );
-          const totalCountWithNewBike = currentBikesInThisTrailer.length + 1;
-          if (totalCountWithNewBike >= 14) {
-            setTimeout(() => {
-              handleFinalizeTrailer(targetTrailer);
-            }, 800);
           }
         } else {
           try {
@@ -4765,140 +4410,35 @@ const MainScreen: React.FC<MainScreenProps> = ({
     finally { setIsLoading(false); }
   };
 
-  const handleRemoveAlertSubmit = async () => {
-    const { alert: alertObj, reason, removerName } = removeAlertModal;
-    if (!alertObj) return;
-    if (!removerName.trim()) {
-      alert('Por favor, informe o nome de quem está removendo.');
-      return;
-    }
-    if (!reason.trim()) {
-      alert('Por favor, insira o motivo da remoção.');
-      return;
-    }
-
-    setIsLoading(true);
-    const alertId = alertObj.id;
-    const patrimonio = alertObj.patrimonio || alertObj.id;
-    setAlerts(prev => prev.filter(a => (a.id || a.patrimonio) !== alertId));
-    setRemoveAlertModal(prev => ({ ...prev, isOpen: false }));
-
-    try {
-      const r = await apiCall({ 
-        action: 'removeBikeFromAlert', 
-        alertId, 
-        driverName: removerName.trim().toUpperCase(), 
-        reason: reason.trim() 
-      });
-
-      if (r.success) {
-        try {
-          await addDoc(collection(db, 'reports'), {
-            patrimonio: String(patrimonio),
-            status: 'Removida do Alerta',
-            motorista: removerName.trim().toUpperCase(),
-            observacao: reason.trim(),
-            timestamp: serverTimestamp(),
-            type: 'Alerta'
-          });
-        } catch (firebaseErr) {
-          console.error('[Firebase] Erro ao gravar remoção em Firebase reports:', firebaseErr);
-        }
-
-        setSuccessMessage(`Bike ${patrimonio} removida com sucesso dos alertas.`);
-        fetchAlerts(true);
-      } else {
-        fetchAlerts(true);
-        throw new Error(r.error);
-      }
-    } catch (err: any) {
-      alert('Erro ao remover do alerta: ' + err.message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const runDriversSummaryFallback = useCallback(async () => {
     const range = summaryTimeRange;
     try {
-      // 1. Obtém a lista de motoristas de forma segura (API ou estado local)
-      let drivers: string[] = [];
-      if (category.includes('ADM')) {
-        try {
-          const res = await apiCall({ action: 'getMotoristas' }, 1, true);
-          drivers = (res?.data || []).filter((m: string) => m.toUpperCase() !== 'MECANICA');
-        } catch (err) {
-          console.warn('[Fallback] Falha ao buscar motoristas via API, usando estado local:', err);
-          drivers = motoristas.filter((m: string) => m.toUpperCase() !== 'MECANICA');
-        }
-      } else {
-        drivers = [driverName];
-      }
-
-      if (drivers.length === 0) {
-        console.warn('[Fallback] Nenhum motorista disponível para gerar resumo.');
-        return;
-      }
-
-      // 2. Busca solicitações pendentes de forma segura
-      let allPending: any[] = [];
-      try {
-        const reqResult = await apiCall({ action: 'getRequests', driverName, category }, 1, true);
-        allPending = reqResult.success ? reqResult.data : [];
-      } catch (err) {
-        console.warn('[Fallback] Falha ao buscar solicitações pendentes:', err);
-      }
-
-      // 3. Busca os estados e estatísticas de cada motorista de forma individualizada para evitar que falhas isoladas quebrem tudo
+      const drivers: string[] = category.includes('ADM')
+        ? ((await apiCall({ action: 'getMotoristas' })).data || []).filter((m: string) => m.toUpperCase() !== 'MECANICA')
+        : [driverName];
+      const reqResult = await apiCall({ action: 'getRequests', driverName, category }, 1, true);
+      const allPending = reqResult.success ? reqResult.data : [];
       const summary = await Promise.all(drivers.map(async (d: string) => {
-        let stateRes = { success: false, data: { routeBikes: [], collectedBikes: [] } };
-        let reportRes = { success: false, data: { recolhidas: [], remanejadas: [], naoEncontrada: [], naoAtendida: [] } };
-
-        try {
-          stateRes = await apiCall({ action: 'getDriverState', driverName: d }, 1, true);
-        } catch (err) {
-          console.warn(`[Fallback] Falha ao carregar estado de ${d}:`, err);
-        }
-
-        try {
-          reportRes = await apiCall({ action: 'getDailyReportData', driverName: d, timeRange: range }, 1, true);
-        } catch (err) {
-          console.warn(`[Fallback] Falha ao carregar relatório diário de ${d}:`, err);
-        }
-
+        const [stateRes, reportRes] = await Promise.all([
+          apiCall({ action: 'getDriverState', driverName: d }),
+          apiCall({ action: 'getDailyReportData', driverName: d, timeRange: range })
+        ]);
         const stats = { recolhidas: 0, remanejada: 0, naoEncontrada: 0, naoAtendida: 0 };
-        if (reportRes && reportRes.success && reportRes.data) {
+        if (reportRes.success) {
           stats.recolhidas = reportRes.data.recolhidas?.length || 0;
           stats.remanejada = reportRes.data.remanejadas?.length || 0;
           stats.naoEncontrada = reportRes.data.naoEncontrada?.length || 0;
           stats.naoAtendida = reportRes.data.naoAtendida?.length || 0;
         }
-
         const pendingCount = allPending.filter((r: any) => {
           const rec = (r.recipient || 'Todos').toLowerCase();
           return rec === 'todos' || rec === d.toLowerCase();
         }).length;
-
-        return {
-          name: d,
-          stats,
-          realTime: {
-            route: stateRes && stateRes.success ? stateRes.data.routeBikes : [],
-            collected: stateRes && stateRes.success ? stateRes.data.collectedBikes : []
-          },
-          pendingRequests: pendingCount,
-          timeline: [],
-          timelineWindow: null
-        };
+        return { name: d, stats, realTime: { route: stateRes.success ? stateRes.data.routeBikes : [], collected: stateRes.success ? stateRes.data.collectedBikes : [] }, pendingRequests: pendingCount };
       }));
-
-      if (summaryTimeRange === range) {
-        setDriversSummary(summary);
-      }
-    } catch (err) {
-      console.error('[Fallback] Erro crítico no resumo dos motoristas:', err);
-    }
-  }, [summaryTimeRange, category, driverName, motoristas]);
+      if (summaryTimeRange === range) setDriversSummary(summary);
+    } catch (err) { console.error('Fallback summary:', err); }
+  }, [summaryTimeRange, category, driverName]);
 
   const fetchDriversSummary = useCallback(async () => {
     const range = summaryTimeRange;
@@ -4922,14 +4462,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
           });
         });
       }
-      else if (!r.success) {
-        console.warn('[API] getDriversSummary retornou erro, tentando fallback:', r.error);
-        await runDriversSummaryFallback();
-      }
-    } catch (err) {
-      console.error('[API] getDriversSummary falhou, tentando fallback:', err);
-      await runDriversSummaryFallback();
-    }
+      else if (!r.success) await runDriversSummaryFallback();
+    } catch { await runDriversSummaryFallback(); }
     finally { setIsSummaryLoading(false); }
   }, [summaryTimeRange, timelineDate, runDriversSummaryFallback]);
 
@@ -4937,16 +4471,41 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const fetchDynamicMechanics = useCallback(async () => {
     try {
-      const res = await apiGetCall('getMecanicos');
+      // Tenta primeiro via API do Sheets (modo silencioso)
+      const res = await apiCall({ action: 'getMecanicos' }, 1, true);
       if (res.success && Array.isArray(res.data) && res.data.length > 0) {
         const names = res.data
           .map((m: any) => String(m).trim().toUpperCase())
           .filter(Boolean)
           .filter((name: string) => name !== 'CAIO');
         setDynamicMechanics(names);
+        return;
       }
     } catch (err) {
-      console.warn('getMecanicos failed (using default static mechanics list):', err);
+      console.warn('[fetchDynamicMechanics] Falha ao carregar mecânicos do Sheets, buscando do Firebase...', err);
+    }
+
+    // Fallback via Firestore 'users'
+    try {
+      const q = query(collection(db, 'users'));
+      const querySnapshot = await getDocs(q);
+      const names: string[] = [];
+      querySnapshot.forEach((docSnap) => {
+        const u = docSnap.data();
+        const cat = String(u.category || '').toUpperCase()
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const name = String(u.name || '').trim();
+        const lowerName = name.toLowerCase();
+        if ((cat.includes('MECANICA') || cat.includes('MECANICO')) && !lowerName.includes('aline') && !lowerName.includes('diego')) {
+          names.push(name.toUpperCase());
+        }
+      });
+      if (names.length > 0) {
+        const filteredNames = names.filter(name => name !== 'CAIO');
+        setDynamicMechanics(filteredNames);
+      }
+    } catch (fbErr) {
+      console.error('[fetchDynamicMechanics] Falha definitiva ao carregar mecânicos do Firebase:', fbErr);
     }
   }, []);
 
@@ -6766,16 +6325,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
             </>}
             <button onClick={() => { fetchReporData(); setIsReporModalOpen(true); }} disabled={isLoading} title="Estações Livres" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50"><BicycleIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
           </>}
-          {(isMecanica || isAdm) && (
-            <button
-              onClick={() => setIsAlmoxarifadoOpen(true)}
-              disabled={isLoading}
-              title="Almoxarifado"
-              className="p-1.5 sm:p-2 rounded-full text-blue-700 bg-blue-50 border border-blue-100 hover:bg-blue-100 active:scale-95 transition-all shadow-sm"
-            >
-              <Package className="w-6 h-6 sm:w-7 sm:h-7 text-blue-600" />
-            </button>
-          )}
           <button onClick={onLogout} disabled={isLoading} title="Sair" className="p-1.5 sm:p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-red-600 disabled:opacity-50"><LogoutIcon className="w-6 h-6 sm:w-7 sm:h-7"/></button>
         </div>
       </header>
@@ -6817,22 +6366,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
               return (
                 <div key={`driver-resume-${driver.name}-${i}`} className="space-y-4">
                   {/* Grid de Estatísticas */}
-                  <div className="grid grid-cols-5 gap-2">
+                  <div className="grid grid-cols-5 gap-1.5">
                     {[
                       { label: 'Notif.', value: driver.pendingRequests, c: 'blue' },
                       { label: 'Recolh.', value: recolhidas, c: 'green' },
                       { label: 'Remanej.', value: remanejada, c: 'indigo' },
                       { label: 'Não Enc.', value: naoEncontrada, c: 'red' },
                       { label: 'Total', value: total, c: 'orange' },
-                    ].map((item, i) => {
-                      const styles = STATUS_COLORS[item.c] || STATUS_COLORS.blue;
-                      return (
-                        <div key={`stat-${item.label}-${i}`} className={`${styles.bg} p-2 rounded-xl border ${styles.border} text-center shadow-sm hover:scale-105 transition-all duration-200`}>
-                          <p className={`text-[8px] ${styles.textLabel} uppercase tracking-wider mb-0.5`}>{item.label}</p>
-                          <p className={`text-base font-black ${styles.textVal} leading-none`}>{item.value}</p>
-                        </div>
-                      );
-                    })}
+                    ].map((item, i) => (
+                      <div key={`stat-${item.label}-${i}`} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
+                        <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.label}</p>
+                        <p className={`text-sm font-black text-${item.c}-800`}>{item.value}</p>
+                      </div>
+                    ))}
                   </div>
 
                   {/* Seletor de data da Linha do Tempo */}
@@ -7101,55 +6647,38 @@ const MainScreen: React.FC<MainScreenProps> = ({
           const mechs = Object.entries(byMechanic);
           return (
             <>
-            <div className="mb-4 p-4 border border-gray-100 rounded-2xl bg-white shadow-md">
-              <div className="flex items-center justify-between mb-3.5 pb-2 border-b border-gray-100/80">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-amber-50 rounded-lg text-amber-600">
-                    <TrendingUp className="w-4 h-4" />
-                  </div>
-                  <span className="text-xs font-black text-gray-700 uppercase tracking-wider">Produção de {isTecnica ? 'Técnicos' : 'Mecânicos'}</span>
-                </div>
-                <div className="flex bg-gray-100 rounded-xl p-0.5 gap-0.5 shadow-inner">
+            <div className="mb-3 px-3 py-2 border rounded-lg bg-white shadow-sm">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-black text-gray-600 uppercase tracking-widest">Produção</span>
+                <div className="flex bg-gray-100 rounded-full p-0.5 gap-0.5">
                   {periods.map(p => (
                     <button key={p.key} onClick={() => setMechanicSummaryPeriod(p.key)}
-                      className={`text-[9px] font-black uppercase px-2.5 py-1 rounded-lg transition-all duration-200 ${
-                        mechanicSummaryPeriod === p.key 
-                          ? 'bg-white text-gray-800 shadow-sm font-black' 
-                          : 'text-gray-400 hover:text-gray-600'
-                      }`}
+                      className={`text-[8px] font-bold px-2 py-0.5 rounded-full transition-all ${mechanicSummaryPeriod === p.key ? 'bg-white text-gray-700 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
                     >{p.label}</button>
                   ))}
                 </div>
               </div>
               {mechs.length === 0 ? (
-                <p className="text-xs text-gray-400 italic text-center py-4">Nenhum dado registrado para o período</p>
+                <p className="text-[9px] text-gray-400 italic text-center py-1">Sem dados</p>
               ) : (
-                <div className="space-y-2.5">
+                <div className="space-y-1.5">
                   {mechs.map(([name, counts]) => (
-                    <div key={name} className="flex items-center gap-3 p-2 rounded-xl bg-gray-50/50 hover:bg-gray-50 transition-colors duration-150 border border-transparent hover:border-gray-100">
-                      <span className="text-xs font-bold text-gray-700 uppercase w-20 truncate flex-shrink-0">{name}</span>
-                      <div className="flex gap-2 flex-1">
+                    <div key={name} className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold text-gray-500 uppercase w-16 truncate flex-shrink-0">{name}</span>
+                      <div className="flex gap-1.5 flex-1">
                         <button
                           onClick={() => counts.manutencao > 0 && setProductionDrillDown({ mechanic: name, type: 'man', bikes: counts.bikesMan })}
-                          className={`flex flex-col items-center py-1 px-3 bg-amber-50/60 border border-amber-100 rounded-xl flex-1 transition-all ${
-                            counts.manutencao > 0 
-                              ? 'hover:bg-amber-100 hover:border-amber-200 active:scale-95 shadow-sm cursor-pointer' 
-                              : 'opacity-60 cursor-default'
-                          }`}
+                          className={`flex flex-col items-center py-0.5 px-2 bg-orange-50 border border-orange-100 rounded-md flex-1 transition-all ${counts.manutencao > 0 ? 'hover:bg-orange-100 active:scale-95 cursor-pointer' : 'cursor-default'}`}
                         >
-                          <span className="text-[8px] font-black text-amber-600 uppercase tracking-wide leading-none mb-0.5">{isTecnica ? 'Em Técnica' : 'Em Manut.'}</span>
-                          <span className="text-base font-black text-amber-800 leading-tight">{counts.manutencao}</span>
+                          <span className="text-[7px] font-bold text-orange-400 uppercase leading-none">{isTecnica ? 'Téc' : 'Man'}</span>
+                          <span className="text-sm font-black text-orange-500 leading-tight">{counts.manutencao}</span>
                         </button>
                         <button
                           onClick={() => counts.reserva > 0 && setProductionDrillDown({ mechanic: name, type: 'res', bikes: counts.bikesRes })}
-                          className={`flex flex-col items-center py-1 px-3 bg-emerald-50/60 border border-emerald-100 rounded-xl flex-1 transition-all ${
-                            counts.reserva > 0 
-                              ? 'hover:bg-emerald-100 hover:border-emerald-200 active:scale-95 shadow-sm cursor-pointer' 
-                              : 'opacity-60 cursor-default'
-                          }`}
+                          className={`flex flex-col items-center py-0.5 px-2 bg-green-50 border border-green-100 rounded-md flex-1 transition-all ${counts.reserva > 0 ? 'hover:bg-green-100 active:scale-95 cursor-pointer' : 'cursor-default'}`}
                         >
-                          <span className="text-[8px] font-black text-emerald-600 uppercase tracking-wide leading-none mb-0.5">{isTecnica ? 'Aguardando' : 'Reserva'}</span>
-                          <span className="text-base font-black text-emerald-800 leading-tight">{counts.reserva}</span>
+                          <span className="text-[7px] font-bold text-green-500 uppercase leading-none">{isTecnica ? 'Agu' : 'Res'}</span>
+                          <span className="text-sm font-black text-green-600 leading-tight">{counts.reserva}</span>
                         </button>
                       </div>
                     </div>
@@ -7798,122 +7327,111 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   return (
                     <div className="space-y-3">
                       {/* Carretinhas ativas — edição completa */}
-                      {activeEntries.map(([trailer, bikes]) => {
-                        const isFull = trailer !== 'Sem Carretinha' && (bikes as any[]).length >= 14;
-                        return (
-                          <div key={trailer} className={`border rounded-xl p-3 shadow-sm transition-all duration-300 ${isFull ? 'border-orange-300 bg-orange-50/20' : 'border-green-200 bg-white'}`}>
-                            <div className="flex justify-between items-center mb-2 border-b pb-1.5">
-                              <h3 className="font-bold text-green-700 flex items-center gap-2 text-sm">
-                                <TrailerIcon className={`w-4 h-4 ${isFull ? 'text-orange-500 animate-pulse' : 'text-green-600'}`}/>
-                                {trailer}
-                                {isFull && (
-                                  <span className="ml-1 text-[9px] bg-orange-500 text-white px-1.5 py-0.5 rounded-full font-black animate-pulse">
-                                    🔒 FECHADA (14/14)
-                                  </span>
+                      {activeEntries.map(([trailer, bikes]) => (
+                      <div key={trailer} className="border border-green-200 rounded-xl bg-white p-3 shadow-sm">
+                        <div className="flex justify-between items-center mb-2 border-b pb-1.5">
+                          <h3 className="font-bold text-green-700 flex items-center gap-2 text-sm"><TrailerIcon className="w-4 h-4"/>{trailer}</h3>
+                          {trailer !== 'Sem Carretinha' && (
+                            <button onClick={() => handleFinalizeTrailer(trailer)}
+                              className="text-[10px] px-2 py-0.5 rounded font-bold bg-green-600 hover:bg-green-700 text-white transition-all">
+                              Finalizar Carretinha
+                            </button>
+                          )}
+                        </div>
+                        <div className="space-y-1">
+                          {(bikes as any[]).map((bike, i) => (
+                            <div key={`tr-${bike.patrimonio}-${i}`} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 border rounded-lg text-[11px]">
+                              <span className="font-black text-gray-800 font-mono w-10 flex-shrink-0">{bike.patrimonio}</span>
+                              {bike.mecanico && <span className="text-blue-600 font-bold flex-shrink-0 truncate max-w-[80px]">{bike.mecanico}</span>}
+                              {bike.tratativa && bike.tratativa !== 'MANUAL' && <span className="text-gray-400 flex-1 truncate text-[9px]">{bike.tratativa}</span>}
+                              <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
+                                {bike.bateria !== undefined && (
+                                  <span className={`text-[10px] font-bold ${Number(formatBattery(bike.bateria)) < trailerBatteryLimit ? 'text-red-500' : 'text-gray-500'}`}>🔋{formatBattery(bike.bateria)}%</span>
                                 )}
-                              </h3>
-                              {trailer !== 'Sem Carretinha' && (
-                                <button onClick={() => handleFinalizeTrailer(trailer)}
-                                  className={`text-[10px] px-2.5 py-1 rounded font-bold transition-all ${isFull ? 'bg-orange-500 hover:bg-orange-600 text-white shadow-md shadow-orange-100 animate-bounce' : 'bg-green-600 hover:bg-green-700 text-white'}`}>
-                                  {isFull ? '⚡ Conferir & Finalizar' : 'Finalizar Carretinha'}
-                                </button>
-                              )}
-                            </div>
-                            <div className="space-y-1">
-                              {(bikes as any[]).map((bike, i) => (
-                                <div key={`tr-${bike.patrimonio}-${i}`} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 border rounded-lg text-[11px]">
-                                  <span className="font-black text-gray-800 font-mono w-10 flex-shrink-0">{bike.patrimonio}</span>
-                                  {bike.mecanico && <span className="text-blue-600 font-bold flex-shrink-0 truncate max-w-[80px]">{bike.mecanico}</span>}
-                                  {bike.tratativa && bike.tratativa !== 'MANUAL' && <span className="text-gray-400 flex-1 truncate text-[9px]">{bike.tratativa}</span>}
-                                  <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
-                                    {bike.bateria !== undefined && (
-                                      <span className={`text-[10px] font-bold ${Number(formatBattery(bike.bateria)) < trailerBatteryLimit ? 'text-red-500' : 'text-gray-500'}`}>🔋{formatBattery(bike.bateria)}%</span>
-                                    )}
-                                    {trailer !== 'Sem Carretinha' ? (
-                                      <button onClick={async () => {
-                                        const mechanicName = bike.mecanico || driverName;
-                                        protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
-                                        setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
-                                        try {
-                                          await setDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
-                                            status: 'Em Manutenção',
-                                            carretinha: null,
-                                            dataEntrada: serverTimestamp()
-                                          }, { merge: true });
-                                        } catch (e) {
-                                          console.warn('[Firebase] removeFromTrailer failed:', e);
-                                        }
-                                      }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95">
-                                        <XIcon className="w-3 h-3"/>
-                                      </button>
-                                    ) : (
-                                      <button onClick={async () => {
-                                        const mechanicName = bike.mecanico || driverName;
-                                        protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
-                                        
-                                        try {
-                                          await setDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
-                                            status: 'Em Manutenção',
-                                            carretinha: null,
-                                            dataEntrada: serverTimestamp()
-                                          }, { merge: true });
-                                        } catch (e) {
-                                          console.warn('[Firebase] deleteMechanicsBike (move to maintenance) failed:', e);
-                                        }
-
-                                        setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
-                                      }} className="p-0.5 bg-orange-100 text-orange-600 rounded hover:bg-orange-200 active:scale-95" title="Voltar para Manutenção">
-                                        <XIcon className="w-3 h-3"/>
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                            {trailer === 'Sem Carretinha' && (
-                              <div className="mt-3 space-y-2">
-                                {/* Se houver uma carretinha ativa (não finalizada e não cheia), permite adicionar a ela */}
-                                {activeEntries.filter(([t, b]) => t !== 'Sem Carretinha' && b.length < 14).map(([activeTrailer]) => (
-                                  <button
-                                    key={`add-to-${activeTrailer}`}
-                                    onClick={() => handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), activeTrailer)}
-                                    className="w-full py-1.5 bg-green-600 text-white text-[10px] font-bold rounded hover:bg-green-700 active:scale-95 transition-all"
-                                  >
-                                    Adicionar à {activeTrailer}
-                                  </button>
-                                ))}
-
-                                <button onClick={async () => {
-                                  setIsLoading(true);
-                                  try {
-                                    const r = await apiCall({ action: 'getNextTrailerNumber' });
-                                    const next = r.success ? r.next : 1;
-                                    handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
-                                  } catch (err: any) {
-                                    console.error('Erro ao calcular sequência de carretinha:', err);
-                                    const todayStr = localDateStr();
-                                    const lastDate = localStorage.getItem('trailer_seq_date');
-                                    let lastUsed = 0;
-                                    if (lastDate === todayStr) {
-                                      lastUsed = parseInt(localStorage.getItem('trailer_seq_last') || '0');
-                                    } else {
-                                      localStorage.setItem('trailer_seq_date', todayStr);
+                                {trailer !== 'Sem Carretinha' ? (
+                                  <button onClick={async () => {
+                                    const mechanicName = bike.mecanico || driverName;
+                                    protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
+                                    setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
+                                    try {
+                                      await setDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
+                                        status: 'Em Manutenção',
+                                        carretinha: null,
+                                        dataEntrada: serverTimestamp()
+                                      }, { merge: true });
+                                    } catch (e) {
+                                      console.warn('[Firebase] removeFromTrailer failed:', e);
                                     }
-                                    const nextLocal = (lastUsed % 5) + 1;
-                                    localStorage.setItem('trailer_seq_last', nextLocal.toString());
-                                    handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${nextLocal}`);
-                                  } finally {
-                                    setIsLoading(false);
-                                  }
-                                }}
-                                  className="w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700 active:scale-95 transition-all">
-                                  Criar Nova Carretinha
-                                </button>
+                                  }} className="p-0.5 bg-red-100 text-red-500 rounded hover:bg-red-200 active:scale-95">
+                                    <XIcon className="w-3 h-3"/>
+                                  </button>
+                                ) : (
+                                  <button onClick={async () => {
+                                    const mechanicName = bike.mecanico || driverName;
+                                    protectMechanicBike(bike.patrimonio, { status: 'Em Manutenção', mecanico: mechanicName, carretinha: null, trailerStatus: null });
+                                    
+                                    try {
+                                      await setDoc(doc(db, 'mechanics_flow', bike.patrimonio), {
+                                        status: 'Em Manutenção',
+                                        carretinha: null,
+                                        dataEntrada: serverTimestamp()
+                                      }, { merge: true });
+                                    } catch (e) {
+                                      console.warn('[Firebase] deleteMechanicsBike (move to maintenance) failed:', e);
+                                    }
+
+                                    setDoc(doc(db, 'bikes', bike.patrimonio), { carretinha: null, trailerStatus: null, status: 'Mecânica', responsavel: mechanicName, ultimaAtualizacao: serverTimestamp() }, { merge: true }).catch(() => {});
+                                  }} className="p-0.5 bg-orange-100 text-orange-600 rounded hover:bg-orange-200 active:scale-95" title="Voltar para Manutenção">
+                                    <XIcon className="w-3 h-3"/>
+                                  </button>
+                                )}
                               </div>
-                            )}
+                            </div>
+                          ))}
+                        </div>
+                        {trailer === 'Sem Carretinha' && (
+                          <div className="mt-3 space-y-2">
+                            {/* Se houver uma carretinha ativa (não finalizada), permite adicionar a ela */}
+                            {activeEntries.filter(([t]) => t !== 'Sem Carretinha').map(([activeTrailer]) => (
+                              <button
+                                key={`add-to-${activeTrailer}`}
+                                onClick={() => handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), activeTrailer)}
+                                className="w-full py-1.5 bg-green-600 text-white text-[10px] font-bold rounded hover:bg-green-700 active:scale-95 transition-all"
+                              >
+                                Adicionar à {activeTrailer}
+                              </button>
+                            ))}
+
+                            <button onClick={async () => {
+                              setIsLoading(true);
+                              try {
+                                const r = await apiCall({ action: 'getNextTrailerNumber' });
+                                const next = r.success ? r.next : 1;
+                                handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
+                              } catch (err: any) {
+                                console.error('Erro ao calcular sequência de carretinha:', err);
+                                const todayStr = localDateStr();
+                                const lastDate = localStorage.getItem('trailer_seq_date');
+                                let lastUsed = 0;
+                                if (lastDate === todayStr) {
+                                  lastUsed = parseInt(localStorage.getItem('trailer_seq_last') || '0');
+                                } else {
+                                  localStorage.setItem('trailer_seq_date', todayStr);
+                                }
+                                const nextLocal = (lastUsed % 4) + 1;
+                                localStorage.setItem('trailer_seq_last', nextLocal.toString());
+                                handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${nextLocal}`);
+                              } finally {
+                                setIsLoading(false);
+                              }
+                            }}
+                              className="w-full py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700 active:scale-95 transition-all">
+                              Criar Nova Carretinha
+                            </button>
                           </div>
-                        );
-                      })}
+                        )}
+                      </div>
+                    ))}
 
                       {/* ── Carretinhas enviadas — resumo até aceite do motorista ── */}
                       {sentEntries.length > 0 && (
@@ -8168,7 +7686,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
               ].map(({ key, icon, color, title }) => (
                 <button key={key} onClick={() => setActiveQuadrant(key as any)}
                   title={title}
-                  className={`p-2 rounded-full transition-all ${activeQuadrant === key ? `${QUADRANT_COLORS[color] || 'bg-gray-600'} text-white shadow-md` : 'bg-gray-200 text-gray-500 hover:bg-gray-300'}`}>
+                  className={`p-2 rounded-full transition-all ${activeQuadrant === key ? `bg-${color}-600 text-white shadow-md` : 'bg-gray-200 text-gray-500'}`}>
                   {icon}
                 </button>
               ))}
@@ -8389,7 +7907,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               </div>
                             );
                           })()}
-                          <div className="grid grid-cols-5 gap-2 mb-3">
+                          <div className="grid grid-cols-5 gap-1.5 mb-3">
                             {(() => {
                               const recolhidas = driver.stats?.recolhidas || 0;
                               const remanejada = driver.stats?.remanejada || 0;
@@ -8402,15 +7920,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 { l: 'Remanej.', v: remanejada, c: 'indigo' },
                                 { l: 'Não Enc.', v: naoEncontrada, c: 'red' },
                                 { l: 'Total', v: total, c: 'orange' },
-                              ].map((item, i) => {
-                                const styles = STATUS_COLORS[item.c] || STATUS_COLORS.blue;
-                                return (
-                                  <div key={`adm-stat-${item.l}-${i}`} className={`${styles.bg} p-2 rounded-xl border ${styles.border} text-center shadow-sm hover:scale-105 transition-all duration-200`}>
-                                    <p className={`text-[8px] ${styles.textLabel} uppercase tracking-wider mb-0.5`}>{item.l}</p>
-                                    <p className={`text-base font-black ${styles.textVal} leading-none`}>{item.v}</p>
-                                  </div>
-                                );
-                              });
+                              ].map((item, i) => (
+                                <div key={`adm-stat-${item.l}-${i}`} className={`bg-${item.c}-50 p-1.5 rounded border border-${item.c}-100 text-center`}>
+                                  <p className={`text-[8px] text-${item.c}-600 font-black uppercase leading-tight`}>{item.l}</p>
+                                  <p className={`text-sm font-black text-${item.c}-800`}>{item.v}</p>
+                                </div>
+                              ));
                             })()}
                           </div>
                           <div className="mb-2">
@@ -8428,7 +7943,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         </div>
                       ))}
                     </div>
-                  ) : <div className="text-center py-6 bg-white rounded-lg border border-dashed"><p className="text-gray-400 text-xs">{isSummaryLoading ? 'Carregando...' : 'Nenhum motorista disponível'}</p></div>}
+                  ) : <div className="text-center py-6 bg-white rounded-lg border border-dashed"><p className="text-gray-400 text-xs">Carregando...</p></div>}
                 </div>
 
                 {/* Quadrante 2: Alertas */}
@@ -8485,37 +8000,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               );
                             })}
                             <td className="p-1 text-center">
-                              <div className="flex items-center justify-center gap-1.5">
-                                {alert.situacao === 'Localizada'
-                                  ? <button onClick={() => handleConfirmFound(alert.id)} disabled={isLoading} className="px-1 py-0.5 bg-green-600 text-white text-[8px] font-bold rounded hover:bg-green-700 disabled:bg-gray-400 leading-none">{isLoading ? '...' : 'Confirmar'}</button>
-                                  : (alert.check1 && alert.check2 && alert.check3)
-                                    ? <span className="text-[9px] text-red-600 font-black uppercase">Boletim</span>
-                                    : (
-                                      <button 
-                                        onClick={() => { 
-                                          setPrefilledBikeNumber(alert.patrimonio || alert.id); 
-                                          setRequestModalOpen(true); 
-                                        }} 
-                                        className="px-1.5 py-1 bg-blue-600 text-white text-[8px] font-bold rounded hover:bg-blue-700 active:scale-95 transition-transform"
-                                      >
-                                        Solicitar
-                                      </button>
-                                    )}
-                                <button
-                                  onClick={() => {
-                                    setRemoveAlertModal({
-                                      isOpen: true,
-                                      alert: alert,
-                                      reason: '',
-                                      removerName: driverName || '',
-                                    });
-                                  }}
-                                  className="w-5 h-5 flex items-center justify-center bg-red-50 hover:bg-red-100 text-red-500 hover:text-red-700 rounded-full transition-colors font-bold text-[10px]"
-                                  title="Remover do Alerta"
-                                >
-                                  ✕
-                                </button>
-                              </div>
+                              {alert.situacao === 'Localizada'
+                                ? <button onClick={() => handleConfirmFound(alert.id)} disabled={isLoading} className="px-1 py-0.5 bg-green-600 text-white text-[8px] font-bold rounded hover:bg-green-700 disabled:bg-gray-400 leading-none">{isLoading ? '...' : 'Confirmar'}</button>
+                                : (alert.check1 && alert.check2 && alert.check3)
+                                  ? <span className="text-[9px] text-red-600 font-black uppercase">Boletim</span>
+                                  : (
+                                    <button 
+                                      onClick={() => { 
+                                        setPrefilledBikeNumber(alert.patrimonio || alert.id); 
+                                        setRequestModalOpen(true); 
+                                      }} 
+                                      className="px-1.5 py-1 bg-blue-600 text-white text-[8px] font-bold rounded hover:bg-blue-700 active:scale-95 transition-transform"
+                                    >
+                                      Solicitar
+                                    </button>
+                                  )}
                             </td>
                           </tr>
                         )) : (
@@ -8943,28 +8442,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     const byMechanic: Record<string, {manutencao: number, reserva: number, bikes: string[]}> = {};
                     
                     // Initialize all known mechanics
-                    const seenNorm = new Set<string>();
-                    const allMechsList: string[] = [];
-                    [...AUTHORIZED_MECHANICS_NORMALIZED, ...dynamicMechanics].forEach(name => {
+                    const allMechsList = Array.from(new Set([
+                      ...AUTHORIZED_MECHANICS_NORMALIZED,
+                      ...dynamicMechanics
+                    ])).filter(name => {
                       const norm = normalizeForSearch(name);
-                      if (
-                        norm && 
-                        norm !== 'CAIO' && 
-                        norm !== 'JULIANO' && 
-                        norm !== '—' && 
-                        norm !== 'MECANICA' && 
-                        norm !== 'TODOS' && 
-                        !seenNorm.has(norm)
-                      ) {
-                        seenNorm.add(norm);
-                        let finalName = name.toUpperCase().trim();
-                        if (norm === 'ANDRE') {
-                          finalName = 'ANDRÉ';
-                        }
-                        allMechsList.push(finalName);
-                      }
-                    });
-                    allMechsList.sort();
+                      return norm !== 'CAIO' && norm !== 'JULIANO' && norm !== '—';
+                    }).sort();
 
                     allMechsList.forEach(m => {
                       byMechanic[m] = { manutencao: 0, reserva: 0, bikes: [] };
@@ -8973,22 +8457,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     mechanicsList.filter(b => b.status === 'Em Manutenção' || b.status === 'Reserva').forEach(b => {
                       const m = b.mecanico || '—';
                       if (m === '—') return;
-                      const mNorm = normalizeForSearch(m);
-                      if (mNorm === 'MECANICA' || mNorm === 'TODOS' || mNorm === '') return;
-
-                      const foundKey = Object.keys(byMechanic).find(k => normalizeForSearch(k) === mNorm) || m;
+                      const mUpper = m.toUpperCase().trim();
+                      const foundKey = Object.keys(byMechanic).find(k => k.toUpperCase().trim() === mUpper) || m;
                       
-                      let finalKey = foundKey;
-                      if (normalizeForSearch(finalKey) === 'ANDRE') {
-                        finalKey = 'ANDRÉ';
+                      if (!byMechanic[foundKey]) {
+                        byMechanic[foundKey] = { manutencao: 0, reserva: 0, bikes: [] };
                       }
-
-                      if (!byMechanic[finalKey]) {
-                        byMechanic[finalKey] = { manutencao: 0, reserva: 0, bikes: [] };
-                      }
-                      if (b.status === 'Em Manutenção') byMechanic[finalKey].manutencao++;
-                      else byMechanic[finalKey].reserva++;
-                      byMechanic[finalKey].bikes.push(b.patrimonio);
+                      if (b.status === 'Em Manutenção') byMechanic[foundKey].manutencao++;
+                      else byMechanic[foundKey].reserva++;
+                      byMechanic[foundKey].bikes.push(b.patrimonio);
                     });
 
                     const mechs = Object.entries(byMechanic);
@@ -9028,7 +8505,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             <div>
                               <p className="text-[9px] font-black text-gray-500 uppercase mb-1">Bikes ({data.bikes.length})</p>
                               <div className="flex flex-wrap gap-1">
-                                {mechanicsList.filter(b => (b.status === 'Em Manutenção' || b.status === 'Reserva') && b.mecanico && normalizeForSearch(b.mecanico) === normalizeForSearch(name)).map((b: any) => (
+                                {mechanicsList.filter(b => (b.status === 'Em Manutenção' || b.status === 'Reserva') && b.mecanico && b.mecanico.toUpperCase() === name.toUpperCase()).map((b: any) => (
                                   <span key={b.patrimonio} className={`px-2 py-0.5 rounded text-[10px] font-black font-mono ${
                                     b.status === 'Em Manutenção'
                                       ? 'bg-orange-500 text-white'
@@ -9961,63 +9438,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
           </div>
         </div>
       )}
-
-      {/* Modal de Remoção de Bike de Alerta */}
-      {removeAlertModal.isOpen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div className="bg-red-600 p-4 text-white">
-              <h3 className="text-lg font-bold flex items-center gap-2">
-                <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 6 6 18M6 6l12 12"/>
-                </svg>
-                Remover Bike do Alerta
-              </h3>
-              <p className="text-xs opacity-90 mt-1">Insira os dados para remover a bike {removeAlertModal.alert?.patrimonio || removeAlertModal.alert?.id} do alerta</p>
-            </div>
-            
-            <div className="p-4 space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Quem está removendo?</label>
-                <input
-                  type="text"
-                  value={removeAlertModal.removerName}
-                  onChange={e => setRemoveAlertModal(prev => ({ ...prev, removerName: e.target.value.toUpperCase() }))}
-                  placeholder="Seu Nome"
-                  className="w-full p-2.5 border border-gray-300 rounded-lg text-sm font-bold focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none uppercase"
-                />
-              </div>
-              
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Motivo da remoção</label>
-                <textarea
-                  value={removeAlertModal.reason}
-                  onChange={e => setRemoveAlertModal(prev => ({ ...prev, reason: e.target.value }))}
-                  placeholder="Descreva brevemente o motivo da remoção..."
-                  rows={3}
-                  className="w-full p-2.5 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none resize-none"
-                />
-              </div>
-            </div>
-            
-            <div className="p-4 bg-gray-50 flex gap-3">
-              <button
-                onClick={() => setRemoveAlertModal({ isOpen: false, alert: null, reason: '', removerName: '' })}
-                className="flex-1 px-4 py-2.5 bg-white border border-gray-300 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-100 transition-colors"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleRemoveAlertSubmit}
-                disabled={!removeAlertModal.removerName.trim() || !removeAlertModal.reason.trim() || isLoading}
-                className="flex-1 px-4 py-2.5 bg-red-600 text-white text-xs font-bold rounded-lg hover:bg-red-700 disabled:bg-gray-300 transition-colors flex items-center justify-center gap-2"
-              >
-                {isLoading ? 'Removendo...' : 'Confirmar'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       
       {/* Modal de Confirmação "Não Encontrada" */}
       {isNotFoundConfirmOpen && (
@@ -10788,652 +10208,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 className="w-full py-2.5 bg-gray-200 text-gray-700 rounded-xl text-xs font-black uppercase hover:bg-gray-300 transition-colors"
               >
                 Fechar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Almoxarifado (Warehouse Stock Control) Main Modal */}
-      {isAlmoxarifadoOpen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col h-[85vh]">
-            {/* Header */}
-            <div className="p-4 sm:p-5 border-b bg-gray-50 flex justify-between items-center flex-shrink-0">
-              <div className="flex items-center gap-2">
-                <div className="p-2 bg-blue-100 rounded-xl text-blue-700">
-                  <Package className="w-6 h-6" />
-                </div>
-                <div>
-                  <h2 className="text-lg font-black text-gray-800 uppercase tracking-tight">Controle de Almoxarifado</h2>
-                  <p className="text-xs text-gray-500 font-medium">Estoque, Entradas e Saídas da Oficina</p>
-                </div>
-              </div>
-              <button 
-                onClick={() => {
-                  setIsAlmoxarifadoOpen(false);
-                  setIsAddingNewItem(false);
-                  setMovingItem(null);
-                  setViewingHistoryItem(null);
-                }} 
-                className="p-1.5 hover:bg-gray-200 rounded-full transition-colors"
-              >
-                <XIcon className="w-5 h-5 text-gray-500" />
-              </button>
-            </div>
-
-            {/* Subheader Toolbar */}
-            <div className="p-4 border-b bg-white flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between flex-shrink-0">
-              {/* Search Box */}
-              <div className="relative flex-grow max-w-md">
-                <input
-                  type="text"
-                  placeholder="Pesquisar por código, descrição ou fornecedor..."
-                  value={almoxarifadoSearch}
-                  onChange={(e) => setAlmoxarifadoSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all shadow-sm"
-                />
-                <div className="absolute left-3 top-2.5 text-gray-400">
-                  <LucideMap className="w-4 h-4" /> {/* Fallback icon, search/magnifier is fine but we can just use LucideMap or similar */}
-                </div>
-              </div>
-
-              {/* Add Item Button */}
-              <button
-                onClick={() => setIsAddingNewItem(true)}
-                className="flex items-center justify-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-black uppercase rounded-xl shadow-sm transition-all"
-              >
-                <Plus className="w-4 h-4 text-white" />
-                Cadastrar Item
-              </button>
-            </div>
-
-            {/* Scrollable Body */}
-            <div className="flex-grow overflow-y-auto p-4 sm:p-5 bg-gray-50/50 space-y-4">
-              {/* Informative Panel & Alerts */}
-              {(() => {
-                const lowStock = almoxarifadoItems.filter(item => {
-                  const min = item.qtdMinima ?? 0;
-                  return item.quantidade <= min;
-                });
-
-                const itemStats = almoxarifadoItems.map(item => {
-                  const history = item.historico || [];
-                  const retiradas = history.filter((h: any) => h.tipo === 'retirada');
-                  const totalWithdrawn = retiradas.reduce((sum: number, h: any) => sum + Number(h.quantidade), 0);
-                  
-                  // Calculate unique months with withdrawals (e.g. YYYY-MM format)
-                  const monthsWithWithdrawals = new Set<string>();
-                  retiradas.forEach((h: any) => {
-                    if (h.data && h.data.length >= 7) {
-                      monthsWithWithdrawals.add(h.data.substring(0, 7));
-                    }
-                  });
-                  const monthsCount = monthsWithWithdrawals.size || 1;
-                  const avgMonthly = totalWithdrawn / monthsCount;
-
-                  return {
-                    id: item.id,
-                    codigo: item.codigo,
-                    descricao: item.descricao,
-                    totalWithdrawn,
-                    avgMonthly
-                  };
-                }).filter(stat => stat.totalWithdrawn > 0)
-                  .sort((a, b) => b.avgMonthly - a.avgMonthly);
-
-                return (
-                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 shadow-md flex flex-col md:flex-row gap-4 text-xs">
-                    {/* Alertas / Lembrete de Compra */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 mb-2 font-black text-slate-300 uppercase tracking-wider text-[10px]">
-                        <AlertCircle className="w-3.5 h-3.5 text-red-400" />
-                        <span>Itens com Estoque Crítico ({lowStock.length})</span>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
-                        {lowStock.length === 0 ? (
-                          <span className="text-[10px] text-green-400 font-bold bg-green-950/30 px-2 py-0.5 rounded-lg border border-green-900/30">
-                            ✓ Todo o estoque regular
-                          </span>
-                        ) : (
-                          lowStock.map(item => (
-                            <div key={item.id} className="flex items-center gap-1.5 px-2 py-0.5 bg-red-950/40 text-red-200 rounded-lg text-[10px] border border-red-900/30 font-bold">
-                              <span className="font-mono font-black text-red-400 uppercase">{item.codigo}</span>
-                              <span className="opacity-40 font-normal">|</span>
-                              <span>{item.quantidade} un <span className="opacity-40 font-normal">/</span> mín {item.qtdMinima ?? 0}</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="hidden md:block w-px bg-slate-800 self-stretch" />
-
-                    {/* Consumo Médio Mensal */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 mb-2 font-black text-slate-300 uppercase tracking-wider text-[10px]">
-                        <TrendingUp className="w-3.5 h-3.5 text-blue-400" />
-                        <span>Consumo Médio Mensal</span>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
-                        {itemStats.length === 0 ? (
-                          <span className="text-[10px] text-slate-400 italic bg-slate-850 px-2 py-0.5 rounded-lg border border-slate-800/80">
-                            Sem consumo registrado
-                          </span>
-                        ) : (
-                          itemStats.slice(0, 6).map(stat => (
-                            <div key={stat.id} className="flex items-center gap-1.5 px-2 py-0.5 bg-blue-950/30 text-blue-200 rounded-lg text-[10px] border border-blue-900/30 font-bold">
-                              <span className="font-mono font-black text-blue-400 uppercase">{stat.codigo}</span>
-                              <span className="opacity-40 font-normal">|</span>
-                              <span>{stat.avgMonthly.toFixed(1)} un/mês</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* Main List Table / Grid */}
-              {(() => {
-                const filtered = almoxarifadoItems.filter(item => {
-                  const queryLower = almoxarifadoSearch.toLowerCase().trim();
-                  if (!queryLower) return true;
-                  return (
-                    (item.codigo || '').toLowerCase().includes(queryLower) ||
-                    (item.descricao || '').toLowerCase().includes(queryLower) ||
-                    (item.fornecedor || '').toLowerCase().includes(queryLower)
-                  );
-                });
-
-                if (filtered.length === 0) {
-                  return (
-                    <div className="flex flex-col items-center justify-center py-12 text-center bg-white rounded-2xl border border-dashed border-gray-200 shadow-sm">
-                      <Inbox className="w-12 h-12 text-gray-300 mb-2" />
-                      <p className="text-gray-500 text-sm font-bold">Nenhum item encontrado</p>
-                      <p className="text-gray-400 text-xs mt-1">Experimente mudar o termo de busca ou cadastre um novo item.</p>
-                    </div>
-                  );
-                }
-
-                return (
-                  <div className="bg-white rounded-2xl border border-gray-150 shadow-sm overflow-hidden">
-                    {/* Desktop Table View */}
-                    <div className="hidden md:block overflow-x-auto">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="bg-gray-50 text-[10px] font-black text-gray-500 uppercase tracking-wider border-b">
-                            <th className="py-3.5 px-4 w-28">Código</th>
-                            <th className="py-3.5 px-4">Descrição</th>
-                            <th className="py-3.5 px-4 w-44">Fornecedor</th>
-                            <th className="py-3.5 px-4 w-32 text-center">Quantidade</th>
-                            <th className="py-3.5 px-4 w-32 text-center">Mín. Estoque</th>
-                            <th className="py-3.5 px-4 w-48 text-right">Ações</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100 text-xs font-medium text-gray-700">
-                          {filtered.map((item) => (
-                            <tr key={item.id} className="hover:bg-gray-50/50 transition-colors">
-                              <td className="py-3 px-4 font-mono font-black text-blue-600 uppercase">
-                                {item.codigo}
-                              </td>
-                              <td className="py-3 px-4">
-                                <div className="font-bold text-gray-900">{item.descricao}</div>
-                              </td>
-                              <td className="py-3 px-4 text-gray-500">
-                                {item.fornecedor}
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                <span className={`inline-block px-3 py-1 rounded-full font-black text-xs font-mono ${
-                                  item.quantidade <= (item.qtdMinima ?? 0)
-                                    ? 'bg-red-100 text-red-700 font-bold' 
-                                    : item.quantidade < (item.qtdMinima ?? 0) + 5
-                                      ? 'bg-orange-100 text-orange-700' 
-                                      : 'bg-green-100 text-green-700'
-                                }`}>
-                                  {item.quantidade}
-                                </span>
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  defaultValue={item.qtdMinima ?? 0}
-                                  onBlur={async (e) => {
-                                    const val = Number(e.target.value);
-                                    if (val !== (item.qtdMinima ?? 0)) {
-                                      await handleUpdateMinStock(item.id, val);
-                                    }
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      (e.target as HTMLInputElement).blur();
-                                    }
-                                  }}
-                                  className="w-16 p-1 border border-gray-250 rounded-lg text-center text-xs font-black font-mono focus:ring-2 focus:ring-blue-500 outline-none"
-                                />
-                              </td>
-                              <td className="py-3 px-4 text-right">
-                                <div className="flex items-center justify-end gap-1.5">
-                                  {/* Plus Button */}
-                                  <button
-                                    onClick={() => {
-                                      setMovingItem(item);
-                                      setMovementTipo('entrada');
-                                      setMovementQuantidade('');
-                                      setMovementUsuario('');
-                                    }}
-                                    title="Dar Entrada"
-                                    className="p-1.5 bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 active:scale-95 rounded-lg transition-all shadow-sm"
-                                  >
-                                    <Plus className="w-4 h-4" />
-                                  </button>
- 
-                                  {/* Minus Button */}
-                                  <button
-                                    onClick={() => {
-                                      setMovingItem(item);
-                                      setMovementTipo('retirada');
-                                      setMovementQuantidade('');
-                                      setMovementUsuario('');
-                                    }}
-                                    title="Retirar Item"
-                                    className="p-1.5 bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100 active:scale-95 rounded-lg transition-all shadow-sm"
-                                  >
-                                    <Minus className="w-4 h-4" />
-                                  </button>
- 
-                                  {/* History Button */}
-                                  <button
-                                    onClick={() => setViewingHistoryItem(item)}
-                                    className="px-2 py-1.5 text-[10px] font-black uppercase text-blue-600 hover:bg-blue-50 border border-blue-100 hover:border-blue-200 rounded-lg transition-all"
-                                  >
-                                    Histórico
-                                  </button>
- 
-                                  {/* Trash Button */}
-                                  <button
-                                    onClick={() => handleDeleteAlmoxarifadoItem(item.id, item.descricao)}
-                                    className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 border border-transparent hover:border-red-100 rounded-lg transition-all"
-                                    title="Excluir item"
-                                  >
-                                    <TrashIcon className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
- 
-                    {/* Mobile Card-List View */}
-                    <div className="block md:hidden divide-y">
-                      {filtered.map((item) => (
-                        <div key={item.id} className="p-4 space-y-3">
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <span className="font-mono font-black text-blue-600 uppercase text-xs">{item.codigo}</span>
-                              <h4 className="font-bold text-gray-900 text-sm mt-0.5">{item.descricao}</h4>
-                              <p className="text-[10px] text-gray-500 font-medium">Fornecedor: {item.fornecedor}</p>
-                              
-                              <div className="flex items-center gap-1.5 mt-2">
-                                <span className="text-[10px] font-black text-gray-500 uppercase">Mín. Estoque:</span>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  defaultValue={item.qtdMinima ?? 0}
-                                  onBlur={async (e) => {
-                                    const val = Number(e.target.value);
-                                    if (val !== (item.qtdMinima ?? 0)) {
-                                      await handleUpdateMinStock(item.id, val);
-                                    }
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      (e.target as HTMLInputElement).blur();
-                                    }
-                                  }}
-                                  className="w-14 p-0.5 border border-gray-250 rounded text-center text-xs font-black font-mono focus:ring-1 focus:ring-blue-500 outline-none"
-                                />
-                              </div>
-                            </div>
-                            <span className={`px-2.5 py-1 rounded-full font-black text-xs font-mono ${
-                              item.quantidade <= (item.qtdMinima ?? 0)
-                                ? 'bg-red-100 text-red-700' 
-                                : item.quantidade < (item.qtdMinima ?? 0) + 5
-                                  ? 'bg-orange-100 text-orange-700' 
-                                  : 'bg-green-100 text-green-700'
-                            }`}>
-                              {item.quantidade} un
-                            </span>
-                          </div>
- 
-                          <div className="flex items-center justify-between border-t pt-2.5">
-                            <button
-                              onClick={() => setViewingHistoryItem(item)}
-                              className="text-[10px] font-black uppercase text-blue-600 bg-blue-50/50 border border-blue-100 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-all"
-                            >
-                              Histórico
-                            </button>
- 
-                            <div className="flex items-center gap-1.5">
-                              {/* Plus */}
-                              <button
-                                onClick={() => {
-                                  setMovingItem(item);
-                                  setMovementTipo('entrada');
-                                  setMovementQuantidade('');
-                                  setMovementUsuario('');
-                                }}
-                                className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-[10px] font-black uppercase transition-all shadow-sm"
-                              >
-                                <Plus className="w-3.5 h-3.5 text-white" />
-                                Entrada
-                              </button>
- 
-                              {/* Minus */}
-                              <button
-                                onClick={() => {
-                                  setMovingItem(item);
-                                  setMovementTipo('retirada');
-                                  setMovementQuantidade('');
-                                  setMovementUsuario('');
-                                }}
-                                className="flex items-center gap-1 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-[10px] font-black uppercase transition-all shadow-sm"
-                              >
-                                <Minus className="w-3.5 h-3.5 text-white" />
-                                Retirada
-                              </button>
- 
-                              {/* Trash */}
-                              <button
-                                onClick={() => handleDeleteAlmoxarifadoItem(item.id, item.descricao)}
-                                className="p-1.5 text-red-500 border border-transparent rounded-lg hover:bg-red-50"
-                              >
-                                <TrashIcon className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* Footer */}
-            <div className="p-4 sm:p-5 border-t bg-gray-50 flex-shrink-0">
-              <button 
-                onClick={() => setIsAlmoxarifadoOpen(false)}
-                className="w-full py-2.5 bg-gray-200 text-gray-700 rounded-xl text-xs font-black uppercase hover:bg-gray-300 transition-colors shadow-sm"
-              >
-                Fechar Painel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Almoxarifado: Cadastrar Novo Item Modal */}
-      {isAddingNewItem && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
-            <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
-              <div>
-                <h3 className="text-md font-black text-gray-800 uppercase tracking-tight">Cadastrar Item no Almoxarifado</h3>
-                <p className="text-xs text-gray-500 font-medium">Insira as informações básicas para controle de estoque</p>
-              </div>
-              <button 
-                onClick={() => setIsAddingNewItem(false)} 
-                className="p-1 hover:bg-gray-200 rounded-full transition-colors"
-              >
-                <XIcon className="w-5 h-5 text-gray-500" />
-              </button>
-            </div>
-
-            <div className="p-4 space-y-3.5">
-              <div>
-                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Código do Item *</label>
-                <input
-                  type="text"
-                  placeholder="Ex: PARAFUSO-M8, CORREIA-120"
-                  value={newItemCodigo}
-                  onChange={(e) => setNewItemCodigo(e.target.value)}
-                  className="w-full p-2.5 border rounded-xl text-xs font-bold uppercase focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Descrição / Nome do Item *</label>
-                <input
-                  type="text"
-                  placeholder="Ex: Parafuso Sextavado M8x20mm"
-                  value={newItemDescricao}
-                  onChange={(e) => setNewItemDescricao(e.target.value)}
-                  className="w-full p-2.5 border rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Fornecedor *</label>
-                <input
-                  type="text"
-                  placeholder="Ex: Parafusos LTDA ou Distribuidor X"
-                  value={newItemFornecedor}
-                  onChange={(e) => setNewItemFornecedor(e.target.value)}
-                  className="w-full p-2.5 border rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Quantidade Inicial</label>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="Ex: 50"
-                  value={newItemQuantidade}
-                  onChange={(e) => setNewItemQuantidade(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full p-2.5 border rounded-xl text-xs font-black font-mono focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Quantidade Mínima de Estoque</label>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="Ex: 5"
-                  value={newItemQtdMinima}
-                  onChange={(e) => setNewItemQtdMinima(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full p-2.5 border rounded-xl text-xs font-black font-mono focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-              </div>
-            </div>
-
-            <div className="p-4 border-t bg-gray-50 flex gap-2">
-              <button
-                onClick={() => setIsAddingNewItem(false)}
-                className="flex-1 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-black uppercase hover:bg-gray-300 transition-colors"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleAddNewAlmoxarifadoItem}
-                disabled={isSubmittingNewItem}
-                className="flex-1 py-2 bg-blue-600 text-white rounded-xl text-xs font-black uppercase hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
-              >
-                {isSubmittingNewItem ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-white" />
-                ) : (
-                  'Salvar Cadastro'
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Almoxarifado: Movimentação (Entrada/Retirada) Modal */}
-      {movingItem && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
-            <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
-              <div>
-                <h3 className="text-md font-black text-gray-800 uppercase tracking-tight flex items-center gap-1.5">
-                  {movementTipo === 'entrada' ? (
-                    <span className="text-green-600 font-black">Registrar Entrada</span>
-                  ) : (
-                    <span className="text-orange-600 font-black">Registrar Retirada / Saída</span>
-                  )}
-                </h3>
-                <p className="text-xs text-gray-500 font-mono mt-0.5 uppercase tracking-wide">
-                  Item: {movingItem.descricao} ({movingItem.codigo})
-                </p>
-              </div>
-              <button 
-                onClick={() => setMovingItem(null)} 
-                className="p-1 hover:bg-gray-200 rounded-full transition-colors"
-              >
-                <XIcon className="w-5 h-5 text-gray-500" />
-              </button>
-            </div>
-
-            <div className="p-4 space-y-4">
-              {/* Actual Stock info */}
-              <div className="bg-blue-50/50 p-2.5 rounded-xl border border-blue-100 flex justify-between items-center text-xs">
-                <span className="font-bold text-blue-800">Saldo Atual em Estoque:</span>
-                <span className="font-mono font-black text-blue-700 text-sm">{movingItem.quantidade} un</span>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Quantidade *</label>
-                <input
-                  type="number"
-                  min="1"
-                  placeholder="Ex: 5"
-                  value={movementQuantidade}
-                  onChange={(e) => setMovementQuantidade(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full p-2.5 border rounded-xl text-xs font-black font-mono focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">
-                  {movementTipo === 'entrada' ? 'Responsável pela Entrada *' : 'Nome de quem está consumindo *'}
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: Kauan, João, Rafael..."
-                  value={movementUsuario}
-                  onChange={(e) => setMovementUsuario(e.target.value)}
-                  className="w-full p-2.5 border rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1">Data da Retirada/Entrada *</label>
-                <input
-                  type="date"
-                  value={movementData}
-                  onChange={(e) => setMovementData(e.target.value)}
-                  className="w-full p-2.5 border rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-              </div>
-            </div>
-
-            <div className="p-4 border-t bg-gray-50 flex gap-2">
-              <button
-                onClick={() => setMovingItem(null)}
-                className="flex-1 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-black uppercase hover:bg-gray-300 transition-colors"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleRegisterStockMovement}
-                disabled={isSubmittingMovement}
-                className={`flex-1 py-2 text-white rounded-xl text-xs font-black uppercase transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 ${
-                  movementTipo === 'entrada' ? 'bg-green-600 hover:bg-green-700' : 'bg-orange-500 hover:bg-orange-600'
-                }`}
-              >
-                {isSubmittingMovement ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-white" />
-                ) : (
-                  'Salvar Movimentação'
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Almoxarifado: Histórico do Item Modal */}
-      {viewingHistoryItem && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col h-[70vh]">
-            <div className="p-4 border-b bg-gray-50 flex justify-between items-center flex-shrink-0">
-              <div>
-                <h3 className="text-md font-black text-gray-800 uppercase tracking-tight">Histórico de Movimentações</h3>
-                <p className="text-xs text-gray-500 font-mono mt-0.5 uppercase tracking-wide">
-                  Item: {viewingHistoryItem.descricao} ({viewingHistoryItem.codigo})
-                </p>
-              </div>
-              <button 
-                onClick={() => setViewingHistoryItem(null)} 
-                className="p-1 hover:bg-gray-200 rounded-full transition-colors"
-              >
-                <XIcon className="w-5 h-5 text-gray-500" />
-              </button>
-            </div>
-
-            {/* Scrollable Logs */}
-            <div className="flex-grow overflow-y-auto p-4 space-y-3 bg-gray-50/50">
-              {(!viewingHistoryItem.historico || viewingHistoryItem.historico.length === 0) ? (
-                <div className="text-center py-12 bg-white rounded-xl border border-dashed border-gray-200">
-                  <p className="text-xs text-gray-400 font-medium italic">Nenhuma movimentação registrada para este item.</p>
-                </div>
-              ) : (
-                viewingHistoryItem.historico.map((log: any) => (
-                  <div key={log.id} className="bg-white p-3.5 rounded-xl border border-gray-150 shadow-sm flex justify-between items-center gap-4">
-                    <div className="flex items-center gap-3">
-                      <div className={`p-1.5 rounded-full ${
-                        log.tipo === 'entrada' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'
-                      }`}>
-                        {log.tipo === 'entrada' ? <Plus className="w-4 h-4" /> : <Minus className="w-4 h-4" />}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-bold text-xs text-gray-900 capitalize">{log.tipo}</span>
-                          <span className={`text-[10px] font-black font-mono px-1.5 py-0.5 rounded ${
-                            log.tipo === 'entrada' ? 'bg-green-50 text-green-700' : 'bg-orange-50 text-orange-700'
-                          }`}>
-                            {log.tipo === 'entrada' ? '+' : '-'}{log.quantidade} un
-                          </span>
-                        </div>
-                        <p className="text-[10px] text-gray-500 font-medium mt-0.5">
-                          Responsável/Consumidor: <strong className="text-gray-700 font-bold">{log.usuario}</strong>
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="text-right flex-shrink-0">
-                      <span className="text-[10px] font-mono font-black text-gray-400 bg-gray-100 px-2 py-0.5 rounded">
-                        {log.data ? log.data.split('-').reverse().join('/') : '—'}
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="p-4 border-t bg-gray-50 flex-shrink-0">
-              <button
-                onClick={() => setViewingHistoryItem(null)}
-                className="w-full py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-xl text-xs font-black uppercase transition-colors"
-              >
-                Voltar
               </button>
             </div>
           </div>

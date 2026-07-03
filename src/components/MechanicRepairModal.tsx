@@ -15,7 +15,7 @@ const MechanicRepairModal: React.FC<MechanicRepairModalProps> = ({ isOpen, onClo
         "Guidão", "Quadro", "Adesivos", "Identificação",
         "Pedal", "Carregamento", "Limpeza",
         "Instalação de Locker", "Troca de Cabo de Freio",
-        "Troca Cabo Energia", "Corrente", "Paralamas", "Apoio/Descanso"
+        "Troca Cabo Energia", "Corrente"
     ];
 
     const [selectedOptions, setSelectedOptions] = React.useState<string[]>([]);

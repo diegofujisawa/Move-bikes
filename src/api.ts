@@ -13,14 +13,14 @@ if (!SCRIPT_URL || !SCRIPT_URL.startsWith('https://script.google.com')) {
 // =================================================================
 const READ_ACTIONS = new Set([
   'health', 'search', 'debugSearch', 'getRequests', 'getRequestsHistory', 'getStations',
-  'getMotoristas', 'getMecanicos', 'getAllPatrimonioNumbers', 'getDriverLocations',
+  'getMotoristas', 'getAllPatrimonioNumbers', 'getDriverLocations',
   'getDriverState', 'getBikeDetailsBatch', 'getDailyReportData',
   'getSchedule', 'getBikeStatuses', 'getReporData', 'getChangeStatusData',
   'getAlerts', 'getVandalized', 'getRouteDetails', 'getVehiclePlates',
   'getDriversSummary', 'getAdminAlerts', 'getMechanicsList', 'getChassiInfo',
   'getTechnicaList', 'getBicycles', 'getAnalyticalDashboardData',
-  'getDirections', 'getBikeMovement', 'getSheetsRecoveredBikes',
-  'exportAllData', 'sync',
+  'getDirections', 'getBikeMovement',
+  'exportAllData', 'sync', 'getMecanicos',
 ]);
 
 // =================================================================
@@ -28,8 +28,8 @@ const READ_ACTIONS = new Set([
 // TTL padrão: 30 segundos
 // =================================================================
 const CACHEABLE_ACTIONS = new Set([
-  'getStations', 'getBikeStatuses', 'getMotoristas', 'getMecanicos',
-  'getVehiclePlates', 'getMechanicsList',
+  'getStations', 'getBikeStatuses', 'getMotoristas',
+  'getVehiclePlates', 'getMechanicsList', 'getMecanicos',
 ]);
 
 const CACHE_TTL_MS = 30_000; // 30 segundos
@@ -221,8 +221,7 @@ function normalizeError(err: any): Error {
 export const apiGetCall = async (
   action: string,
   params: Record<string, string> = {},
-  retries = 3,  // ← aumentado de 1 para 3
-  customTimeout?: number
+  retries = 3  // ← aumentado de 1 para 3
 ): Promise<any> => {
 
   // Verifica cache antes de fazer a requisição
@@ -256,7 +255,7 @@ export const apiGetCall = async (
       credentials: 'omit',
       cache: 'no-store',
       redirect: 'follow',
-      timeout: customTimeout || 90000,
+      timeout: 90000,
     });
 
     if (!response.ok) {
@@ -287,7 +286,7 @@ export const apiGetCall = async (
       const backoff = calcBackoff(attempt);
       console.warn(`[GET] Tentando novamente (${retries} restantes) em ${Math.round(backoff)}ms...`);
       await delay(backoff);
-      return apiGetCall(action, params, retries - 1, customTimeout);
+      return apiGetCall(action, params, retries - 1);
     }
     throw normalizeError(err);
   }
@@ -424,7 +423,7 @@ export const apiCall = async (
 // =================================================================
 export const checkApiConnection = async (): Promise<any> => {
   try {
-    return await apiGetCall('health', {}, 1, 10000);
+    return await apiGetCall('health');
   } catch (err: any) {
     throw normalizeError(err);
   }

@@ -100,12 +100,6 @@ service cloud.firestore {
     match /trailers_history/{id} {
       allow get, list, create, update, delete: if isAuthenticated();
     }
-    match /mechanics_flow/{id} {
-      allow read, write: if isAuthenticated();
-    }
-    match /almoxarifado/{id} {
-      allow read, write: if isAuthenticated();
-    }
     match /sync/{id} {
       allow read, write: if isAuthenticated();
     }
