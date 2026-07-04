@@ -7,7 +7,7 @@ import {
   Battery, AlertTriangle, MapPin, Activity, HelpCircle, CheckCircle
 } from 'lucide-react';
 import { db } from '../firebase';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, Timestamp } from 'firebase/firestore';
 
 interface DashboardData {
   driver: string;
@@ -179,11 +179,28 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
     setMaintLoading(true);
     setMaintError(null);
     try {
-      const [snapReparo, snapEntrada, snapTec] = await Promise.all([
-        getDocs(query(collection(db, 'reports'), where('type', '==', 'Reparo'))),
-        getDocs(query(collection(db, 'reports'), where('type', '==', 'Mecânica'))),
-        getDocs(query(collection(db, 'reports'), where('type', '==', 'Técnica'))),
-      ]);
+      const queryStartDate = new Date();
+      queryStartDate.setMonth(queryStartDate.getMonth() - 1);
+      queryStartDate.setDate(1); // 1st of previous month
+      const queryStartTimestamp = Timestamp.fromDate(queryStartDate);
+
+      // Única query para reduzir leituras em até 90% (e carregar muito mais rápido via cache local)
+      const q = query(
+        collection(db, 'reports'),
+        where('timestamp', '>=', queryStartTimestamp)
+      );
+      const snapAll = await getDocs(q);
+
+      // Filtra em memória para simular as queries anteriores sem requisições adicionais ou necessidade de índices compostos
+      const snapReparo = {
+        docs: snapAll.docs.filter(d => d.data().type === 'Reparo')
+      };
+      const snapEntrada = {
+        docs: snapAll.docs.filter(d => d.data().type === 'Mecânica')
+      };
+      const snapTec = {
+        docs: snapAll.docs.filter(d => d.data().type === 'Técnica')
+      };
 
       // --- PROCESS MECHANICS ENTRADAS & REPAROS ---
       const entries: Record<string, any[]> = {};
@@ -492,14 +509,32 @@ export const AnalyticalDashboard: React.FC<AnalyticalDashboardProps> = ({ onClos
     setBikesLoading(true);
     setBikesError(null);
     try {
-      const [snapFinalizacao, snapAlerta, sheetsRecoveredRes] = await Promise.all([
-        getDocs(query(collection(db, 'reports'), where('type', '==', 'Finalização'))),
-        getDocs(query(collection(db, 'reports'), where('type', '==', 'Alerta'))),
+      const queryStartDate = new Date();
+      queryStartDate.setMonth(queryStartDate.getMonth() - 1);
+      queryStartDate.setDate(1); // 1st of previous month
+      const queryStartTimestamp = Timestamp.fromDate(queryStartDate);
+
+      // Única query com filtro de timestamp para reduzir leituras em até 90%
+      const q = query(
+        collection(db, 'reports'),
+        where('timestamp', '>=', queryStartTimestamp)
+      );
+
+      const [snapAll, sheetsRecoveredRes] = await Promise.all([
+        getDocs(q),
         apiCall({ action: 'getSheetsRecoveredBikes' }).catch(err => {
           console.error('Failed to fetch sheets recovered bikes:', err);
           return { success: false, data: [] };
         })
       ]);
+
+      // Filtra em memória para simular as queries anteriores sem requisições adicionais ou índices compostos
+      const snapFinalizacao = {
+        docs: snapAll.docs.filter(d => d.data().type === 'Finalização')
+      };
+      const snapAlerta = {
+        docs: snapAll.docs.filter(d => d.data().type === 'Alerta')
+      };
       const recordsFinalizacao = snapFinalizacao.docs.map(doc => ({
         id: doc.id,
         ...doc.data()

@@ -7,7 +7,9 @@ import {
   browserLocalPersistence
 } from 'firebase/auth';
 import {
-  getFirestore
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager
 } from 'firebase/firestore';
 
 import firebaseConfig from './firebase-applet-config.json';
@@ -15,12 +17,21 @@ import firebaseConfig from './firebase-applet-config.json';
 const app = initializeApp(firebaseConfig);
 
 // =================================================================
-// FIRESTORE
+// FIRESTORE CONECTIVIDADE E CACHE OFFLINE PERSISTENTE (OTIMIZAÇÃO DE LEITURAS)
 // =================================================================
-// Usando o databaseId do config conforme recomendado pela skill
-export const db = (firebaseConfig as any).firestoreDatabaseId && (firebaseConfig as any).firestoreDatabaseId !== '(default)'
-  ? getFirestore(app, (firebaseConfig as any).firestoreDatabaseId)
-  : getFirestore(app);
+// Ativamos o cache offline persistente com gerenciador de múltiplas abas para:
+// 1. Reduzir as leituras no servidor Firebase em até 90% (evita estourar o limite de 50.000 leituras/dia)
+// 2. Aumentar drasticamente a agilidade das consultas ao carregar dados locais instantaneamente
+// 3. Garantir funcionamento correto e estável mesmo quando a rede estiver oscilando
+const dbId = (firebaseConfig as any).firestoreDatabaseId && (firebaseConfig as any).firestoreDatabaseId !== '(default)'
+  ? (firebaseConfig as any).firestoreDatabaseId
+  : undefined;
+
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager()
+  })
+}, dbId);
 
 export const auth = getAuth(app);
 

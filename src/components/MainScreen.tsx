@@ -1138,12 +1138,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Removido listener do Firebase para alertas pois o Sheets é o source of truth para os checks
     // e o listener estava sobrescrevendo os dados com informações incompletas.
 
-    // Listener de timeline_events (para ADM ou Motorista — enriquece a timeline dos motoristas)
+     // Listener de timeline_events (para ADM ou Motorista — enriquece a timeline dos motoristas)
     let unsubTimeline = () => {};
     if (isAdm || driverName) {
       setFirebaseTimelineEvents({}); // limpa ao trocar de data
-      // Filtra pela data selecionada no servidor para maior eficiência e faz filtro por motorista localmente de forma case-insensitive
-      const q = query(collection(db, 'timeline_events'), where('date', '==', timelineDate));
+      // Otimização de Leituras (Server-Side Filter):
+      // Se for ADM, escuta todos os eventos do dia. Se for motorista, escuta APENAS os seus próprios eventos.
+      // Isso reduz drasticamente as leituras do Firestore no dia a dia.
+      const q = isAdm 
+        ? query(collection(db, 'timeline_events'), where('date', '==', timelineDate))
+        : query(collection(db, 'timeline_events'), where('date', '==', timelineDate), where('driverName', '==', driverName));
       unsubTimeline = onSnapshot(q, snapshot => {
         const byDriver: Record<string, Array<{tsMs: number, type: string, bikeNumber?: string}>> = {};
         snapshot.forEach(d => {
