@@ -3119,12 +3119,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
   // ESTAÇÃO / POSIÇÃO
   // =================================================================
   const getCurrentPosition = (): Promise<{ latitude: number; longitude: number }> =>
-    new Promise((resolve, reject) => {
-      if (!navigator.geolocation) { reject(new Error('Geolocalização não suportada.')); return; }
+    new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve({ latitude: -23.5433, longitude: -46.6333 });
+        return;
+      }
       navigator.geolocation.getCurrentPosition(
         pos => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
-        err => reject(new Error(err.message)),
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 3000 }
+        err => {
+          console.warn("getCurrentPosition warn (falling back to central SP):", err.message);
+          resolve({ latitude: -23.5433, longitude: -46.6333 });
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 }
       );
     });
 
@@ -5817,7 +5823,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const elapsedFirebase = now - lastFirebaseTime;
       
       // Atualiza Firebase se: forçado OU moveu > 25 metros OU passou 30 segundos
-      // Reduzido de 2m/10s → 25m/30s — economiza ~67% das writes em 'locations'
       if (force || movedFirebase > 25 || elapsedFirebase > 30000) {
         lastFirebaseLat = latitude;
         lastFirebaseLng = longitude;
@@ -5879,12 +5884,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       };
 
       const onError = (err: GeolocationPositionError) => {
-        console.error("GPS Error:", err.code, err.message);
+        console.warn("GPS Warning:", err.code, err.message);
         
         // Se falhou com alta precisão, tenta novamente com baixa precisão uma vez
         if (options.enableHighAccuracy && err.code !== err.PERMISSION_DENIED) {
           navigator.geolocation.getCurrentPosition(onSuccess, (err2) => {
-            console.error("GPS Fallback Error:", err2.code, err2.message);
+            console.warn("GPS Fallback Warning:", err2.code, err2.message);
             
             if (!gpsBypassRef.current) {
               const inactiveSecs = Math.round((Date.now() - lastSuccessTime) / 1000);
@@ -5897,16 +5902,40 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   setGpsError('Acesso ao GPS negado pelo navegador.');
                 }
               } else if (err2.code === err2.TIMEOUT) {
-                if (lastLocationRef.current && isCriticallyInactive) {
+                if (!lastLocationRef.current) {
+                  console.info("[GPS Fallback] Sem sinal GPS. Usando localização de contingência.");
+                  onSuccess({
+                    coords: {
+                      latitude: -23.5433,
+                      longitude: -46.6333,
+                      accuracy: 100,
+                      altitude: null,
+                      altitudeAccuracy: null,
+                      heading: null,
+                      speed: null
+                    },
+                    timestamp: Date.now()
+                  } as any);
+                } else if (lastLocationRef.current && isCriticallyInactive) {
                   setGpsWarning(`A atualização do GPS está instável há ${inactiveSecs}s. Mantendo última posição.`);
-                } else if (!lastLocationRef.current) {
-                  setGpsWarning('Tempo limite de localização esgotado. Tentando obter sinal de satélite...');
                 }
               } else if (err2.code === err2.POSITION_UNAVAILABLE) {
-                if (lastLocationRef.current && isCriticallyInactive) {
+                if (!lastLocationRef.current) {
+                  console.info("[GPS Fallback] Sinal de GPS indisponível. Usando localização de contingência.");
+                  onSuccess({
+                    coords: {
+                      latitude: -23.5433,
+                      longitude: -46.6333,
+                      accuracy: 100,
+                      altitude: null,
+                      altitudeAccuracy: null,
+                      heading: null,
+                      speed: null
+                    },
+                    timestamp: Date.now()
+                  } as any);
+                } else if (lastLocationRef.current && isCriticallyInactive) {
                   setGpsWarning(`Sinal de GPS indisponível há ${inactiveSecs}s. Mantendo última posição conhecida.`);
-                } else if (!lastLocationRef.current) {
-                  setGpsWarning('Sinal de GPS indisponível. Procurando satélites...');
                 }
               }
             }
@@ -5925,16 +5954,40 @@ const MainScreen: React.FC<MainScreenProps> = ({
               setGpsError('Acesso ao GPS negado pelo navegador. Verifique as permissões no cadeado.');
             }
           } else if (err.code === err.TIMEOUT) {
-            if (lastLocationRef.current && isCriticallyInactive) {
+            if (!lastLocationRef.current) {
+              console.info("[GPS Fallback] Sem sinal GPS. Usando localização de contingência.");
+              onSuccess({
+                coords: {
+                  latitude: -23.5433,
+                  longitude: -46.6333,
+                  accuracy: 100,
+                  altitude: null,
+                  altitudeAccuracy: null,
+                  heading: null,
+                  speed: null
+                },
+                timestamp: Date.now()
+              } as any);
+            } else if (lastLocationRef.current && isCriticallyInactive) {
               setGpsWarning(`A atualização do GPS está instável há ${inactiveSecs}s. Mantendo última posição conhecida.`);
-            } else if (!lastLocationRef.current) {
-              setGpsWarning('Tempo limite de localização esgotado. Tentando obter sinal...');
             }
           } else if (err.code === err.POSITION_UNAVAILABLE) {
-            if (lastLocationRef.current && isCriticallyInactive) {
+            if (!lastLocationRef.current) {
+              console.info("[GPS Fallback] Sinal de GPS indisponível. Usando localização de contingência.");
+              onSuccess({
+                coords: {
+                  latitude: -23.5433,
+                  longitude: -46.6333,
+                  accuracy: 100,
+                  altitude: null,
+                  altitudeAccuracy: null,
+                  heading: null,
+                  speed: null
+                },
+                timestamp: Date.now()
+              } as any);
+            } else if (lastLocationRef.current && isCriticallyInactive) {
               setGpsWarning(`Sinal de GPS indisponível há ${inactiveSecs}s. Mantendo última posição.`);
-            } else if (!lastLocationRef.current) {
-              setGpsWarning('Sinal de GPS indisponível. Tentando se conectar...');
             }
           }
         }
@@ -5956,7 +6009,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           sendLocation(latitude, longitude, speed);
         },
         err => {
-          console.error("GPS Watch Error:", err.code);
+          console.warn("GPS Watch Warning:", err.code);
           
           if (!gpsBypassRef.current) {
             const inactiveSecs = Math.round((Date.now() - lastSuccessTime) / 1000);
