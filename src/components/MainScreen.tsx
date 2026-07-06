@@ -751,13 +751,22 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
     return result.map(bike => {
       const pat = String(bike.patrimonio);
+      const live = mechanicsLiveDetails[pat];
+      
+      const enrichedBike = {
+        ...bike,
+        bateria: live?.['Bateria'] !== undefined ? live['Bateria'] : (bike.bateria !== undefined ? bike.bateria : live?.bateria),
+        carregamento: live?.['Carregando'] !== undefined ? live['Carregando'] : (bike.carregamento !== undefined ? bike.carregamento : live?.carregamento),
+        trava: live?.['Trava'] !== undefined ? live['Trava'] : (bike.trava !== undefined ? bike.trava : (bike.Trava !== undefined ? bike.Trava : live?.trava)),
+      };
+
       const protected_ = mechanicOptimisticRef.current[pat];
       if (protected_ && protected_.expiresAt > now) {
         const protectedFields = { ...protected_ };
         delete (protectedFields as any).expiresAt;
-        return { ...bike, ...protectedFields };
+        return { ...enrichedBike, ...protectedFields };
       }
-      return bike;
+      return enrichedBike;
     }).filter(b => {
       const pat = String(b.patrimonio).trim().replace(/^0+/, '');
       return validMechanicsStatuses.includes(b.status) && !bikesInPendingActions.has(pat);
@@ -7783,6 +7792,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               {bike.bateria !== undefined && <p className="text-[10px] text-gray-600">Bateria: {formatBattery(bike.bateria)}%</p>}
                               {bike.carregamento === 'Carregando' && <p className="text-[10px] text-green-600 font-bold">⚡ Carregando</p>}
                               {bike.carregamento === 'Não carregando' && <p className="text-[10px] text-red-500 font-bold">🔌 Não carregando</p>}
+                              <p className={`text-[10px] font-bold ${
+                                String(bike.trava || '').toLowerCase().trim() === 'aberta' || String(bike.trava || '').toLowerCase().trim() === 'open'
+                                  ? 'text-orange-500' 
+                                  : 'text-gray-500'
+                              }`}>
+                                🔒 Trava: {String(bike.trava || '').toLowerCase().trim() === 'aberta' || String(bike.trava || '').toLowerCase().trim() === 'open' ? 'Aberta' : 'Fechada'}
+                              </p>
                             </div>
                             {bike.mecanico && <p className="text-[10px] font-bold text-blue-600">Mecânico: {bike.mecanico}</p>}
                             {bike.motorista && <p className="text-[10px] text-blue-700 font-semibold">Motorista: {bike.motorista}</p>}
@@ -7887,7 +7903,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 <div key={`tr-${bike.patrimonio}-${i}`} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 border rounded-lg text-[11px]">
                                   <span className="font-black text-gray-800 font-mono w-10 flex-shrink-0">{bike.patrimonio}</span>
                                   {bike.mecanico && <span className="text-blue-600 font-bold flex-shrink-0 truncate max-w-[80px]">{bike.mecanico}</span>}
-                                  {bike.tratativa && bike.tratativa !== 'MANUAL' && <span className="text-gray-400 flex-1 truncate text-[9px]">{bike.tratativa}</span>}
+                                  <div className="flex-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[9px] min-w-0">
+                                    {bike.carregamento === 'Carregando' ? (
+                                      <span className="text-green-600 font-bold flex items-center gap-0.5">⚡ Carregando</span>
+                                    ) : (
+                                      <span className="text-red-500 font-semibold flex items-center gap-0.5">🔌 Não carregando</span>
+                                    )}
+                                    <span className={`font-bold flex items-center gap-0.5 ${
+                                      String(bike.trava || '').toLowerCase().trim() === 'aberta' || String(bike.trava || '').toLowerCase().trim() === 'open'
+                                        ? 'text-orange-500' 
+                                        : 'text-gray-500'
+                                    }`}>
+                                      🔒 {String(bike.trava || '').toLowerCase().trim() === 'aberta' || String(bike.trava || '').toLowerCase().trim() === 'open' ? 'Trava Aberta' : 'Trava Fechada'}
+                                    </span>
+                                  </div>
                                   <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
                                     {bike.bateria !== undefined && (
                                       <span className={`text-[10px] font-bold ${Number(formatBattery(bike.bateria)) < trailerBatteryLimit ? 'text-red-500' : 'text-gray-500'}`}>🔋{formatBattery(bike.bateria)}%</span>
