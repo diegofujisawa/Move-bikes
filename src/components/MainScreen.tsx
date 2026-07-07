@@ -1045,111 +1045,118 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const nowTs = Timestamp.now();
     const startOfDayTs = getStartOfDayTs();
 
-    // Pedidos pendentes — Firebase usado APENAS para notificação push de novos pedidos
+    // Pedidos pendentes — Firebase usado APENAS para notificação push de novos pedidos para motoristas
     // O estado real de pendingRequests vem exclusivamente do Sheets via sync.
     // Filtramos apenas por 'pendente' e criados após o boot do app para economizar leituras.
-    const qRequests = query(
-      collection(db, 'requests'), 
-      where('status', '==', 'pendente'),
-      where('timestamp', '>=', nowTs),
-      limit(10) // Otimização: limita número de leituras
-    );
-    const unsubRequests = onSnapshot(qRequests, (snapshot) => {
-      snapshot.docChanges().forEach(change => {
-        if (change.type === 'added') {
-          const d = change.doc.data();
-          if (d.recipient === driverName || d.recipient === 'Todos') {
-            showNotification('Novo Pedido', 'Você tem uma nova solicitação pendente.');
+    let unsubRequests = () => {};
+    if (!isAdm && driverName) {
+      const qRequests = query(
+        collection(db, 'requests'), 
+        where('status', '==', 'pendente'),
+        where('timestamp', '>=', nowTs),
+        limit(10) // Otimização: limita número de leituras
+      );
+      unsubRequests = onSnapshot(qRequests, (snapshot) => {
+        snapshot.docChanges().forEach(change => {
+          if (change.type === 'added') {
+            const d = change.doc.data();
+            if (d.recipient === driverName || d.recipient === 'Todos') {
+              showNotification('Novo Pedido', 'Você tem uma nova solicitação pendente.');
+            }
           }
+        });
+      }, err => console.warn('Listener requests notify:', err));
+    }
+
+    // Estado do motorista — Listener em tempo real para motoristas (Background Sync)
+    let unsubUser = () => {};
+    if (!isAdm && driverName) {
+      unsubUser = onSnapshot(doc(db, 'users', normalizeName(driverName)), (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.data();
+        
+        // Se estamos no meio de uma atualização local, ignoramos o Firebase para evitar flickering
+        if (isUpdatingStateRef.current) return;
+
+        // Proteção contra dados de dias anteriores
+        const lastUpdate = data.lastUpdate?.toDate?.() || new Date(0);
+        const lastUpdateStr = `${lastUpdate.getFullYear()}-${String(lastUpdate.getMonth()+1).padStart(2,'0')}-${String(lastUpdate.getDate()).padStart(2,'0')}`;
+        const today = localDateStr();
+        
+        if (lastUpdateStr !== today && (data.routeBikes?.length > 0 || data.collectedBikes?.length > 0)) {
+          console.log('[FirebaseSync] Ignorando estado de roteiro antigo:', lastUpdateStr);
+          return;
         }
-      });
-    }, err => console.warn('Listener requests notify:', err));
 
-    // Estado do motorista — Listener em tempo real (Background Sync)
-    const unsubUser = onSnapshot(doc(db, 'users', normalizeName(driverName)), (snap) => {
-      if (!snap.exists()) return;
-      const data = snap.data();
-      
-      // Se estamos no meio de uma atualização local, ignoramos o Firebase para evitar flickering
-      if (isUpdatingStateRef.current) return;
+        // v85.45: Adiciona proteção contra bikes que somem por sync atrasado do Sheets para o Firebase
+        const now = Date.now();
+        const PROTECTION_WINDOW = 300000; // 5 minutos
+        const fbRoute = (data.routeBikes || []).map(String);
+        const fbCollected = (data.collectedBikes || []).map(String);
 
-      // Proteção contra dados de dias anteriores
-      const lastUpdate = data.lastUpdate?.toDate?.() || new Date(0);
-      const lastUpdateStr = `${lastUpdate.getFullYear()}-${String(lastUpdate.getMonth()+1).padStart(2,'0')}-${String(lastUpdate.getDate()).padStart(2,'0')}`;
-      const today = localDateStr();
-      
-      if (lastUpdateStr !== today && (data.routeBikes?.length > 0 || data.collectedBikes?.length > 0)) {
-        console.log('[FirebaseSync] Ignorando estado de roteiro antigo:', lastUpdateStr);
-        return;
-      }
+        // Reconciliação: Se o Firebase diz que a bike sumiu, mas nós a manipulamos recentemente, mantemos a versão local
+        const handledRecently = Array.from(recentlyHandledBikesRef.current.entries())
+          .filter(([, ts]) => now - ts < PROTECTION_WINDOW)
+          .map(([id]) => id);
 
-      // v85.45: Adiciona proteção contra bikes que somem por sync atrasado do Sheets para o Firebase
-      const now = Date.now();
-      const PROTECTION_WINDOW = 300000; // 5 minutos
-      const fbRoute = (data.routeBikes || []).map(String);
-      const fbCollected = (data.collectedBikes || []).map(String);
+        const protectedRoute = handledRecently.filter(id => routeBikesRef.current.includes(id) && !fbRoute.includes(id) && !fbCollected.includes(id));
+        const finalRoute = [...new Set([...fbRoute, ...protectedRoute])];
 
-      // Reconciliação: Se o Firebase diz que a bike sumiu, mas nós a manipulamos recentemente, mantemos a versão local
-      const handledRecently = Array.from(recentlyHandledBikesRef.current.entries())
-        .filter(([, ts]) => now - ts < PROTECTION_WINDOW)
-        .map(([id]) => id);
+        const protectedCollected = handledRecently.filter(id => collectedBikesRef.current.includes(id) && !fbCollected.includes(id));
+        const finalCollected = [...new Set([...fbCollected, ...protectedCollected])];
 
-      const protectedRoute = handledRecently.filter(id => routeBikesRef.current.includes(id) && !fbRoute.includes(id) && !fbCollected.includes(id));
-      const finalRoute = [...new Set([...fbRoute, ...protectedRoute])];
+        lastFirebaseUpdateAt.current = lastUpdate.getTime();
 
-      const protectedCollected = handledRecently.filter(id => collectedBikesRef.current.includes(id) && !fbCollected.includes(id));
-      const finalCollected = [...new Set([...fbCollected, ...protectedCollected])];
+        // Atualiza UI apenas se houver mudança real
+        setRouteBikes(prev => {
+          const prevStr = [...prev].sort().join(',');
+          const nextStr = [...finalRoute].sort().join(',');
+          if (prevStr !== nextStr) {
+            routeBikesRef.current = finalRoute;
+            return finalRoute;
+          }
+          return prev;
+        });
 
-      // Atualiza o timestamp da última sincronização do Firebase para reconciliação
-      lastFirebaseUpdateAt.current = lastUpdate.getTime();
+        setCollectedBikes(prev => {
+          const prevStr = [...prev].sort().join(',');
+          const nextStr = [...finalCollected].sort().join(',');
+          if (prevStr !== nextStr) {
+            collectedBikesRef.current = finalCollected;
+            return finalCollected;
+          }
+          return prev;
+        });
+      }, err => console.error('Listener usuário:', err));
+    }
 
-      // Atualiza UI apenas se houver mudança real
-      setRouteBikes(prev => {
-        const prevStr = [...prev].sort().join(',');
-        const nextStr = [...finalRoute].sort().join(',');
-        if (prevStr !== nextStr) {
-          routeBikesRef.current = finalRoute;
-          return finalRoute;
-        }
-        return prev;
-      });
-
-      setCollectedBikes(prev => {
-        const prevStr = [...prev].sort().join(',');
-        const nextStr = [...finalCollected].sort().join(',');
-        if (prevStr !== nextStr) {
-          collectedBikesRef.current = finalCollected;
-          return finalCollected;
-        }
-        return prev;
-      });
-    }, err => console.error('Listener usuário:', err));
-
-    // Listener de force_reload — ADM pode forçar atualização de todos os usuários
+    // Listener de force_reload — APENAS para motoristas (ADM pode forçar atualização de todos)
     // Filtramos por tipo e tempo para evitar ler o histórico completo de notificações
-    const qReload = query(
-      collection(db, 'notifications'), 
-      where('type', '==', 'force_reload'),
-      where('timestamp', '>=', nowTs)
-    );
-    const unsubReload = onSnapshot(qReload, snapshot => {
-      if (isAdm) return; // ADM não recarrega
-      snapshot.docChanges().forEach(change => {
-        if (change.type === 'added') {
-          console.log('[ForceReload] Recarregando por comando do ADM...');
-          setTimeout(() => window.location.reload(), 1500);
-        }
-      });
-    }, err => console.error('Listener force_reload:', err));
+    let unsubReload = () => {};
+    if (!isAdm && driverName) {
+      const qReload = query(
+        collection(db, 'notifications'), 
+        where('type', '==', 'force_reload'),
+        where('timestamp', '>=', nowTs)
+      );
+      unsubReload = onSnapshot(qReload, snapshot => {
+        snapshot.docChanges().forEach(change => {
+          if (change.type === 'added') {
+            console.log('[ForceReload] Recarregando por comando do ADM...');
+            setTimeout(() => window.location.reload(), 1500);
+          }
+        });
+      }, err => console.error('Listener force_reload:', err));
+    }
 
     // Alertas (ADM)
     const unsubNotifications = () => {};
     // Removido listener do Firebase para alertas pois o Sheets é o source of truth para os checks
     // e o listener estava sobrescrevendo os dados com informações incompletas.
 
-     // Listener de timeline_events (para ADM ou Motorista — enriquece a timeline dos motoristas)
+    // Listener de timeline_events (para ADM na aba Summary ou Motoristas — enriquece a timeline)
     let unsubTimeline = () => {};
-    if (isAdm || driverName) {
+    if ((isAdm && activeQuadrant === 'summary') || (!isAdm && driverName)) {
       setFirebaseTimelineEvents({}); // limpa ao trocar de data
       // Otimização de Leituras (Server-Side Filter):
       // Se for ADM, escuta todos os eventos do dia. Se for motorista, escuta APENAS os seus próprios eventos.
@@ -1192,9 +1199,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }, err => console.error('Listener timeline:', err));
     }
 
-    // Listener de posições dos motoristas em tempo real (ADM)
+    // Listener de posições dos motoristas em tempo real (ADM - APENAS quando o RequestModal está aberto)
     let unsubLocations = () => {};
-    if (isAdm) {
+    if (isAdm && isRequestModalOpen) {
       // Janela 2h → 45min — menos docs na carga inicial
       const fortyFiveMinAgo = new Date(Date.now() - 45 * 60 * 1000);
       const qLocs = query(
@@ -1272,7 +1279,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const unsubReports = () => {};
 
     return () => { unsubRequests(); unsubUser(); unsubNotifications(); unsubTimeline(); unsubReload(); unsubLocations(); unsubPending(); unsubReports(); };
-  }, [driverName, isAdm, isMecanica, isTecnica, timelineDate, getStartOfDayTs]);
+  }, [driverName, isAdm, isMecanica, isTecnica, timelineDate, getStartOfDayTs, activeQuadrant, isRequestModalOpen]);
 
   const routeBikesTenKey = useMemo(() => {
     return routeBikes.slice(0, 10).sort().join(',');
@@ -2922,10 +2929,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
           queryPromises.push(getDoc(doc(db, config.col, term)));
         } else {
           // Busca como string
-          queryPromises.push(getDocs(query(collection(db, config.col), where(config.field, '==', term))));
+          queryPromises.push(getDocs(query(collection(db, config.col), where(config.field, '==', term), limit(15))));
           // Busca como número se aplicável
           if (isNum) {
-            queryPromises.push(getDocs(query(collection(db, config.col), where(config.field, '==', termAsNum))));
+            queryPromises.push(getDocs(query(collection(db, config.col), where(config.field, '==', termAsNum), limit(15))));
           }
         }
       });
@@ -3084,10 +3091,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
           const pat2 = String(existing.patrimonio || existing.bikeNumber || term || '').trim().replace(/^0+/, '');
           if (pat1 !== pat2) return false;
 
-          // 2. Intervalo de tempo menor ou igual a 3 minutos (180.000 ms)
+          // 2. Intervalo de tempo menor ou igual a 5 minutos (300.000 ms)
+          // considerando também as diferenças de fuso horário mais comuns (1h, 3h, 4h, 5h) entre Sheets (local) e Firebase (UTC)
           const t1 = item.timestamp.getTime();
           const t2 = existing.timestamp.getTime();
-          if (isNaN(t1) || isNaN(t2) || Math.abs(t1 - t2) > 180000) return false;
+          if (isNaN(t1) || isNaN(t2)) return false;
+          const diff = Math.abs(t1 - t2);
+          const isClose = diff < 300000 || 
+                          Math.abs(diff - 3600000) < 300000 ||   // 1h (Fuso)
+                          Math.abs(diff - 10800000) < 300000 ||  // 3h (Fuso GMT-3 vs UTC)
+                          Math.abs(diff - 14400000) < 300000 ||  // 4h (Fuso GMT-4 vs UTC)
+                          Math.abs(diff - 18000000) < 300000;    // 5h (Fuso)
+          if (!isClose) return false;
 
           // 3. Mesmo autor (comparação insensível a maiúsculas/minúsculas)
           const auth1 = String(item.author || item.mecanico || item.motorista || '').trim().toUpperCase();

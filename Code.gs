@@ -2422,8 +2422,34 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
     const lastRowR = reportSheet.getLastRow();
     let reportsData = [];
     if (lastRowR > 1) {
-      const numRows = Math.min(lastRowR - 1, rowsToRead);
-      reportsData = reportSheet.getRange(lastRowR - numRows + 1, 1, numRows, reportSheet.getLastColumn()).getValues();
+      const CHUNK_SIZE = 5000;
+      let currentRow = lastRowR;
+      const safetyMarginMs = 24 * 60 * 60 * 1000; // 1 dia de margem de segurança
+      const cutOffTime = filterDate.getTime() - safetyMarginMs;
+      
+      while (currentRow > 1 && reportsData.length < rowsToRead) {
+        const rowsToGet = Math.min(CHUNK_SIZE, currentRow - 1);
+        const startRow = currentRow - rowsToGet + 1;
+        
+        // Lê exatamente 5 colunas para otimização extrema de memória e tempo de rede
+        const chunkData = reportSheet.getRange(startRow, 1, rowsToGet, 5).getValues();
+        let reachedLimit = false;
+        const processedChunk = [];
+        
+        for (let i = chunkData.length - 1; i >= 0; i--) {
+          const row = chunkData[i];
+          const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+          if (ts && ts.getTime() < cutOffTime) {
+            reachedLimit = true;
+            break;
+          }
+          processedChunk.unshift(row);
+        }
+        
+        reportsData = processedChunk.concat(reportsData);
+        if (reachedLimit) break;
+        currentRow -= rowsToGet;
+      }
     }
     const stats = {};
     const driverLookup = {};
@@ -2441,7 +2467,7 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
       else if (status.includes('não atendida') || status.includes('nao atendida')) stats[driverKey].naoAtendida++;
     });
     const lastRowSt = stateSheet.getLastRow();
-    const stateData = lastRowSt > 1 ? stateSheet.getRange(2, 1, lastRowSt - 1, stateSheet.getLastColumn()).getValues() : [];
+    const stateData = lastRowSt > 1 ? stateSheet.getRange(2, 1, lastRowSt - 1, 4).getValues() : [];
     const realTime = {};
     drivers.forEach(d => { realTime[d] = { route: [], collected: [] }; });
     const deliveredRecently = getFinalizedBikesToday(500, ['estação', 'estacao', 'filial', 'vandalizada', 'remanejada', 'mecanica', 'manutenção', 'técnica', 'recuperada', 'encontrada']);
@@ -2462,7 +2488,7 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
     const occLookup = {}; // motorista_lower|patrimonio → true
     drivers.forEach(d => pendingCounts[d] = 0);
     const lastRowReq = requestsSheet.getLastRow();
-    const reqData = lastRowReq > 1 ? requestsSheet.getRange(2, 1, lastRowReq - 1, requestsSheet.getLastColumn()).getValues() : [];
+    const reqData = lastRowReq > 1 ? requestsSheet.getRange(2, 1, lastRowReq - 1, 9).getValues() : [];
 
     reqData.forEach(row => {
       const status    = (row[COLUMN_INDICES.REQUESTS.SITUACAO - 1] || '').toLowerCase();
@@ -2650,9 +2676,34 @@ function getAnalyticalDashboardData(timeRange) {
     const lastRowR = reportSheet.getLastRow();
     let reportData = [];
     if (lastRowR > 1) {
-      const numRows = Math.min(lastRowR - 1, rowsToRead);
-      const numCols = Math.max(reportSheet.getLastColumn(), 5);
-      reportData = reportSheet.getRange(lastRowR - numRows + 1, 1, numRows, numCols).getValues();
+      const CHUNK_SIZE = 5000;
+      let currentRow = lastRowR;
+      const safetyMarginMs = 72 * 60 * 60 * 1000; // 3 dias de margem de segurança (cobre a janela estendida de 48h)
+      const cutOffTime = filterDate.getTime() - safetyMarginMs;
+      
+      while (currentRow > 1 && reportData.length < rowsToRead) {
+        const rowsToGet = Math.min(CHUNK_SIZE, currentRow - 1);
+        const startRow = currentRow - rowsToGet + 1;
+        
+        // Lê exatamente 5 colunas para otimização extrema de memória e tempo de rede
+        const chunkData = reportSheet.getRange(startRow, 1, rowsToGet, 5).getValues();
+        let reachedLimit = false;
+        const processedChunk = [];
+        
+        for (let i = chunkData.length - 1; i >= 0; i--) {
+          const row = chunkData[i];
+          const ts = parseTimestamp(row[COLUMN_INDICES.REPORTS.TIMESTAMP - 1]);
+          if (ts && ts.getTime() < cutOffTime) {
+            reachedLimit = true;
+            break;
+          }
+          processedChunk.unshift(row);
+        }
+        
+        reportData = processedChunk.concat(reportData);
+        if (reachedLimit) break;
+        currentRow -= rowsToGet;
+      }
     }
 
     // Índice de finalizadores: Map<"motorista_lower|patnorm", [{tsMs, tipo}]>
@@ -2697,7 +2748,7 @@ function getAnalyticalDashboardData(timeRange) {
     // --- 2. Lê Solicitações: filtra apenas as manuais aceitas no período ---
     if (requestSheet && requestSheet.getLastRow() > 1) {
       const reqData = requestSheet
-        .getRange(2, 1, requestSheet.getLastRow() - 1, requestSheet.getLastColumn())
+        .getRange(2, 1, requestSheet.getLastRow() - 1, 9)
         .getValues();
 
       reqData.forEach(row => {
