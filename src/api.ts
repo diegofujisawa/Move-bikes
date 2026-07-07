@@ -401,6 +401,23 @@ export const apiCall = async (
     return result;
 
   } catch (err: any) {
+    // Para ações de LEITURA, se falhar por QUALQUER motivo (404, 403, etc.),
+    // tentamos imediatamente o fallback via GET para evitar travar a aplicação!
+    if (isReadAction) {
+      if (!silent) console.warn(`[API] POST para ação de leitura "${action}" falhou: ${err.message || err}. Tentando fallback automático via GET...`);
+      try {
+        const getParams: Record<string, string> = {};
+        Object.entries(payload).forEach(([k, v]) => {
+          if (k !== 'action') {
+            getParams[k] = typeof v === 'object' ? JSON.stringify(v) : String(v);
+          }
+        });
+        return await apiGetCall(action, getParams, 1); // 1 tentativa para ser rápido e silencioso
+      } catch (getErr: any) {
+        if (!silent) console.error(`[API] Fallback via GET para "${action}" também falhou:`, getErr);
+      }
+    }
+
     if (retries > 0 && isRetryableNetworkError(err)) {
       const backoff = calcBackoff(attempt);
       if (isReadAction) {

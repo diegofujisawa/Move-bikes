@@ -257,6 +257,35 @@ function doGet(e) {
     else if (action === 'getChangeStatusData') response = { ...getChangeStatusData(e.parameter.timeRange), version: BACKEND_VERSION };
     else if (action === 'updateLocation') response = { ...updateLocation(e.parameter.driverName, e.parameter.latitude, e.parameter.longitude), version: BACKEND_VERSION };
     else if (action === 'switchVehicle') response = { ...switchVehicle(e.parameter.driverName, e.parameter.plate, e.parameter.kmInicial), version: BACKEND_VERSION };
+    else if (action === 'getDriversSummary') response = { ...getDriversSummary(e.parameter.timeRange, null, null, e.parameter.timelineDate), version: BACKEND_VERSION };
+    else if (action === 'getRequests') response = { ...getRequests(e.parameter.driverName, e.parameter.category), version: BACKEND_VERSION };
+    else if (action === 'getRequestsHistory') response = { ...getRequestsHistory(e.parameter.driverName, e.parameter.category), version: BACKEND_VERSION };
+    else if (action === 'getDriverState') response = { ...getDriverState(e.parameter.driverName), version: BACKEND_VERSION };
+    else if (action === 'getDailyReportData') response = { ...getDailyReportData(e.parameter.driverName, e.parameter.timeRange), version: BACKEND_VERSION };
+    else if (action === 'search') response = { ...searchBike(e.parameter.bikeNumber, e.parameter.driverName), version: BACKEND_VERSION };
+    else if (action === 'debugSearch') response = { ...debugSearch(e.parameter.bikeNumber), version: BACKEND_VERSION };
+    else if (action === 'getAllPatrimonioNumbers') response = { ...getAllPatrimonioNumbers(), version: BACKEND_VERSION };
+    else if (action === 'getBikeDetailsBatch') {
+      let bikeNumbers = [];
+      try { bikeNumbers = JSON.parse(e.parameter.bikeNumbers || '[]'); } catch(err) {}
+      response = { ...getBikeDetailsBatch(bikeNumbers), version: BACKEND_VERSION };
+    }
+    else if (action === 'getSchedule') response = { ...getSchedule(e.parameter.driverName), version: BACKEND_VERSION };
+    else if (action === 'getBikeStatuses') response = { ...getBikeStatuses(), version: BACKEND_VERSION };
+    else if (action === 'getRouteDetails') {
+      let bikeNumbers = [];
+      try { bikeNumbers = JSON.parse(e.parameter.bikeNumbers || '[]'); } catch(err) {}
+      response = { ...getRouteDetails(e.parameter.driverName, bikeNumbers), version: BACKEND_VERSION };
+    }
+    else if (action === 'getAdminAlerts') response = { ...getAdminAlerts(), version: BACKEND_VERSION };
+    else if (action === 'getMechanicsList') response = { ...getMechanicsList(), version: BACKEND_VERSION };
+    else if (action === 'getChassiInfo') response = { ...getChassiInfo(e.parameter.bikeNumber), version: BACKEND_VERSION };
+    else if (action === 'getTechnicaList') response = { ...getTechnicaList(), version: BACKEND_VERSION };
+    else if (action === 'getBicycles') response = { ...getBicycles(), version: BACKEND_VERSION };
+    else if (action === 'getAnalyticalDashboardData') response = { ...getAnalyticalDashboardData(e.parameter.timeRange), version: BACKEND_VERSION };
+    else if (action === 'getDirections') response = { ...getDirections(e.parameter.fromLat, e.parameter.fromLng, e.parameter.toLat, e.parameter.toLng), version: BACKEND_VERSION };
+    else if (action === 'getBikeMovement') response = { ...getBikeMovement(e.parameter.bikeNumber, parseInt(e.parameter.limit || '10')), version: BACKEND_VERSION };
+    else if (action === 'getSheetsRecoveredBikes') response = { ...getSheetsRecoveredBikes(), version: BACKEND_VERSION };
     return ContentService.createTextOutput(JSON.stringify(response)).setMimeType(ContentService.MimeType.JSON);
   }
   return ContentService.createTextOutput(JSON.stringify({ status: 'ok', version: BACKEND_VERSION }))
