@@ -10685,7 +10685,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         onClose={() => { setIsDriverSelectionModalOpen(false); setSelectedActionForAssignment(null); }}
         onConfirm={handleAssignTrailerToDriver}
         isLoading={isLoading}
-        drivers={driversSummary}
+        drivers={motoristas.length > 0 ? motoristas.map(m => ({ name: m })) : driversSummary}
       />
 
       {/* Modal Boletim */}
