@@ -3067,15 +3067,84 @@ const MainScreen: React.FC<MainScreenProps> = ({
       };
 
       // Merge, normalização das datas e ordenação (mais recente primeiro)
-      const merged = [...allRecords, ...firebaseRecords].map(item => ({
+      const rawMerged = [...allRecords, ...firebaseRecords].map(item => ({
         ...item,
         timestamp: parseMovementDate(item.timestamp)
       })).sort((a, b) => {
         return b.timestamp.getTime() - a.timestamp.getTime();
       });
 
-      console.log('[Search] Total final merged:', merged.length);
-      setBikeSearchResult(merged.slice(0, bikeSearchLimit));
+      // Deduplicação inteligente de eventos repetidos entre Sheets e Firebase
+      const deduplicated: any[] = [];
+      rawMerged.forEach(item => {
+        // Encontra se já existe um evento correspondente na lista de deduplicados
+        const matchIndex = deduplicated.findIndex(existing => {
+          // 1. Mesmo patrimônio (se disponível)
+          const pat1 = String(item.patrimonio || item.bikeNumber || term || '').trim().replace(/^0+/, '');
+          const pat2 = String(existing.patrimonio || existing.bikeNumber || term || '').trim().replace(/^0+/, '');
+          if (pat1 !== pat2) return false;
+
+          // 2. Intervalo de tempo menor ou igual a 3 minutos (180.000 ms)
+          const t1 = item.timestamp.getTime();
+          const t2 = existing.timestamp.getTime();
+          if (isNaN(t1) || isNaN(t2) || Math.abs(t1 - t2) > 180000) return false;
+
+          // 3. Mesmo autor (comparação insensível a maiúsculas/minúsculas)
+          const auth1 = String(item.author || item.mecanico || item.motorista || '').trim().toUpperCase();
+          const auth2 = String(existing.author || existing.mecanico || existing.motorista || '').trim().toUpperCase();
+          if (auth1 && auth2 && auth1 !== auth2) return false;
+
+          // 4. Status parecidos
+          const st1 = String(item.status || '').trim().toLowerCase();
+          const st2 = String(existing.status || '').trim().toLowerCase();
+          if (st1 && st2) {
+            const match = st1.includes(st2) || st2.includes(st1) || 
+                          st1.replace(/[^a-z0-9]/g, '') === st2.replace(/[^a-z0-9]/g, '');
+            if (!match) return false;
+          }
+
+          return true;
+        });
+
+        if (matchIndex >= 0) {
+          // Mescla as informações
+          const existing = deduplicated[matchIndex];
+          // Definir o primário (Firebase tem mais detalhes de tempo/texto)
+          const primary = item.source === 'Firebase' ? item : existing;
+          const secondary = item.source === 'Firebase' ? existing : item;
+
+          let description = primary.description || '';
+          if (secondary.description && secondary.description !== '—' && secondary.description !== primary.description) {
+            if (!description || description === '—') {
+              description = secondary.description;
+            } else {
+              const desc1Low = description.toLowerCase();
+              const desc2Low = secondary.description.toLowerCase();
+              if (!desc1Low.includes(desc2Low) && !desc2Low.includes(desc1Low)) {
+                description = `${description} | ${secondary.description}`;
+              }
+            }
+          }
+
+          deduplicated[matchIndex] = {
+            ...secondary,
+            ...primary,
+            description,
+            bateria: primary.bateria || secondary.bateria,
+            trava: primary.trava || secondary.trava,
+            localidade: primary.localidade || secondary.localidade || primary.localFinal || secondary.localFinal,
+            localFinal: primary.localFinal || secondary.localFinal || primary.localidade || secondary.localidade,
+            trailerName: primary.trailerName || secondary.trailerName,
+            treatment: primary.treatment || secondary.treatment,
+            observacao: primary.observacao || secondary.observacao
+          };
+        } else {
+          deduplicated.push(item);
+        }
+      });
+
+      console.log('[Search] Total final merged:', deduplicated.length);
+      setBikeSearchResult(deduplicated.slice(0, bikeSearchLimit));
     } catch (e: any) { 
       console.error('handleBikeMovementSearch error:', e);
       alert('Erro ao buscar movimentação: ' + e.message); 
