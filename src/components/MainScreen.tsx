@@ -4420,6 +4420,32 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setError('Nenhuma bike encontrada nesta carretinha.');
       return;
     }
+
+    // Verificar se há bikes com trava aberta ou sem carregar na reserva/carretinha
+    const openLockBikes = bikesRaw.filter(b => {
+      const lockStr = String(b.trava || '').toLowerCase().trim();
+      return lockStr === 'aberta' || lockStr === 'open';
+    });
+
+    const notChargingBikes = bikesRaw.filter(b => {
+      const chgStr = String(b.carregamento || '').toLowerCase().trim();
+      return chgStr === 'não carregando' || chgStr === 'nao carregando' || chgStr === 'não_carregando' || chgStr === 'nao_carregando';
+    });
+
+    if (openLockBikes.length > 0 || notChargingBikes.length > 0) {
+      let msg = `Não é possível finalizar e fechar a ${trailerName} no momento:\n`;
+      if (openLockBikes.length > 0) {
+        msg += `\n🔒 Bikes com Trava Aberta: ${openLockBikes.map(b => b.patrimonio).join(', ')}`;
+      }
+      if (notChargingBikes.length > 0) {
+        msg += `\n🔌 Bikes Não Carregando: ${notChargingBikes.map(b => b.patrimonio).join(', ')}`;
+      }
+      msg += `\n\nPor favor, garanta que todas as travas estejam fechadas e as bikes estejam carregando para prosseguir com a finalização.`;
+      alert(msg);
+      setError(msg.replace(/\n/g, ' '));
+      return;
+    }
+
     const bikeObjects = bikesRaw.map(b => ({
       patrimonio: String(b.patrimonio),
       bateria: b.bateria !== undefined ? Number(b.bateria) : undefined,
@@ -5258,17 +5284,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate, alertsVersion, canSheetsOverride, fetchDynamicMechanics]);
 
-  // Busca baterias em tempo real para bikes na mecânica conforme o Firebase atualiza a lista
+  // Busca baterias e travas em tempo real para todas as bikes na mecânica com polling de 15s
   useEffect(() => {
-    if (fbMechanicsFlow.length > 0) {
-      const bikeNumbers = fbMechanicsFlow.map(b => String(b.patrimonio));
-      apiCall({ action: 'getBikeDetailsBatch', bikeNumbers }, 1, true).then(res => {
-        if (res.success && res.data) {
-          setMechanicsLiveDetails(prev => ({ ...prev, ...res.data }));
-        }
-      }).catch(() => {});
-    }
-  }, [fbMechanicsFlow]);
+    const fetchLiveDetails = () => {
+      const allBikeNumbers = Array.from(new Set([
+        ...sheetsMechanicsList.map(b => String(b.patrimonio)),
+        ...fbMechanicsFlow.map(b => String(b.patrimonio))
+      ])).filter(Boolean);
+
+      if (allBikeNumbers.length > 0) {
+        apiCall({ action: 'getBikeDetailsBatch', bikeNumbers: allBikeNumbers }, 1, true).then(res => {
+          if (res.success && res.data) {
+            setMechanicsLiveDetails(prev => ({ ...prev, ...res.data }));
+          }
+        }).catch(() => {});
+      }
+    };
+
+    fetchLiveDetails();
+    const interval = setInterval(fetchLiveDetails, 15000);
+    return () => clearInterval(interval);
+  }, [sheetsMechanicsList, fbMechanicsFlow]);
 
   useEffect(() => {
     if (isMecanica && activeMechanicCategory === 'Reserva') {

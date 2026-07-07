@@ -3123,11 +3123,12 @@ function getMechanicsList() {
       else if (typeof bateria === 'string' && bateria.includes('%')) bateria = parseInt(bateria.replace('%', ''));
       const carregamentoRaw = (row[COLUMN_INDICES.BIKES.CARREGAMENTO - 1] || '').toString().trim();
       const carregamento = carregamentoRaw.toLowerCase() === 'carregando' ? 'Carregando' : (carregamentoRaw ? 'Não carregando' : '');
+      const trava = (row[COLUMN_INDICES.BIKES.TRAVA - 1] || '').toString().trim();
       const statusBicicletas = (row[COLUMN_INDICES.BIKES.STATUS - 1] || '').toString().trim().toLowerCase();
       // v85.34: Normalizar status para facilitar checagens - Incluindo variantes e garantindo remoção de acentos se necessário
       const isSystemMaintenance = /manuten|oficina|reparo|aguardando|recolhida|filial/.test(statusBicicletas);
       const isSystemExit = /estação|estacao|ativa|lançada|estoque/.test(statusBicicletas);
-      const info = { bateria, carregamento, statusBicicletas, isSystemMaintenance, isSystemExit };
+      const info = { bateria, carregamento, trava, statusBicicletas, isSystemMaintenance, isSystemExit };
       bikeInfoMap[pat] = info;
       const patSemZeros = pat.replace(/^0+/, '');
       if (patSemZeros !== pat) bikeInfoMap[patSemZeros] = info;
@@ -3325,7 +3326,7 @@ function getMechanicsList() {
       if (info.isSystemMaintenance || isMaintenanceReport) {
         if (displayStatus === 'Alterar Status') displayStatus = 'Aguardando Manutenção';
       }
-      bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: mechData.manual, motorista: entry.motorista || '', observacao: entry.observacao || '' };
+      bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, trava: info.trava, manual: mechData.manual, motorista: entry.motorista || '', observacao: entry.observacao || '' };
     } else {
       let finalStatus = 'Alterar Status';
       // v85.34: Se for um reporte de manutenção ou se o status no sistema já for Manutenção, pula 'Alterar Status'
@@ -3333,7 +3334,7 @@ function getMechanicsList() {
         finalStatus = 'Aguardando Manutenção';
       }
 
-      bikeMap[pat] = { row: -1, patrimonio: pat, status: finalStatus, dataEntrada: new Date(entry.tsMs), mecanico: '', tratativa: '', dataFinalizacao: '', carretinha: '', bateria: info.bateria, carregamento: info.carregamento, motorista: entry.motorista || '', observacao: entry.observacao || '', manual: false };
+      bikeMap[pat] = { row: -1, patrimonio: pat, status: finalStatus, dataEntrada: new Date(entry.tsMs), mecanico: '', tratativa: '', dataFinalizacao: '', carretinha: '', bateria: info.bateria, carregamento: info.carregamento, trava: info.trava, motorista: entry.motorista || '', observacao: entry.observacao || '', manual: false };
     }
   });
   Object.entries(mechanicsStatus).forEach(([pat, mechData]) => {
@@ -3346,7 +3347,7 @@ function getMechanicsList() {
     if (displayStatus === 'Alterar Status' && info.isSystemMaintenance) {
       displayStatus = 'Aguardando Manutenção';
     }
-    bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, manual: true };
+    bikeMap[pat] = { row: mechData.row, patrimonio: pat, status: displayStatus, dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico, tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao, carretinha: mechData.carretinha, bateria: info.bateria, carregamento: info.carregamento, trava: info.trava, manual: true };
   });
   // v85.36: Pós-processamento — bikes com status Manutenção na aba Bicicletas
   // mas que ainda aparecem em 'Alterar Status' devem ir para 'Aguardando Manutenção'
@@ -3363,7 +3364,7 @@ function getMechanicsList() {
           dataEntrada: mechData.dataEntrada, mecanico: mechData.mecanico,
           tratativa: mechData.tratativa, dataFinalizacao: mechData.dataFinalizacao,
           carretinha: mechData.carretinha, bateria: info.bateria,
-          carregamento: info.carregamento, manual: mechData.manual };
+          carregamento: info.carregamento, trava: info.trava, manual: mechData.manual };
       }
     } else if (bikeMap[pat].status === 'Alterar Status') {
       bikeMap[pat].status = 'Aguardando Manutenção';
@@ -3581,9 +3582,10 @@ function getTechnicaList() {
         else if (typeof bateria === 'string' && bateria.includes('%')) bateria = parseInt(bateria.replace('%', ''));
         const carregamentoRaw = (row[COLUMN_INDICES.BIKES.CARREGAMENTO - 1] || '').toString().trim();
         const carregamento = carregamentoRaw.toLowerCase() === 'carregando' ? 'Carregando' : (carregamentoRaw ? 'Não carregando' : '');
-        bikeInfoMap[pat] = { bateria, carregamento };
+        const trava = (row[COLUMN_INDICES.BIKES.TRAVA - 1] || '').toString().trim();
+        bikeInfoMap[pat] = { bateria, carregamento, trava };
         const patSZ = pat.replace(/^0+/, '');
-        if (patSZ !== pat) bikeInfoMap[patSZ] = { bateria, carregamento };
+        if (patSZ !== pat) bikeInfoMap[patSZ] = { bateria, carregamento, trava };
       });
     }
     const TECHNICAL_STATUSES = new Set(['Aguardando Técnica', 'Em Técnica']);
@@ -3594,7 +3596,7 @@ function getTechnicaList() {
       const status = String(row[COLUMN_INDICES.MECHANICS.STATUS - 1] || '').trim();
       if (!pat || !TECHNICAL_STATUSES.has(status)) return;
       const info = bikeInfoMap[pat] || {};
-      result.push({ row: idx + 2, patrimonio: pat, status, dataEntrada: row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1], mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1], tratativa: row[COLUMN_INDICES.MECHANICS.TRATATIVA - 1], dataFinalizacao: row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1], bateria: info.bateria, carregamento: info.carregamento });
+      result.push({ row: idx + 2, patrimonio: pat, status, dataEntrada: row[COLUMN_INDICES.MECHANICS.DATA_ENTRADA - 1], mecanico: row[COLUMN_INDICES.MECHANICS.MECANICO - 1], tratativa: row[COLUMN_INDICES.MECHANICS.TRATATIVA - 1], dataFinalizacao: row[COLUMN_INDICES.MECHANICS.DATA_FINALIZACAO - 1], bateria: info.bateria, carregamento: info.carregamento, trava: info.trava });
     });
     return { success: true, data: result };
   } catch (e) { return { success: false, error: e.message }; }
