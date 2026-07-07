@@ -2701,11 +2701,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const fetchMechanicHistory = async () => {
     setIsMechanicHistoryLoading(true);
     try {
-      // Busca reports de Reparo (saída) e Mecânica (entrada) do Firebase
-      const { getDocs: _gd, query: _q, where: _w, collection: _col } = await import('firebase/firestore');
+      // Busca reports de Reparo (saída) e Mecânica (entrada) do Firebase com limite de segurança
+      const { getDocs: _gd, query: _q, where: _w, collection: _col, limit: _lim } = await import('firebase/firestore');
       const [snapReparo, snapEntrada] = await Promise.all([
-        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Reparo'))),
-        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Mecânica'))),
+        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Reparo'), _lim(150))),
+        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Mecânica'), _lim(150))),
       ]);
 
       // Indexa entradas por bikeNumber — pega a mais recente antes da saída
@@ -2774,11 +2774,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const fetchTechnicaHistory = async () => {
     setIsTechnicaHistoryLoading(true);
     try {
-      const { getDocs: _gd, query: _q, where: _w, collection: _col } = await import('firebase/firestore');
-      // Busca registros type Técnica — inclui Aguardando, Recebida, Devolvida
+      const { getDocs: _gd, query: _q, where: _w, collection: _col, limit: _lim } = await import('firebase/firestore');
+      // Busca registros type Técnica — inclui Aguardando, Recebida, Devolvida com limite de segurança
       const [snapTec, snapMec] = await Promise.all([
-        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Técnica'))),
-        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Reparo'))),
+        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Técnica'), _lim(150))),
+        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Reparo'), _lim(150))),
       ]);
 
       // Indexa reparos por bike para cruzar com devolução
