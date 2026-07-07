@@ -4424,7 +4424,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     // Verificar se há bikes com trava aberta ou sem carregar na reserva/carretinha
     const openLockBikes = bikesRaw.filter(b => {
       const lockStr = String(b.trava || '').toLowerCase().trim();
-      return lockStr === 'aberta' || lockStr === 'open';
+      return lockStr === 'aberta' || lockStr === 'aberto' || lockStr === 'open';
     });
 
     const notChargingBikes = bikesRaw.filter(b => {
@@ -5108,12 +5108,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
         const filteredMotoristas = d.motoristas.filter((m: string) => m.toUpperCase() !== 'MECANICA');
         setMotoristas(filteredMotoristas);
       }
-      // Otimização: driverLocations e mechanicsList agora são gerenciados pelos listeners Firebase
+      if (d.mechanicsList) {
+        setSheetsMechanicsList(d.mechanicsList);
+      }
       /*
       if (d.driverLocations) {
-        // ... (removido para economizar quota)
-      }
-      if (d.mechanicsList) {
         // ... (removido para economizar quota)
       }
       */
@@ -7829,11 +7828,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               {bike.carregamento === 'Carregando' && <p className="text-[10px] text-green-600 font-bold">⚡ Carregando</p>}
                               {bike.carregamento === 'Não carregando' && <p className="text-[10px] text-red-500 font-bold">🔌 Não carregando</p>}
                               <p className={`text-[10px] font-bold ${
-                                String(bike.trava || '').toLowerCase().trim() === 'aberta' || String(bike.trava || '').toLowerCase().trim() === 'open'
+                                ['aberta', 'aberto', 'open'].includes(String(bike.trava || '').toLowerCase().trim())
                                   ? 'text-orange-500' 
                                   : 'text-gray-500'
                               }`}>
-                                🔒 Trava: {String(bike.trava || '').toLowerCase().trim() === 'aberta' || String(bike.trava || '').toLowerCase().trim() === 'open' ? 'Aberta' : 'Fechada'}
+                                🔒 Trava: {['aberta', 'aberto', 'open'].includes(String(bike.trava || '').toLowerCase().trim()) ? 'Aberta' : 'Fechada'}
                               </p>
                             </div>
                             {bike.mecanico && <p className="text-[10px] font-bold text-blue-600">Mecânico: {bike.mecanico}</p>}
@@ -7946,11 +7945,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                       <span className="text-red-500 font-semibold flex items-center gap-0.5">🔌 Não carregando</span>
                                     )}
                                     <span className={`font-bold flex items-center gap-0.5 ${
-                                      String(bike.trava || '').toLowerCase().trim() === 'aberta' || String(bike.trava || '').toLowerCase().trim() === 'open'
+                                      ['aberta', 'aberto', 'open'].includes(String(bike.trava || '').toLowerCase().trim())
                                         ? 'text-orange-500' 
                                         : 'text-gray-500'
                                     }`}>
-                                      🔒 {String(bike.trava || '').toLowerCase().trim() === 'aberta' || String(bike.trava || '').toLowerCase().trim() === 'open' ? 'Trava Aberta' : 'Trava Fechada'}
+                                      🔒 {['aberta', 'aberto', 'open'].includes(String(bike.trava || '').toLowerCase().trim()) ? 'Trava Aberta' : 'Trava Fechada'}
                                     </span>
                                   </div>
                                   <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
