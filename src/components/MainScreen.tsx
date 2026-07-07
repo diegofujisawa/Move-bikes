@@ -517,6 +517,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const recentlyHandledBikesRef = useRef<Map<string, number>>(new Map()); // patrimonio -> timestamp
   const [isLimparListaConfirmOpen, setIsLimparListaConfirmOpen] = useState(false);
   const [removeFromTrailerConfirm, setRemoveFromTrailerConfirm] = useState<{ patrimonio: string; trailerName: string } | null>(null);
+  const [blockedTrailerRequest, setBlockedTrailerRequest] = useState<{ trailerName: string; bikes: string[]; reason: string } | null>(null);
 
   // --- Refs ---
   const scannerRef = useRef<Html5Qrcode | null>(null);
@@ -4207,6 +4208,72 @@ const MainScreen: React.FC<MainScreenProps> = ({
         } catch (e) {
           handleFirestoreError(e, OperationType.UPDATE, `pending_actions/${action.id}`);
         }
+      } else if (action.type === 'trailer_bypass_request') {
+        const bikeIds: string[] = action.bikes || [];
+        const trailerName: string = action.trailerName;
+        const mechanicName: string = action.mechanicName || '';
+
+        // 1. Atualiza as bikes no Firestore
+        try {
+          await Promise.all(bikeIds.map((id: string) => setDoc(doc(db, 'bikes', id), { 
+            trailerStatus: 'finalized', 
+            ultimaAtualizacao: serverTimestamp() 
+          }, { merge: true })));
+
+          // Remove do fluxo da mecânica
+          const { deleteDoc: _deleteDoc } = await import('firebase/firestore');
+          await Promise.all(bikeIds.map((id: string) => _deleteDoc(doc(db, 'mechanics_flow', id))));
+        } catch (e) {
+          handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeIds.join(',')}`);
+        }
+
+        // 2. Cria a ação de trailer_validation para o ADM poder enviar para motorista ou aprovar completamente
+        try {
+          await addDoc(collection(db, 'pending_actions'), {
+            type: 'trailer_validation',
+            trailerName,
+            bikes: bikeIds,
+            mechanicName,
+            status: 'pending',
+            timestamp: serverTimestamp()
+          });
+        } catch (e) {
+          handleFirestoreError(e, OperationType.CREATE, 'pending_actions');
+        }
+
+        // 3. Notificações e Logs (não-bloqueantes)
+        apiCall({ action: 'finalizeTrailer', trailerName }).catch(e => {
+          console.error('[Sheets] finalizeTrailer failed:', e);
+        });
+        
+        const notifyMsg = `🔑 Liberação Especial: Carretinha "${trailerName}" finalizada por ${mechanicName} com autorização do ADM. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
+
+        addDoc(collection(db, 'trailers_history'), {
+          trailerName,
+          finalizedBy: mechanicName,
+          timestamp: serverTimestamp(),
+          date: localDateStr(),
+          bikeCount: bikeIds.length,
+          bypassed: true,
+          bypassedBy: driverName
+        }).catch(e => console.warn('[Firebase] trailers_history write:', e.code));
+
+        addDoc(collection(db, 'notifications'), {
+          type: 'trailer_finalizado',
+          message: notifyMsg,
+          bikes: bikeIds,
+          trailerName,
+          mechanic: mechanicName,
+          timestamp: serverTimestamp(),
+          recipient: 'ADM'
+        }).catch(() => {});
+
+        apiCall({
+          action: 'notifyAdmins',
+          message: notifyMsg,
+          bikes: bikeIds,
+          trailerName
+        }, 1, true).catch(() => {});
       }
 
       // v85.31: Suporte a remoção em massa se ids estiver presente
@@ -4517,16 +4584,19 @@ const MainScreen: React.FC<MainScreenProps> = ({
     });
 
     if (openLockBikes.length > 0 || notChargingBikes.length > 0) {
-      let msg = `Não é possível finalizar e fechar a ${trailerName} no momento:\n`;
+      let msg = '';
       if (openLockBikes.length > 0) {
-        msg += `\n🔒 Bikes com Trava Aberta: ${openLockBikes.map(b => b.patrimonio).join(', ')}`;
+        msg += `🔒 Trava Aberta: ${openLockBikes.map(b => b.patrimonio).join(', ')}. `;
       }
       if (notChargingBikes.length > 0) {
-        msg += `\n🔌 Bikes Não Carregando: ${notChargingBikes.map(b => b.patrimonio).join(', ')}`;
+        msg += `🔌 Não Carregando: ${notChargingBikes.map(b => b.patrimonio).join(', ')}.`;
       }
-      msg += `\n\nPor favor, garanta que todas as travas estejam fechadas e as bikes estejam carregando para prosseguir com a finalização.`;
-      alert(msg);
-      setError(msg.replace(/\n/g, ' '));
+      setBlockedTrailerRequest({
+        trailerName,
+        bikes: bikesRaw.map(b => String(b.patrimonio)),
+        reason: msg
+      });
+      setError(`Critérios não atendidos para fechar ${trailerName}. Solicitação de liberação disponível.`);
       return;
     }
 
@@ -4642,6 +4712,41 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setError('Erro: ' + err.message);
       refreshAll(true);
     } finally { setIsLoading(false); }
+  };
+
+  const handleSubmitBypassRequest = async () => {
+    if (!blockedTrailerRequest) return;
+    setIsLoading(true);
+    try {
+      const { trailerName, bikes, reason } = blockedTrailerRequest;
+      await addDoc(collection(db, 'pending_actions'), {
+        type: 'trailer_bypass_request',
+        trailerName,
+        bikes,
+        mechanicName: driverName,
+        status: 'pending',
+        timestamp: serverTimestamp(),
+        reason: reason || 'Sem observações específicas'
+      });
+
+      const notifyMsg = `⚠️ Solicitação de Bypass: ${driverName} solicitou a liberação da carretinha "${trailerName}". Detalhes: ${reason}`;
+      await addDoc(collection(db, 'notifications'), {
+        type: 'trailer_bypass_request',
+        message: notifyMsg,
+        bikes,
+        trailerName,
+        mechanic: driverName,
+        timestamp: serverTimestamp(),
+        recipient: 'ADM'
+      }).catch(() => {});
+
+      alert('Solicitação enviada com sucesso! Aguarde a liberação do ADM.');
+      setBlockedTrailerRequest(null);
+    } catch (e: any) {
+      alert('Erro ao enviar solicitação: ' + e.message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleUpdateDriverState = async (targetDriver: string, route: string[], collected: string[]) => {
@@ -6493,21 +6598,110 @@ const MainScreen: React.FC<MainScreenProps> = ({
               </div>
 
               {/* Botões */}
-              <div className="p-3 border-t flex gap-2 flex-shrink-0">
-                <button onClick={async () => { await stopTrailerScanner(); setTrailerQrModal(null); }}
-                  className="flex-1 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase hover:bg-gray-200">
-                  Cancelar
-                </button>
-                <button onClick={executeTrailerFinalization}
-                  disabled={!allConfirmed || isLoading}
-                  className="flex-1 py-2.5 bg-green-600 text-white rounded-xl font-bold text-xs uppercase shadow-lg hover:bg-green-700 active:scale-95 disabled:bg-gray-300 disabled:shadow-none transition-all">
-                  {isLoading ? '...' : `Confirmar (${confirmedBikes.size}/${expectedBikes.length})`}
-                </button>
+              <div className="p-3 border-t flex flex-col gap-2 flex-shrink-0">
+                <div className="flex gap-2">
+                  <button onClick={async () => { await stopTrailerScanner(); setTrailerQrModal(null); }}
+                    className="flex-1 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase hover:bg-gray-200">
+                    Cancelar
+                  </button>
+                  <button onClick={executeTrailerFinalization}
+                    disabled={!allConfirmed || isLoading}
+                    className="flex-1 py-2.5 bg-green-600 text-white rounded-xl font-bold text-xs uppercase shadow-lg hover:bg-green-700 active:scale-95 disabled:bg-gray-300 disabled:shadow-none transition-all">
+                    {isLoading ? '...' : `Confirmar (${confirmedBikes.size}/${expectedBikes.length})`}
+                  </button>
+                </div>
+                {!allConfirmed && (
+                  <button
+                    onClick={async () => {
+                      const unconfirmed = expectedBikes.filter(b => !confirmedBikes.has(b.patrimonio));
+                      let reasonMsg = `Bypass: finalização pendente de escaneamento. `;
+                      if (batteryFailed) {
+                        reasonMsg += `Bike ${batteryFailed} falhou no critério de bateria. `;
+                      }
+                      if (unconfirmed.length > 0) {
+                        reasonMsg += `Bikes não escaneadas: ${unconfirmed.map(b => b.patrimonio).join(', ')}.`;
+                      }
+                      setBlockedTrailerRequest({
+                        trailerName,
+                        bikes: expectedBikes.map(b => b.patrimonio),
+                        reason: reasonMsg
+                      });
+                      await stopTrailerScanner();
+                      setTrailerQrModal(null);
+                    }}
+                    className="w-full py-2 bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 rounded-xl font-bold text-xs uppercase transition-all"
+                  >
+                    Solicitar Liberação Especial (Bypass) ao ADM
+                  </button>
+                )}
               </div>
             </div>
           </div>
         );
       })()}
+
+      {/* Modal — Solicitação de Liberação Especial (Bypass) */}
+      {blockedTrailerRequest && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 animate-fade-in" id="modal-bypass-trailer">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="bg-red-600 p-4 text-white flex-shrink-0 flex items-center gap-2">
+              <AlertTriangleIcon className="w-5 h-5 text-white" />
+              <div>
+                <h2 className="text-base font-black uppercase tracking-wide">Liberação Especial (Bypass)</h2>
+                <p className="text-[10px] opacity-80">Solicitar aprovação do ADM para fechar carretinha bloqueada</p>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div className="p-4 space-y-4 overflow-y-auto max-h-[70vh]">
+              <div className="bg-red-50 border border-red-100 p-3 rounded-lg text-xs text-red-800 font-semibold space-y-1">
+                <p className="font-black text-red-900 uppercase">⚠️ Restrições detectadas:</p>
+                <p className="bg-white p-2 rounded border border-red-200 mt-1">{blockedTrailerRequest.reason}</p>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-[10px] font-black text-gray-400 uppercase tracking-wider block">Carretinha</span>
+                <p className="text-sm font-black text-gray-800">{blockedTrailerRequest.trailerName}</p>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-[10px] font-black text-gray-400 uppercase tracking-wider block">Bikes Incluídas ({blockedTrailerRequest.bikes.length})</span>
+                <p className="text-xs font-mono font-bold text-gray-600 bg-gray-50 p-2 rounded border">{blockedTrailerRequest.bikes.join(', ')}</p>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-gray-400 uppercase tracking-wider block">Justificativa / Motivo detalhado</label>
+                <textarea
+                  value={blockedTrailerRequest.reason}
+                  onChange={(e) => setBlockedTrailerRequest(prev => prev ? { ...prev, reason: e.target.value } : null)}
+                  placeholder="Explique ao ADM por que esta carretinha precisa de liberação manual (ex: sensor de trava com defeito físico, bike com problema de comunicação mas fisicamente travada/carregando, etc.)."
+                  className="w-full text-xs p-2.5 border border-gray-300 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-500 h-24 resize-none font-bold shadow-sm"
+                />
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t flex gap-2 flex-shrink-0 bg-gray-50">
+              <button
+                onClick={() => setBlockedTrailerRequest(null)}
+                disabled={isLoading}
+                className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl font-bold text-xs uppercase transition-all disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSubmitBypassRequest}
+                disabled={isLoading}
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-xs uppercase shadow-md active:scale-95 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
+              >
+                {isLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Enviar para ADM
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal — Seleção de Técnico (Confirmar Recebimento) */}
       {technicaReceiptModal && (
@@ -8844,10 +9038,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 <span className={`px-2 py-0.5 text-[9px] font-black uppercase rounded ${
                                   action.type === 'alterar_status_lote' ? 'bg-purple-100 text-purple-700' :
                                   action.type === 'status_change' ? 'bg-blue-100 text-blue-700' :
+                                  action.type === 'trailer_bypass_request' ? 'bg-red-100 text-red-700 font-extrabold animate-pulse' :
                                   'bg-orange-100 text-orange-700'
                                 }`}>
                                   {action.type === 'alterar_status_lote' ? 'Alterar Status — Lote' :
                                    action.type === 'status_change' ? 'Alteração de Status' :
+                                   action.type === 'trailer_bypass_request' ? 'Liberação Especial (Bypass)' :
                                    'Validação de Carretinha'}
                                 </span>
                                 <span className="text-[10px] text-gray-400 font-bold">
@@ -8860,6 +9056,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                     ? `${action.bikes?.length || 0} bike(s) — ${action.mechanicName}`
                                     : action.type === 'status_change'
                                     ? `Bike ${action.bikeNumber}`
+                                    : action.type === 'trailer_bypass_request'
+                                    ? `Carretinha: ${action.trailerName} (Bypass)`
                                     : `Carretinha: ${action.trailerName}`}
                                 </p>
                                 {action.activatedBy && (
@@ -8955,6 +9153,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               {action.treatment && (
                                 <p className="text-[10px] text-gray-500 mt-2 italic">📝 {action.treatment}</p>
                               )}
+                            </div>
+                          ) : action.type === 'trailer_bypass_request' ? (
+                            <div className="bg-red-50 p-3 rounded-lg border border-red-200">
+                              <p className="text-[10px] font-black text-red-700 uppercase mb-1">⚠️ Motivo / Bloqueios:</p>
+                              <p className="text-xs font-semibold text-red-800 mb-2 leading-relaxed bg-white p-2 rounded border border-red-100 font-bold">
+                                {action.reason}
+                              </p>
+                              <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Bikes na Carretinha ({action.bikes?.length}):</p>
+                              <p className="text-xs font-mono text-gray-600 break-all leading-relaxed bg-white p-2 rounded border">
+                                {action.bikes?.join(', ')}
+                              </p>
                             </div>
                           ) : (
                             <div className="bg-gray-50 p-2 rounded border border-dashed">
