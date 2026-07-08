@@ -139,40 +139,42 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
         return <div className="text-center text-green-700 text-sm p-3 bg-green-100 rounded-md">✓ Conexão estabelecida (API v{apiVersion}).</div>;
       case 'error':
         return (
-            <div className="text-left text-red-900 p-4 bg-red-50 rounded-lg border-2 border-dashed border-red-300">
-                <div className="flex items-start gap-3">
-                    <AlertTriangleIcon className="w-10 h-10 text-red-500 flex-shrink-0 mt-1" />
-                    <div>
-                        <p className="font-bold text-lg mb-1">Ação Necessária: Corrija a Conexão da API</p>
-                        <p className="mb-2 text-sm">O aplicativo não consegue se comunicar com o Google. A causa mais provável é um problema de rede ou uma configuração incorreta na implantação do script.</p>
+            <div className="text-left text-red-900 p-3 bg-red-50 rounded-lg border border-red-200">
+                <div className="flex items-start gap-2.5">
+                    <AlertTriangleIcon className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                        <p className="font-bold text-sm mb-0.5 text-red-800">Conexão API Indisponível</p>
+                        <p className="text-[11px] text-red-700 mb-1.5 leading-relaxed">
+                          Não foi possível acessar o Google. Provável erro de rede ou na implantação do script.
+                        </p>
                         
-                        <div className="my-3 text-sm font-semibold text-red-800 bg-red-100 p-2 border border-red-200 rounded-md">
-                          <strong>Erro Detalhado:</strong> {connectionError}
+                        <div className="text-[10px] font-semibold text-red-800 bg-red-100 p-1.5 border border-red-200 rounded mb-2 overflow-x-auto whitespace-pre-wrap max-h-16">
+                          <strong>Erro:</strong> {connectionError}
                         </div>
                         
-                        <p className="font-semibold mb-2 text-sm text-gray-800">Siga estes passos na sua página do Google Apps Script:</p>
-                        
-                        <ol className="list-decimal list-inside space-y-2.5 text-sm bg-red-100 p-3 rounded-md border border-red-200">
-                            <li>Clique em <strong className="bg-gray-200 px-1 rounded">Implantar</strong> e depois em <strong className="bg-gray-200 px-1 rounded">Nova implantação</strong>.
-                                <span className="block text-xs text-red-700 font-medium ml-4">É crucial usar "Nova implantação" a cada alteração.</span>
-                            </li>
-                            <li>Na janela que abrir, configure <strong>EXATAMENTE</strong> assim:
-                                <ul className="list-disc list-inside pl-5 mt-2 space-y-1 text-gray-800">
-                                    <li>Executar como: <strong>Eu (seu e-mail)</strong></li>
-                                    <li>Quem pode acessar: <strong className="bg-yellow-200 px-1 rounded text-red-800">Qualquer pessoa</strong>
-                                       <span className="block text-xs font-medium">Esta é a causa mais comum do erro.</span>
-                                    </li>
+                        <details className="group text-[11px] text-gray-700">
+                          <summary className="cursor-pointer font-semibold hover:text-red-900 select-none flex items-center gap-1 focus:outline-none">
+                            <span>Como corrigir no Apps Script?</span>
+                            <span className="text-[9px] text-gray-400 group-open:rotate-180 transition-transform">▼</span>
+                          </summary>
+                          <div className="mt-1.5 space-y-1.5 bg-white/70 p-2 rounded border border-red-100 text-gray-600">
+                            <ol className="list-decimal list-inside space-y-1 pl-0.5">
+                              <li>Clique em <strong className="bg-gray-100 px-1 rounded">Implantar &gt; Nova implantação</strong>.</li>
+                              <li>Configure exatamente assim:
+                                <ul className="list-disc list-inside pl-3 mt-0.5 text-gray-500 space-y-0.5 text-[10px]">
+                                  <li>Executar como: <strong>Eu (seu e-mail)</strong></li>
+                                  <li>Quem pode acessar: <strong className="bg-yellow-100 text-yellow-800 px-1 rounded">Qualquer pessoa</strong></li>
                                 </ul>
-                            </li>
-                            <li>Clique em <strong className="bg-gray-200 px-1 rounded">Implantar</strong>, aguarde e copie a <strong>nova URL do app da Web</strong>.</li>
-                            <li><strong>Envie a nova URL para mim.</strong> O aplicativo precisa ser atualizado com ela.</li>
-                        </ol>
-                         <p className="text-sm mt-3 font-semibold text-red-800">O erro só será resolvido após você me enviar a nova URL de uma implantação correta.</p>
+                              </li>
+                              <li>Clique em <strong>Implantar</strong>, copie a nova URL e envie-a para mim no chat para atualizar o app.</li>
+                            </ol>
+                          </div>
+                        </details>
                     </div>
                 </div>
-                <div className="mt-4 text-center">
-                    <button onClick={handleRetryConnectionTest} className="text-sm bg-white text-red-700 border border-red-700 hover:bg-red-50 font-semibold py-1.5 px-4 rounded-md transition-colors">
-                        Tentei corrigir, testar novamente
+                <div className="mt-2.5 flex justify-end gap-2 border-t border-red-100 pt-2">
+                    <button onClick={handleRetryConnectionTest} className="text-[11px] bg-white text-red-700 border border-red-300 hover:bg-red-50 font-semibold py-1 px-2.5 rounded transition-colors shadow-sm">
+                        Testar Novamente
                     </button>
                 </div>
             </div>

@@ -453,7 +453,8 @@ export const apiCall = async (
 // =================================================================
 export const checkApiConnection = async (): Promise<any> => {
   try {
-    return await apiGetCall('health', {}, 1, 10000);
+    // 3 tentativas em total (retries = 2) com 35 segundos de timeout cada para aguentar cold start do Google Apps Script
+    return await apiGetCall('health', {}, 2, 35000);
   } catch (err: any) {
     throw normalizeError(err);
   }
