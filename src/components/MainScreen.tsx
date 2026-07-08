@@ -509,6 +509,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
     scannerActive: boolean;
     lastScanned: string | null;
     lastError: string | null;
+    isBypassAuthorized?: boolean;
   } | null>(null);
   const trailerScannerRef = useRef<Html5Qrcode | null>(null);
   const scannerStartPromise = useRef<Promise<any> | null>(null);
@@ -738,12 +739,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
         
         const statusToUse = protFields.status || (isTecnica ? 'Em Técnica' : 'Reserva');
         if (validMechanicsStatuses.includes(statusToUse)) {
+          const fbBike = fbMap[pat];
           result.push({
             patrimonio: pat,
             status: statusToUse,
             mecanico: driverName,
             dataEntrada: new Date(),
-            ...protFields
+            ...protFields,
+            bypassAuthorized: protFields.bypassAuthorized || fbBike?.bypassAuthorized
           } as any);
           finalPats.add(pat);
         }
@@ -765,7 +768,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (protected_ && protected_.expiresAt > now) {
         const protectedFields = { ...protected_ };
         delete (protectedFields as any).expiresAt;
-        return { ...enrichedBike, ...protectedFields };
+        return { 
+          ...enrichedBike, 
+          ...protectedFields,
+          bypassAuthorized: enrichedBike.bypassAuthorized || protectedFields.bypassAuthorized 
+        };
       }
       return enrichedBike;
     }).filter(b => {
@@ -803,6 +810,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const lastFirebaseUpdateAt = useRef<number>(0);
   const lastLocationRef = useRef<{ lat: number, lng: number } | null>(null);
   const syncCountRef = useRef<number>(0);
+  const driversSummarySupportedRef = useRef<boolean>(true);
 
   // =================================================================
   // HELPERS DE ESTADO
@@ -4213,67 +4221,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
         const trailerName: string = action.trailerName;
         const mechanicName: string = action.mechanicName || '';
 
-        // 1. Atualiza as bikes no Firestore
+        // 1. Atualiza as bikes no Firestore mechanics_flow para marcar como bypass autorizado
         try {
-          await Promise.all(bikeIds.map((id: string) => setDoc(doc(db, 'bikes', id), { 
-            trailerStatus: 'finalized', 
+          await Promise.all(bikeIds.map((id: string) => setDoc(doc(db, 'mechanics_flow', id), { 
+            bypassAuthorized: true,
             ultimaAtualizacao: serverTimestamp() 
           }, { merge: true })));
 
-          // Remove do fluxo da mecânica
-          const { deleteDoc: _deleteDoc } = await import('firebase/firestore');
-          await Promise.all(bikeIds.map((id: string) => _deleteDoc(doc(db, 'mechanics_flow', id))));
-        } catch (e) {
-          handleFirestoreError(e, OperationType.WRITE, `bikes/${bikeIds.join(',')}`);
-        }
-
-        // 2. Cria a ação de trailer_validation para o ADM poder enviar para motorista ou aprovar completamente
-        try {
-          await addDoc(collection(db, 'pending_actions'), {
-            type: 'trailer_validation',
+          // Envia uma notificação bem clara ao mecânico de que foi autorizado
+          const notifyMsgMecanico = `🔑 LIBERAÇÃO CONCEDIDA: O ADM autorizou o bypass para a carretinha "${trailerName}". Você já pode finalizar a carretinha no aplicativo!`;
+          await addDoc(collection(db, 'notifications'), {
+            type: 'bypass_concedido',
+            message: notifyMsgMecanico,
             trailerName,
-            bikes: bikeIds,
-            mechanicName,
-            status: 'pending',
+            recipient: mechanicName,
             timestamp: serverTimestamp()
-          });
+          }).catch(() => {});
+          
+          setSuccessMessage(`Bypass autorizado para a carretinha "${trailerName}"! O mecânico foi notificado e agora pode prosseguir com a finalização.`);
         } catch (e) {
-          handleFirestoreError(e, OperationType.CREATE, 'pending_actions');
+          handleFirestoreError(e, OperationType.WRITE, `mechanics_flow/${bikeIds.join(',')}`);
         }
-
-        // 3. Notificações e Logs (não-bloqueantes)
-        apiCall({ action: 'finalizeTrailer', trailerName }).catch(e => {
-          console.error('[Sheets] finalizeTrailer failed:', e);
-        });
-        
-        const notifyMsg = `🔑 Liberação Especial: Carretinha "${trailerName}" finalizada por ${mechanicName} com autorização do ADM. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
-
-        addDoc(collection(db, 'trailers_history'), {
-          trailerName,
-          finalizedBy: mechanicName,
-          timestamp: serverTimestamp(),
-          date: localDateStr(),
-          bikeCount: bikeIds.length,
-          bypassed: true,
-          bypassedBy: driverName
-        }).catch(e => console.warn('[Firebase] trailers_history write:', e.code));
-
-        addDoc(collection(db, 'notifications'), {
-          type: 'trailer_finalizado',
-          message: notifyMsg,
-          bikes: bikeIds,
-          trailerName,
-          mechanic: mechanicName,
-          timestamp: serverTimestamp(),
-          recipient: 'ADM'
-        }).catch(() => {});
-
-        apiCall({
-          action: 'notifyAdmins',
-          message: notifyMsg,
-          bikes: bikeIds,
-          trailerName
-        }, 1, true).catch(() => {});
       }
 
       // v85.31: Suporte a remoção em massa se ids estiver presente
@@ -4572,6 +4540,30 @@ const MainScreen: React.FC<MainScreenProps> = ({
       return;
     }
 
+    let hasBypass = bikesRaw.some(b => b.bypassAuthorized);
+
+    // Double-check de segurança contra delay de sync ou perdas de estado otimista:
+    if (!hasBypass) {
+      try {
+        const qBypass = query(
+          collection(db, 'pending_actions'),
+          where('type', '==', 'trailer_bypass_request'),
+          where('trailerName', '==', trailerName),
+          where('status', '==', 'approved')
+        );
+        const bypassSnap = await getDocs(qBypass);
+        if (!bypassSnap.empty) {
+          hasBypass = true;
+          // Propaga localmente para que o modal e verificações recebam o estado correto
+          bikesRaw.forEach(b => {
+            b.bypassAuthorized = true;
+          });
+        }
+      } catch (e) {
+        console.warn('[Bypass Double-Check] Falha ao verificar aprovação direta:', e);
+      }
+    }
+
     // Verificar se há bikes com trava aberta ou sem carregar na reserva/carretinha
     const openLockBikes = bikesRaw.filter(b => {
       const lockStr = String(b.trava || '').toLowerCase().trim();
@@ -4583,7 +4575,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       return chgStr === 'não carregando' || chgStr === 'nao carregando' || chgStr === 'não_carregando' || chgStr === 'nao_carregando';
     });
 
-    if (openLockBikes.length > 0 || notChargingBikes.length > 0) {
+    if (!hasBypass && (openLockBikes.length > 0 || notChargingBikes.length > 0)) {
       let msg = '';
       if (openLockBikes.length > 0) {
         msg += `🔒 Trava Aberta: ${openLockBikes.map(b => b.patrimonio).join(', ')}. `;
@@ -4614,13 +4606,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
       scannerActive: false,
       lastScanned: null,
       lastError: null,
+      isBypassAuthorized: hasBypass
     });
   };
 
   const executeTrailerFinalization = async () => {
     if (!trailerQrModal) return;
-    const { trailerName, expectedBikes, confirmedBikes } = trailerQrModal;
-    if (confirmedBikes.size < expectedBikes.length) return;
+    const { trailerName, expectedBikes, confirmedBikes, isBypassAuthorized } = trailerQrModal;
+    if (!isBypassAuthorized && confirmedBikes.size < expectedBikes.length) return;
     await stopTrailerScanner();
     setTrailerQrModal(null);
     setIsLoading(true);
@@ -4670,14 +4663,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setSyncAlert(`Falha ao registrar carretinha "${trailerName}" no Sheets. Dados salvos no Firebase.`);
       });
       
-      const notifyMsg = `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
+      const notifyMsg = isBypassAuthorized
+        ? `🔑 Carretinha "${trailerName}" finalizada por ${driverName} COM LIBERAÇÃO DE BYPASS. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`
+        : `🚌 Carretinha "${trailerName}" finalizada por ${driverName}. ${bikeIds.length} bike(s) prontas para remanejamento: ${bikeIds.join(',')}`;
 
       addDoc(collection(db, 'trailers_history'), {
         trailerName,
         finalizedBy: driverName,
         timestamp: serverTimestamp(),
         date: localDateStr(),
-        bikeCount: bikeIds.length
+        bikeCount: bikeIds.length,
+        bypassed: !!isBypassAuthorized
       }).catch(e => console.warn('[Firebase] trailers_history write:', e.code));
 
       addDoc(collection(db, 'notifications'), {
@@ -4729,7 +4725,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
         reason: reason || 'Sem observações específicas'
       });
 
-      const notifyMsg = `⚠️ Solicitação de Bypass: ${driverName} solicitou a liberação da carretinha "${trailerName}". Detalhes: ${reason}`;
+      const notifyMsg = `🚨 [PEDIDO DE BYPASS] - LIBERAÇÃO ESPECIAL 🚨\n\n` +
+                        `👤 Mecânico: ${driverName}\n` +
+                        `🚌 Carretinha: "${trailerName}"\n` +
+                        `🚲 Bikes (${bikes.length}): ${bikes.join(', ')}\n\n` +
+                        `🛑 MOTIVO DO BLOQUEIO / JUSTIFICATIVA:\n` +
+                        `👉 ${reason || 'Sem justificativa detalhada'}\n\n` +
+                        `⚠️ Acesse o painel ADM (Validação Mecânica) para Liberar ou Recusar esta carretinha.`;
+
       await addDoc(collection(db, 'notifications'), {
         type: 'trailer_bypass_request',
         message: notifyMsg,
@@ -4739,6 +4742,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
         timestamp: serverTimestamp(),
         recipient: 'ADM'
       }).catch(() => {});
+
+      apiCall({
+        action: 'notifyAdmins',
+        message: notifyMsg,
+        bikes,
+        trailerName
+      }, 1, true).catch(() => {});
 
       alert('Solicitação enviada com sucesso! Aguarde a liberação do ADM.');
       setBlockedTrailerRequest(null);
@@ -4959,10 +4969,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setAlerts(mapped);
         if (r.version) setBackendVersion(r.version);
       } else {
-        setError('Erro ao buscar alertas: ' + r.error);
+        console.warn('[Alertas] Erro ao buscar alertas:', r.error);
       }
     } catch (err: any) {
-      setError('Erro de conexão ao buscar alertas: ' + err.message);
+      console.warn('[Alertas] Erro de conexão ao buscar alertas:', err.message);
     } finally {
       setIsAlertsLoading(false);
     }
@@ -5143,6 +5153,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const fetchDriversSummary = useCallback(async () => {
     const range = summaryTimeRange;
     setIsSummaryLoading(true);
+
+    if (!driversSummarySupportedRef.current) {
+      await runDriversSummaryFallback();
+      setIsSummaryLoading(false);
+      return;
+    }
+
     try {
       const r = await apiCall({ action: 'getDriversSummary', timeRange: range, timelineDate }, 1, true);
       if (r.success && summaryTimeRange === range) {
@@ -5163,17 +5180,24 @@ const MainScreen: React.FC<MainScreenProps> = ({
         });
       }
       else if (!r.success) {
-        console.warn('[API] getDriversSummary retornou erro, tentando fallback:', r.error);
+        console.warn('[API] getDriversSummary retornou erro, usando fallback:', r.error);
+        const isUnsupported = r.error && (r.error.includes('Ação não processada') || r.error.includes('Ação não suportada'));
+        if (isUnsupported) {
+          driversSummarySupportedRef.current = false;
+        }
         await runDriversSummaryFallback();
       }
-    } catch (err) {
-      console.error('[API] getDriversSummary falhou, tentando fallback:', err);
+    } catch (err: any) {
+      console.warn('[API] getDriversSummary falhou (erro de rede/conexão), usando fallback:', err);
       await runDriversSummaryFallback();
     }
     finally { setIsSummaryLoading(false); }
   }, [summaryTimeRange, timelineDate, runDriversSummaryFallback]);
 
-  useEffect(() => { fetchDriversSummary(); }, [fetchDriversSummary]);
+  useEffect(() => {
+    fetchDriversSummary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summaryTimeRange, timelineDate]);
 
   const fetchDynamicMechanics = useCallback(async () => {
     try {
@@ -5383,11 +5407,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         // Otimização: Chama Drivers Summary apenas a cada 3 ciclos (~36s) para economizar quota
         if (syncCountRef.current % 3 === 0) {
-          calls.push(apiCall({
-            action: 'getDriversSummary',
-            timeRange: summaryTimeRange,
-            timelineDate,
-          }, 3, true));
+          if (driversSummarySupportedRef.current) {
+            calls.push(apiCall({
+              action: 'getDriversSummary',
+              timeRange: summaryTimeRange,
+              timelineDate,
+            }, 3, true));
+          } else {
+            runDriversSummaryFallback().catch(err => {
+              console.warn('[Sync Fallback] Falha ao rodar fallback de resumo dos motoristas:', err);
+            });
+          }
         }
 
         const [baseResult, summaryResult] = await Promise.allSettled(calls);
@@ -5414,6 +5444,16 @@ const MainScreen: React.FC<MainScreenProps> = ({
             };
           }));
           hasAnySuccess = true;
+        } else if (summaryResult && (summaryResult.status === 'rejected' || (summaryResult.status === 'fulfilled' && !summaryResult.value?.success))) {
+          const errReason = summaryResult.status === 'fulfilled' ? summaryResult.value?.error || '' : '';
+          const isUnsupported = errReason && (errReason.includes('Ação não processada') || errReason.includes('Ação não suportada'));
+          if (isUnsupported) {
+            console.warn('[Sync] getDriversSummary não é suportado pelo script. Desabilitando permanentemente.');
+            driversSummarySupportedRef.current = false;
+          } else {
+            console.warn('[Sync] Falha temporária em getDriversSummary. Usando fallback para este ciclo:', errReason || 'Erro de rede');
+          }
+          runDriversSummaryFallback().catch(() => {});
         }
 
         // Só exibe erro se AMBAS falharam E após 3 tentativas consecutivas
@@ -5470,7 +5510,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       setIsSyncing(false);
       if (isAdm) { setIsSummaryLoading(false); setIsAlertsLoading(false); setIsVandalizedLoading(false); }
     }
-  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate, alertsVersion, canSheetsOverride, fetchDynamicMechanics]);
+  }, [driverName, category, summaryTimeRange, statusTimeRange, applyStateFromSheets, isAdm, persistDriverState, timelineDate, alertsVersion, canSheetsOverride, fetchDynamicMechanics, runDriversSummaryFallback]);
 
   // Busca baterias e travas em tempo real para todas as bikes na mecânica com polling de 15s
   useEffect(() => {
@@ -6471,7 +6511,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
       {/* Modal Verificação QR — Finalizar Carretinha */}
       {trailerQrModal?.isOpen && (() => {
-        const { trailerName, expectedBikes, confirmedBikes, scannerActive, lastScanned, lastError, batteryFailed } = trailerQrModal;
+        const { trailerName, expectedBikes, confirmedBikes, scannerActive, lastScanned, lastError, batteryFailed, isBypassAuthorized } = trailerQrModal;
         const allConfirmed = confirmedBikes.size >= expectedBikes.length;
         const getBatPct = (b: number | undefined) => b === undefined ? undefined : (b <= 1 && b > 0 ? Math.round(b * 100) : Math.round(b));
         return (
@@ -6479,9 +6519,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col max-h-[92vh] overflow-hidden">
 
               {/* Header */}
-              <div className="bg-green-700 p-4 text-white flex items-center justify-between flex-shrink-0">
+              <div className={`p-4 text-white flex items-center justify-between flex-shrink-0 ${isBypassAuthorized ? 'bg-orange-600' : 'bg-green-700'}`}>
                 <div>
-                  <p className="text-xs font-bold uppercase opacity-80">Verificação de Segurança</p>
+                  <p className="text-xs font-bold uppercase opacity-80">{isBypassAuthorized ? 'Verificação com Bypass ADM' : 'Verificação de Segurança'}</p>
                   <h2 className="text-lg font-black">{trailerName}</h2>
                   <p className="text-[10px] opacity-70 mt-0.5">QR Code + Bateria ≥ {trailerBatteryLimit}% + Comunicação &lt; 5 min</p>
                 </div>
@@ -6493,7 +6533,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
               {/* Barra de progresso */}
               <div className="h-1.5 bg-green-100 flex-shrink-0">
-                <div className="h-full bg-green-500 transition-all duration-300"
+                <div className={`h-full transition-all duration-300 ${isBypassAuthorized ? 'bg-orange-500' : 'bg-green-500'}`}
                   style={{ width: `${expectedBikes.length > 0 ? (confirmedBikes.size / expectedBikes.length) * 100 : 0}%` }} />
               </div>
 
@@ -6514,7 +6554,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   </div>
                 ) : (
                   <button onClick={startTrailerScanner} disabled={allConfirmed}
-                    className="w-full py-3 bg-green-600 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-green-700 active:scale-95 transition-all disabled:bg-gray-300">
+                    className={`w-full py-3 text-white font-bold rounded-xl flex items-center justify-center gap-2 active:scale-95 transition-all disabled:bg-gray-300 ${
+                      isBypassAuthorized ? 'bg-orange-600 hover:bg-orange-700' : 'bg-green-600 hover:bg-green-700'
+                    }`}>
                     <QrCodeIcon className="w-5 h-5" />
                     {allConfirmed ? '✅ Todas confirmadas!' : 'Escanear QR Code'}
                   </button>
@@ -6605,12 +6647,14 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     Cancelar
                   </button>
                   <button onClick={executeTrailerFinalization}
-                    disabled={!allConfirmed || isLoading}
-                    className="flex-1 py-2.5 bg-green-600 text-white rounded-xl font-bold text-xs uppercase shadow-lg hover:bg-green-700 active:scale-95 disabled:bg-gray-300 disabled:shadow-none transition-all">
-                    {isLoading ? '...' : `Confirmar (${confirmedBikes.size}/${expectedBikes.length})`}
+                    disabled={(!allConfirmed && !isBypassAuthorized) || isLoading}
+                    className={`flex-1 py-2.5 text-white rounded-xl font-bold text-xs uppercase shadow-lg active:scale-95 disabled:bg-gray-300 disabled:shadow-none transition-all ${
+                      isBypassAuthorized ? 'bg-orange-600 hover:bg-orange-700 shadow-orange-100' : 'bg-green-600 hover:bg-green-700'
+                    }`}>
+                    {isLoading ? '...' : isBypassAuthorized ? 'Finalizar com Bypass' : `Confirmar (${confirmedBikes.size}/${expectedBikes.length})`}
                   </button>
                 </div>
-                {!allConfirmed && (
+                {!allConfirmed && !isBypassAuthorized && (
                   <button
                     onClick={async () => {
                       const unconfirmed = expectedBikes.filter(b => !confirmedBikes.has(b.patrimonio));
@@ -9031,33 +9075,37 @@ const MainScreen: React.FC<MainScreenProps> = ({
                       });
 
                       return finalActions.map((action) => (
-                        <div key={action.id} className="bg-white p-4 rounded-xl border shadow-sm hover:shadow-md transition-shadow">
+                        <div key={action.id} className={`p-5 rounded-2xl border transition-all duration-300 ${
+                          action.type === 'trailer_bypass_request'
+                            ? 'bg-gradient-to-br from-red-950 via-red-900 to-rose-950 text-white border-red-500 shadow-xl ring-2 ring-red-400 ring-offset-2'
+                            : 'bg-white border-gray-200 hover:shadow-md'
+                        }`}>
                           <div className="flex justify-between items-start mb-3">
-                            <div>
-                              <div className="flex items-center gap-2 mb-1">
+                            <div className="flex-1 min-w-0 pr-4">
+                              <div className="flex items-center gap-2 mb-2 flex-wrap">
                                 <span className={`px-2 py-0.5 text-[9px] font-black uppercase rounded ${
                                   action.type === 'alterar_status_lote' ? 'bg-purple-100 text-purple-700' :
                                   action.type === 'status_change' ? 'bg-blue-100 text-blue-700' :
-                                  action.type === 'trailer_bypass_request' ? 'bg-red-100 text-red-700 font-extrabold animate-pulse' :
+                                  action.type === 'trailer_bypass_request' ? 'bg-yellow-400 text-red-950 font-black animate-pulse' :
                                   'bg-orange-100 text-orange-700'
                                 }`}>
                                   {action.type === 'alterar_status_lote' ? 'Alterar Status — Lote' :
                                    action.type === 'status_change' ? 'Alteração de Status' :
-                                   action.type === 'trailer_bypass_request' ? 'Liberação Especial (Bypass)' :
+                                   action.type === 'trailer_bypass_request' ? '🚨 SOLICITAÇÃO DE BYPASS (BLOQUEIO)' :
                                    'Validação de Carretinha'}
                                 </span>
-                                <span className="text-[10px] text-gray-400 font-bold">
+                                <span className={`text-[10px] font-bold ${action.type === 'trailer_bypass_request' ? 'text-red-300' : 'text-gray-400'}`}>
                                   {action.timestamp?.toDate?.()?.toLocaleString('pt-BR')}
                                 </span>
                               </div>
                               <div className="flex items-center gap-2 flex-wrap">
-                                <p className="text-sm font-black text-gray-800 leading-none">
+                                <p className={`text-sm font-black leading-tight ${action.type === 'trailer_bypass_request' ? 'text-white text-base font-extrabold tracking-wide' : 'text-gray-800'}`}>
                                   {action.type === 'alterar_status_lote'
                                     ? `${action.bikes?.length || 0} bike(s) — ${action.mechanicName}`
                                     : action.type === 'status_change'
                                     ? `Bike ${action.bikeNumber}`
                                     : action.type === 'trailer_bypass_request'
-                                    ? `Carretinha: ${action.trailerName} (Bypass)`
+                                    ? `🛑 BYPASS PARA CARRETINHA: "${action.trailerName}"`
                                     : `Carretinha: ${action.trailerName}`}
                                 </p>
                                 {action.activatedBy && (
@@ -9066,12 +9114,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                   </span>
                                 )}
                               </div>
-                              <p className="text-[10px] text-gray-500 font-bold uppercase">
-                                Solicitado por: <span className="text-blue-600">{action.mechanicName}</span>
+                              <p className={`text-[10px] font-bold uppercase mt-1 ${action.type === 'trailer_bypass_request' ? 'text-red-200' : 'text-gray-500'}`}>
+                                Solicitado por: <span className={action.type === 'trailer_bypass_request' ? 'text-yellow-300 font-extrabold text-xs' : 'text-blue-600'}>{action.mechanicName}</span>
                               </p>
                             </div>
                             {action.type !== 'alterar_status_lote' && (
-                              <div className="flex gap-2">
+                              <div className="flex gap-2 flex-shrink-0">
                                 {action.type === 'trailer_validation' && (
                                   <button
                                     onClick={() => {
@@ -9088,22 +9136,42 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 <button
                                   onClick={() => handleApproveAction(action)}
                                   disabled={isLoading || (action.type === 'trailer_validation' && !!action.activatedBy)}
-                                  className={`p-2 rounded-lg border transition-colors ${
-                                    action.type === 'trailer_validation' && action.activatedBy
+                                  className={`p-2 rounded-lg border transition-all active:scale-95 flex items-center justify-center gap-1.5 ${
+                                    action.type === 'trailer_bypass_request'
+                                      ? 'bg-yellow-400 hover:bg-yellow-500 text-red-950 border-yellow-500 font-black px-4 py-2 text-xs uppercase shadow-md hover:scale-105'
+                                      : action.type === 'trailer_validation' && action.activatedBy
                                       ? 'bg-green-600 text-white border-green-700 opacity-50 cursor-not-allowed'
                                       : 'bg-green-50 text-green-600 border-green-100 hover:bg-green-100'
                                   }`}
-                                  title={action.type === 'trailer_validation' ? 'Ativado' : 'Aprovar'}
+                                  title={action.type === 'trailer_validation' ? 'Ativado' : action.type === 'trailer_bypass_request' ? 'Aprovar Bypass' : 'Aprovar'}
                                 >
-                                  <CheckCircleIcon className="w-5 h-5" />
+                                  {action.type === 'trailer_bypass_request' ? (
+                                    <>
+                                      <CheckCircleIcon className="w-4 h-4" />
+                                      <span className="font-extrabold">LIBERAR AGORA</span>
+                                    </>
+                                  ) : (
+                                    <CheckCircleIcon className="w-5 h-5" />
+                                  )}
                                 </button>
                                 <button
                                   onClick={() => handleRejectAction(action.id)}
                                   disabled={isLoading}
-                                  className="p-2 bg-red-50 text-red-600 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
+                                  className={`p-2 rounded-lg border transition-all active:scale-95 flex items-center justify-center gap-1.5 ${
+                                    action.type === 'trailer_bypass_request'
+                                      ? 'bg-red-800 hover:bg-red-700 text-white border-red-700 font-bold px-3 py-1.5 text-xs uppercase shadow-sm'
+                                      : 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100'
+                                  }`}
                                   title="Rejeitar"
                                 >
-                                  <XIcon className="w-5 h-5" />
+                                  {action.type === 'trailer_bypass_request' ? (
+                                    <>
+                                      <XIcon className="w-4 h-4" />
+                                      <span>Recusar</span>
+                                    </>
+                                  ) : (
+                                    <XIcon className="w-5 h-5" />
+                                  )}
                                 </button>
                               </div>
                             )}
@@ -9155,13 +9223,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               )}
                             </div>
                           ) : action.type === 'trailer_bypass_request' ? (
-                            <div className="bg-red-50 p-3 rounded-lg border border-red-200">
-                              <p className="text-[10px] font-black text-red-700 uppercase mb-1">⚠️ Motivo / Bloqueios:</p>
-                              <p className="text-xs font-semibold text-red-800 mb-2 leading-relaxed bg-white p-2 rounded border border-red-100 font-bold">
+                            <div className="bg-red-950/80 p-4 rounded-xl border border-red-700/50 mt-2">
+                              <p className="text-[10px] font-black text-red-300 uppercase mb-1 flex items-center gap-1">
+                                <span>⚠️</span> MOTIVO / JUSTIFICATIVA DO MECÂNICO:
+                              </p>
+                              <p className="text-xs font-extrabold text-yellow-300 mb-3 leading-relaxed bg-red-900/40 p-3 rounded-lg border border-red-850">
                                 {action.reason}
                               </p>
-                              <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Bikes na Carretinha ({action.bikes?.length}):</p>
-                              <p className="text-xs font-mono text-gray-600 break-all leading-relaxed bg-white p-2 rounded border">
+                              <p className="text-[10px] font-bold text-red-300 uppercase mb-1">Bikes pendentes na carretinha ({action.bikes?.length}):</p>
+                              <p className="text-xs font-mono text-white break-all leading-relaxed bg-red-900/20 p-2 rounded border border-red-800/40">
                                 {action.bikes?.join(', ')}
                               </p>
                             </div>

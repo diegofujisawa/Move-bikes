@@ -1,11 +1,9 @@
 import { User } from './types';
-import { SCRIPT_URL as RAW_SCRIPT_URL } from './components/constants';
 
-const SCRIPT_URL = RAW_SCRIPT_URL.trim();
-
-if (!SCRIPT_URL || !SCRIPT_URL.startsWith('https://script.google.com')) {
-  console.error('[API] SCRIPT_URL inválida ou ausente em constants.ts:', SCRIPT_URL);
-}
+// For maximum stability and security, we route all Google Apps Script communication
+// through our Express server proxy (/api/proxy) to avoid cross-origin (CORS),
+// cookie-blocking (iframe), and privacy-extension / adblocker issues.
+const SCRIPT_URL = window.location.origin + '/api/proxy';
 
 // =================================================================
 // AÇÕES DE LEITURA — retry seguro (nunca duplicam dados)
@@ -127,6 +125,7 @@ function parseJsonResponse(text: string): any {
   try {
     return JSON.parse(text);
   } catch {
+    console.error('[API] Falha ao parsear JSON. Conteúdo retornado:', text.slice(0, 1000));
     const lowerText = text.toLowerCase();
     if (
       lowerText.includes('service invoked too many times') ||
@@ -253,7 +252,7 @@ export const apiGetCall = async (
     const response = await fetchWithTimeout(url.toString(), {
       method: 'GET',
       mode: 'cors',
-      credentials: 'omit',
+      credentials: 'include',
       cache: 'no-store',
       redirect: 'follow',
       timeout: customTimeout || 90000,
@@ -338,7 +337,7 @@ export const apiCall = async (
     const response = await fetchWithTimeout(SCRIPT_URL, {
       method: 'POST',
       mode: 'cors',
-      credentials: 'omit',
+      credentials: 'include',
       cache: 'no-store',
       redirect: 'follow',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
