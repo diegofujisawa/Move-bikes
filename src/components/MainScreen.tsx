@@ -2710,16 +2710,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const fetchMechanicHistory = async () => {
     setIsMechanicHistoryLoading(true);
     try {
-      // Busca reports de Reparo (saída) e Mecânica (entrada) do Firebase com limite de segurança
-      const { getDocs: _gd, query: _q, where: _w, collection: _col, limit: _lim } = await import('firebase/firestore');
-      const [snapReparo, snapEntrada] = await Promise.all([
-        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Reparo'), _lim(150))),
-        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Mecânica'), _lim(150))),
-      ]);
+      // Busca reports mais recentes de Reparo (saída) e Mecânica (entrada) ordenados por data decrescente
+      const { getDocs: _gd, query: _q, orderBy: _ob, collection: _col, limit: _lim } = await import('firebase/firestore');
+      
+      // Buscamos os últimos 1500 reports gerais e separamos por tipo na memória para garantir que os registros de hoje
+      // estejam sempre incluídos, mesmo que haja muitos, evitando erros de índice composto do Firestore.
+      const snapAll = await _gd(_q(_col(db, 'reports'), _ob('timestamp', 'desc'), _lim(1500)));
+      
+      const reparosDocs: any[] = [];
+      const entradasDocs: any[] = [];
+      
+      snapAll.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.type === 'Reparo') {
+          reparosDocs.push(doc);
+        } else if (data.type === 'Mecânica') {
+          entradasDocs.push(doc);
+        }
+      });
 
       // Indexa entradas por bikeNumber — pega a mais recente antes da saída
       const entradas: Record<string, any[]> = {};
-      snapEntrada.docs.forEach(d => {
+      entradasDocs.forEach(d => {
         const rec = d.data();
         const pat = String(rec.patrimonio || rec.bikeNumber || '');
         if (!pat) return;
@@ -2727,7 +2739,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         entradas[pat].push(rec);
       });
 
-      const records = snapReparo.docs.map(d => {
+      const records = reparosDocs.map(d => {
         const data = d.data();
         const rec = { id: d.id, ...data } as any;
         const pat = String(rec.patrimonio || rec.bikeNumber || '');
@@ -2783,16 +2795,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const fetchTechnicaHistory = async () => {
     setIsTechnicaHistoryLoading(true);
     try {
-      const { getDocs: _gd, query: _q, where: _w, collection: _col, limit: _lim } = await import('firebase/firestore');
-      // Busca registros type Técnica — inclui Aguardando, Recebida, Devolvida com limite de segurança
-      const [snapTec, snapMec] = await Promise.all([
-        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Técnica'), _lim(150))),
-        _gd(_q(_col(db, 'reports'), _w('type', '==', 'Reparo'), _lim(150))),
-      ]);
+      const { getDocs: _gd, query: _q, orderBy: _ob, collection: _col, limit: _lim } = await import('firebase/firestore');
+      
+      // Buscamos os últimos 1500 reports gerais ordenados por data decrescente e filtramos na memória
+      // para evitar problemas de índice composto e trazer sempre as devoluções/técnicas mais recentes
+      const snapAll = await _gd(_q(_col(db, 'reports'), _ob('timestamp', 'desc'), _lim(1500)));
+      
+      const tecDocs: any[] = [];
+      const mecDocs: any[] = [];
+      
+      snapAll.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.type === 'Técnica') {
+          tecDocs.push(doc);
+        } else if (data.type === 'Reparo') {
+          mecDocs.push(doc);
+        }
+      });
 
       // Indexa reparos por bike para cruzar com devolução
       const reparos: Record<string, any> = {};
-      snapMec.docs.forEach(d => {
+      mecDocs.forEach(d => {
         const rec = d.data();
         const pat = String(rec.patrimonio || rec.bikeNumber || '');
         const ts = rec.timestamp?.toMillis?.() || 0;
@@ -2802,13 +2825,13 @@ const MainScreen: React.FC<MainScreenProps> = ({
       });
 
       // Monta histórico a partir dos registros Técnica de saída (Devolvida)
-      const devolvidas = snapTec.docs
+      const devolvidas = tecDocs
         .map(d => ({ id: d.id, ...d.data() } as any))
         .filter(r => (r.status || '').includes('Devolvida') || (r.observacao || '').includes('finalizada') || (r.observation || '').includes('finalizada'));
 
       // Para cada devolução, busca a entrada (Recebida)
       const entradas: Record<string, any[]> = {};
-      snapTec.docs.forEach(d => {
+      tecDocs.forEach(d => {
         const rec = d.data();
         if ((rec.status || '').includes('Em Técnica') || (rec.observacao || '').includes('Recebida') || (rec.observation || '').includes('Recebida')) {
           const pat = String(rec.patrimonio || rec.bikeNumber || '');
