@@ -3,7 +3,20 @@ import { User } from './types';
 // For maximum stability and security, we route all Google Apps Script communication
 // through our Express server proxy (/api/proxy) to avoid cross-origin (CORS),
 // cookie-blocking (iframe), and privacy-extension / adblocker issues.
-const SCRIPT_URL = window.location.origin + '/api/proxy';
+// However, when hosted on static environments (e.g., Cloudflare Workers), we connect directly.
+const GOOGLE_SCRIPT_DIRECT_URL = 'https://script.google.com/macros/s/AKfycbxqnNTX1M19jUY1hsULYOAkWO1DliXgBUtNAIxNznAl1HJwJUJsZ5h0TCIt135iS_NqWg/exec';
+
+const isLocalOrPreview =
+  window.location.hostname === 'localhost' ||
+  window.location.hostname === '127.0.0.1' ||
+  window.location.hostname.endsWith('run.app');
+
+const SCRIPT_URL = isLocalOrPreview
+  ? window.location.origin + '/api/proxy'
+  : GOOGLE_SCRIPT_DIRECT_URL;
+
+const credentialsMode = isLocalOrPreview ? 'include' : 'omit';
+
 
 // =================================================================
 // AÇÕES DE LEITURA — retry seguro (nunca duplicam dados)
@@ -252,7 +265,7 @@ export const apiGetCall = async (
     const response = await fetchWithTimeout(url.toString(), {
       method: 'GET',
       mode: 'cors',
-      credentials: 'include',
+      credentials: credentialsMode,
       cache: 'no-store',
       redirect: 'follow',
       timeout: customTimeout || 90000,
@@ -337,7 +350,7 @@ export const apiCall = async (
     const response = await fetchWithTimeout(SCRIPT_URL, {
       method: 'POST',
       mode: 'cors',
-      credentials: 'include',
+      credentials: credentialsMode,
       cache: 'no-store',
       redirect: 'follow',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
