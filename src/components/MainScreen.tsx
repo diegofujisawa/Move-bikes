@@ -2711,11 +2711,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setIsMechanicHistoryLoading(true);
     try {
       // Busca reports mais recentes de Reparo (saída) e Mecânica (entrada) ordenados por data decrescente
-      const { getDocs: _gd, query: _q, orderBy: _ob, collection: _col, limit: _lim } = await import('firebase/firestore');
+      const { getDocs: _gd, query: _q, orderBy: _ob, collection: _col, limit: _lim, where: _w, Timestamp: _ts } = await import('firebase/firestore');
       
-      // Buscamos os últimos 1500 reports gerais e separamos por tipo na memória para garantir que os registros de hoje
-      // estejam sempre incluídos, mesmo que haja muitos, evitando erros de índice composto do Firestore.
-      const snapAll = await _gd(_q(_col(db, 'reports'), _ob('timestamp', 'desc'), _lim(1500)));
+      // Buscamos apenas os reports dos últimos 7 dias (limite de 300) para economizar drasticamente a quota de leitura do Firebase,
+      // evitando estourar o limite diário de 50.000 leituras, mantendo alto desempenho e agilidade.
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const snapAll = await _gd(_q(
+        _col(db, 'reports'),
+        _w('timestamp', '>=', _ts.fromDate(sevenDaysAgo)),
+        _ob('timestamp', 'desc'),
+        _lim(300)
+      ));
       
       const reparosDocs: any[] = [];
       const entradasDocs: any[] = [];
@@ -2795,11 +2801,17 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const fetchTechnicaHistory = async () => {
     setIsTechnicaHistoryLoading(true);
     try {
-      const { getDocs: _gd, query: _q, orderBy: _ob, collection: _col, limit: _lim } = await import('firebase/firestore');
+      const { getDocs: _gd, query: _q, orderBy: _ob, collection: _col, limit: _lim, where: _w, Timestamp: _ts } = await import('firebase/firestore');
       
-      // Buscamos os últimos 1500 reports gerais ordenados por data decrescente e filtramos na memória
-      // para evitar problemas de índice composto e trazer sempre as devoluções/técnicas mais recentes
-      const snapAll = await _gd(_q(_col(db, 'reports'), _ob('timestamp', 'desc'), _lim(1500)));
+      // Buscamos apenas os reports dos últimos 7 dias (limite de 300) para economizar drasticamente a quota de leitura do Firebase,
+      // evitando estourar o limite diário de 50.000 leituras, mantendo alto desempenho e agilidade.
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const snapAll = await _gd(_q(
+        _col(db, 'reports'),
+        _w('timestamp', '>=', _ts.fromDate(sevenDaysAgo)),
+        _ob('timestamp', 'desc'),
+        _lim(300)
+      ));
       
       const tecDocs: any[] = [];
       const mecDocs: any[] = [];
@@ -4618,7 +4630,9 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const bikeObjects = bikesRaw.map(b => ({
       patrimonio: String(b.patrimonio),
       bateria: b.bateria !== undefined ? Number(b.bateria) : undefined,
-      ultimaInfo: b.ultimaInfo || b.ultimaAtualizacao || ''
+      ultimaInfo: b.ultimaInfo || b.ultimaAtualizacao || '',
+      mecanico: b.mecanico || b.responsavel || '',
+      tratativa: b.tratativa || b.observacao || 'Manutenção Corretiva'
     }));
     setTrailerQrModal({
       isOpen: true,
@@ -4681,6 +4695,29 @@ const MainScreen: React.FC<MainScreenProps> = ({
       }
 
       // 3. Notificações e Logs (não-bloqueantes)
+      // Cria reports individuais para cada bike para que apareçam corretamente no Histórico de Manutenções
+      expectedBikes.forEach((b: any) => {
+        (async () => {
+          try {
+            const bikeDetails = await fetchBikeDetailsForReport(b.patrimonio, 3000);
+            await addDoc(collection(db, 'reports'), {
+              patrimonio: b.patrimonio,
+              status: 'Reserva',
+              motorista: b.mecanico || driverName,
+              observacao: `Reparo finalizado por ${b.mecanico || driverName} — ${b.tratativa || 'Manutenção Corretiva'} (Finalizado na ${trailerName})`,
+              timestamp: serverTimestamp(),
+              type: 'Reparo',
+              statusSistema: bikeDetails?.['Status'] || bikeDetails?.statusSistema || '',
+              bateria: b.bateria !== undefined ? String(b.bateria) : (bikeDetails?.['Bateria'] || bikeDetails?.bateria || ''),
+              trava: bikeDetails?.['Trava'] || bikeDetails?.trava || '',
+              localidade: bikeDetails?.['Localidade'] || bikeDetails?.localidade || ''
+            });
+          } catch (e) {
+            console.warn('[Firebase] reports write for finalized trailer bike failed:', e);
+          }
+        })();
+      });
+
       apiCall({ action: 'finalizeTrailer', trailerName }).catch(e => {
         console.error('[Sheets] finalizeTrailer failed:', e);
         setSyncAlert(`Falha ao registrar carretinha "${trailerName}" no Sheets. Dados salvos no Firebase.`);
@@ -9097,50 +9134,52 @@ const MainScreen: React.FC<MainScreenProps> = ({
                         return timeB - timeA;
                       });
 
-                      return finalActions.map((action) => (
-                        <div key={action.id} className={`p-5 rounded-2xl border transition-all duration-300 ${
-                          action.type === 'trailer_bypass_request'
-                            ? 'bg-gradient-to-br from-red-950 via-red-900 to-rose-950 text-white border-red-500 shadow-xl ring-2 ring-red-400 ring-offset-2'
-                            : 'bg-white border-gray-200 hover:shadow-md'
-                        }`}>
-                          <div className="flex justify-between items-start mb-3">
-                            <div className="flex-1 min-w-0 pr-4">
-                              <div className="flex items-center gap-2 mb-2 flex-wrap">
-                                <span className={`px-2 py-0.5 text-[9px] font-black uppercase rounded ${
-                                  action.type === 'alterar_status_lote' ? 'bg-purple-100 text-purple-700' :
-                                  action.type === 'status_change' ? 'bg-blue-100 text-blue-700' :
-                                  action.type === 'trailer_bypass_request' ? 'bg-yellow-400 text-red-950 font-black animate-pulse' :
-                                  'bg-orange-100 text-orange-700'
-                                }`}>
-                                  {action.type === 'alterar_status_lote' ? 'Alterar Status — Lote' :
-                                   action.type === 'status_change' ? 'Alteração de Status' :
-                                   action.type === 'trailer_bypass_request' ? '🚨 SOLICITAÇÃO DE BYPASS (BLOQUEIO)' :
-                                   'Validação de Carretinha'}
-                                </span>
-                                <span className={`text-[10px] font-bold ${action.type === 'trailer_bypass_request' ? 'text-red-300' : 'text-gray-400'}`}>
-                                  {action.timestamp?.toDate?.()?.toLocaleString('pt-BR')}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <p className={`text-sm font-black leading-tight ${action.type === 'trailer_bypass_request' ? 'text-white text-base font-extrabold tracking-wide' : 'text-gray-800'}`}>
-                                  {action.type === 'alterar_status_lote'
-                                    ? `${action.bikes?.length || 0} bike(s) — ${action.mechanicName}`
-                                    : action.type === 'status_change'
-                                    ? `Bike ${action.bikeNumber}`
-                                    : action.type === 'trailer_bypass_request'
-                                    ? `🛑 BYPASS PARA CARRETINHA: "${action.trailerName}"`
-                                    : `Carretinha: ${action.trailerName}`}
-                                </p>
-                                {action.activatedBy && (
-                                  <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-[8px] font-black uppercase rounded border border-green-200">
-                                    Ativado por: {action.activatedBy}
+                      return finalActions.map((action) => {
+                        const isBypassReq = action.type === 'trailer_bypass_request';
+                        return (
+                          <div key={action.id} className={`transition-all duration-300 ${
+                            isBypassReq
+                              ? 'p-3.5 rounded-xl bg-gradient-to-br from-red-950 via-red-900 to-rose-950 text-white border border-red-500 shadow-lg ring-1 ring-red-400'
+                              : 'p-5 rounded-2xl bg-white border border-gray-200 hover:shadow-md'
+                          }`}>
+                            <div className={`flex justify-between items-start ${isBypassReq ? 'mb-1.5' : 'mb-3'}`}>
+                              <div className="flex-1 min-w-0 pr-4">
+                                <div className={`flex items-center gap-2 flex-wrap ${isBypassReq ? 'mb-1' : 'mb-2'}`}>
+                                  <span className={`px-2 py-0.5 text-[9px] font-black uppercase rounded ${
+                                    action.type === 'alterar_status_lote' ? 'bg-purple-100 text-purple-700' :
+                                    action.type === 'status_change' ? 'bg-blue-100 text-blue-700' :
+                                    action.type === 'trailer_bypass_request' ? 'bg-yellow-400 text-red-950 font-black' :
+                                    'bg-orange-100 text-orange-700'
+                                  }`}>
+                                    {action.type === 'alterar_status_lote' ? 'Alterar Status — Lote' :
+                                     action.type === 'status_change' ? 'Alteração de Status' :
+                                     action.type === 'trailer_bypass_request' ? '🚨 SOLICITAÇÃO DE BYPASS' :
+                                     'Validação de Carretinha'}
                                   </span>
-                                )}
+                                  <span className={`text-[9px] font-bold ${action.type === 'trailer_bypass_request' ? 'text-red-300' : 'text-gray-400'}`}>
+                                    {action.timestamp?.toDate?.()?.toLocaleString('pt-BR')}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <p className={`font-black leading-tight ${action.type === 'trailer_bypass_request' ? 'text-white text-xs tracking-wide' : 'text-gray-800 text-sm'}`}>
+                                    {action.type === 'alterar_status_lote'
+                                      ? `${action.bikes?.length || 0} bike(s) — ${action.mechanicName}`
+                                      : action.type === 'status_change'
+                                      ? `Bike ${action.bikeNumber}`
+                                      : action.type === 'trailer_bypass_request'
+                                      ? `🛑 BYPASS CARRETINHA: "${action.trailerName}"`
+                                      : `Carretinha: ${action.trailerName}`}
+                                  </p>
+                                  {action.activatedBy && (
+                                    <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-[8px] font-black uppercase rounded border border-green-200">
+                                      Ativado por: {action.activatedBy}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className={`text-[9px] font-bold uppercase mt-0.5 ${action.type === 'trailer_bypass_request' ? 'text-red-200' : 'text-gray-500'}`}>
+                                  Solicitado por: <span className={action.type === 'trailer_bypass_request' ? 'text-yellow-300 font-extrabold text-[10px]' : 'text-blue-600 text-xs'}>{action.mechanicName}</span>
+                                </p>
                               </div>
-                              <p className={`text-[10px] font-bold uppercase mt-1 ${action.type === 'trailer_bypass_request' ? 'text-red-200' : 'text-gray-500'}`}>
-                                Solicitado por: <span className={action.type === 'trailer_bypass_request' ? 'text-yellow-300 font-extrabold text-xs' : 'text-blue-600'}>{action.mechanicName}</span>
-                              </p>
-                            </div>
                             {action.type !== 'alterar_status_lote' && (
                               <div className="flex gap-2 flex-shrink-0">
                                 {action.type === 'trailer_validation' && (
@@ -9246,15 +9285,15 @@ const MainScreen: React.FC<MainScreenProps> = ({
                               )}
                             </div>
                           ) : action.type === 'trailer_bypass_request' ? (
-                            <div className="bg-red-950/80 p-4 rounded-xl border border-red-700/50 mt-2">
-                              <p className="text-[10px] font-black text-red-300 uppercase mb-1 flex items-center gap-1">
-                                <span>⚠️</span> MOTIVO / JUSTIFICATIVA DO MECÂNICO:
+                            <div className="bg-red-950/80 p-2.5 rounded-lg border border-red-700/50 mt-1.5">
+                              <p className="text-[9px] font-black text-red-300 uppercase mb-0.5 flex items-center gap-1">
+                                <span>⚠️</span> JUSTIFICATIVA:
                               </p>
-                              <p className="text-xs font-extrabold text-yellow-300 mb-3 leading-relaxed bg-red-900/40 p-3 rounded-lg border border-red-850">
+                              <p className="text-[11px] font-extrabold text-yellow-300 mb-2 leading-tight bg-red-900/40 p-2 rounded border border-red-850">
                                 {action.reason}
                               </p>
-                              <p className="text-[10px] font-bold text-red-300 uppercase mb-1">Bikes pendentes na carretinha ({action.bikes?.length}):</p>
-                              <p className="text-xs font-mono text-white break-all leading-relaxed bg-red-900/20 p-2 rounded border border-red-800/40">
+                              <p className="text-[9px] font-bold text-red-300 uppercase mb-0.5">Bikes pendentes ({action.bikes?.length}):</p>
+                              <p className="text-[10px] font-mono text-white break-all leading-normal bg-red-900/20 p-1.5 rounded border border-red-800/40">
                                 {action.bikes?.join(', ')}
                               </p>
                             </div>
@@ -9267,7 +9306,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
                             </div>
                           )}
                         </div>
-                      ))
+                      );
+                    })
                     })() : (
                       <div className="py-12 text-center bg-gray-50 rounded-xl border border-dashed">
                         <BicycleIcon className="w-12 h-12 text-gray-200 mx-auto mb-3" />
