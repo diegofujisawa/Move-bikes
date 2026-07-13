@@ -465,6 +465,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [productionDrillDown, setProductionDrillDown] = useState<{ mechanic: string; type: 'man' | 'res'; bikes: string[] } | null>(null);
   const [isMechanicHistoryOpen, setIsMechanicHistoryOpen] = useState(false);
   const [mechanicHistory, setMechanicHistory] = useState<any[]>([]);
+  const [selectedRepair, setSelectedRepair] = useState<any | null>(null);
   const [isMechanicHistoryLoading, setIsMechanicHistoryLoading] = useState(false);
   const [mechanicHistoryFilter, setMechanicHistoryFilter] = useState({ mechanic: 'Todos', date: '' });
   const [dynamicMechanics, setDynamicMechanics] = useState<string[]>(["KAUAN", "JOÃO", "FELIPE", "ANDRÉ", "RAFAEL"]);
@@ -2322,6 +2323,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
               ultimaAtualizacao: serverTimestamp()
             }, { merge: true }).catch(() => {});
 
+            if (targetStatus === 'Reserva') {
+              (async () => {
+                try {
+                  const bikeDetails = await fetchBikeDetailsForReport(bikePat, 3000);
+                  await addDoc(collection(db, 'reports'), {
+                    patrimonio: bikePat,
+                    status: 'Reserva',
+                    motorista: finalName,
+                    observacao: `Inserida manualmente como Reserva — MANUAL`,
+                    timestamp: serverTimestamp(),
+                    type: 'Reparo',
+                    statusSistema: bikeDetails?.['Status'] || bikeDetails?.statusSistema || '',
+                    bateria: bikeDetails?.['Bateria'] || bikeDetails?.bateria || '',
+                    trava: bikeDetails?.['Trava'] || bikeDetails?.trava || '',
+                    localidade: bikeDetails?.['Localidade'] || bikeDetails?.localidade || ''
+                  });
+                } catch (e) {
+                  console.warn('Erro ao salvar report manual de Reparo:', e);
+                }
+              })();
+            }
+
             // Sincroniza com o Google Sheets
             try {
               await apiCall({
@@ -2417,7 +2440,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         motorista: editingMechanic,
         observacao: `Adicionada por ADM no perfil de ${editingMechanic}`,
         timestamp: serverTimestamp(),
-        type: 'Mecânica'
+        type: editingStatusChoice === 'Reserva' ? 'Reparo' : 'Mecânica'
       });
 
       // 4. Update optimistic state
@@ -3988,6 +4011,85 @@ const MainScreen: React.FC<MainScreenProps> = ({
     } finally { setIsLoading(false); }
   };
 
+  const getNextTrailerName = async (currentList: any[]): Promise<string> => {
+    let nextNum = 1;
+    try {
+      const today = localDateStr();
+      const { getDocs: _gd, query: _q, where: _w, collection: _col } = await import('firebase/firestore');
+      const q = _q(_col(db, 'trailers_history'), _w('date', '==', today));
+      const snap = await _gd(q);
+      const historyList = snap.docs.map(d => d.data());
+
+      // 1. Get active trailer numbers
+      const activeNums = new Set<number>();
+      currentList.forEach(b => {
+        if (b.status === 'Reserva' && b.carretinha && b.carretinha !== 'Sem Carretinha' && !b.trailerStatus) {
+          const match = b.carretinha.match(/Carretinha (\d+)/i);
+          if (match) {
+            activeNums.add(parseInt(match[1], 10));
+          }
+        }
+      });
+
+      // 2. Get finalized trailer numbers from historyList
+      const finalizedNums: number[] = [];
+      historyList.forEach(h => {
+        if (h.trailerName) {
+          const match = h.trailerName.match(/Carretinha (\d+)/i);
+          if (match) {
+            finalizedNums.push(parseInt(match[1], 10));
+          }
+        }
+      });
+
+      // 3. Count frequencies for 1..5 to handle wrap-around
+      const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+      
+      activeNums.forEach(num => {
+        if (num >= 1 && num <= 5) {
+          counts[num] = (counts[num] || 0) + 1;
+        }
+      });
+      
+      finalizedNums.forEach(num => {
+        if (num >= 1 && num <= 5) {
+          counts[num] = (counts[num] || 0) + 1;
+        }
+      });
+
+      // Find lowest count among non-active numbers
+      let minCount = Infinity;
+      for (let i = 1; i <= 5; i++) {
+        if (!activeNums.has(i)) {
+          if (counts[i] < minCount) {
+            minCount = counts[i];
+            nextNum = i;
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao calcular próxima carretinha via Firebase:', err);
+      // Fallback: use currentList only
+      const activeNums = new Set<number>();
+      currentList.forEach(b => {
+        if (b.status === 'Reserva' && b.carretinha && b.carretinha !== 'Sem Carretinha' && !b.trailerStatus) {
+          const match = b.carretinha.match(/Carretinha (\d+)/i);
+          if (match) {
+            activeNums.add(parseInt(match[1], 10));
+          }
+        }
+      });
+      for (let i = 1; i <= 5; i++) {
+        if (!activeNums.has(i)) {
+          nextNum = i;
+          break;
+        }
+      }
+    }
+
+    return `Carretinha ${nextNum}`;
+  };
+
   const getOrCreateActiveTrailer = async (currentList: any[]): Promise<string> => {
     const activeTrailerGroups: Record<string, any[]> = {};
     currentList.forEach(b => {
@@ -4011,31 +4113,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
       return availableTrailer;
     }
 
-    let nextNum = 1;
-    try {
-      const r = await apiCall({ action: 'getNextTrailerNumber' });
-      if (r.success) {
-        nextNum = r.next;
-      }
-    } catch (err) {
-      console.error('Erro ao buscar próximo número de carretinha:', err);
-      const todayStr = localDateStr();
-      const lastDate = localStorage.getItem('trailer_seq_date');
-      let lastUsed = 0;
-      if (lastDate === todayStr) {
-        lastUsed = parseInt(localStorage.getItem('trailer_seq_last') || '0');
-      } else {
-        localStorage.setItem('trailer_seq_date', todayStr);
-      }
-      nextNum = (lastUsed % 5) + 1;
-      localStorage.setItem('trailer_seq_last', nextNum.toString());
-    }
-
-    if (nextNum < 1 || nextNum > 5) {
-      nextNum = 1;
-    }
-
-    return `Carretinha ${nextNum}`;
+    return await getNextTrailerName(currentList);
   };
 
   const handleFinalizeMechanicsRepair = async (treatment: string) => {
@@ -4644,11 +4722,22 @@ const MainScreen: React.FC<MainScreenProps> = ({
         );
         const bypassSnap = await getDocs(qBypass);
         if (!bypassSnap.empty) {
-          hasBypass = true;
-          // Propaga localmente para que o modal e verificações recebam o estado correto
-          bikesRaw.forEach(b => {
-            b.bypassAuthorized = true;
+          const currentBikeIds = bikesRaw.map(b => String(b.patrimonio).trim());
+          const matchingBypassDoc = bypassSnap.docs.find(docSnap => {
+            const data = docSnap.data();
+            const bypassBikes = (data.bikes || []).map((id: any) => String(id).trim());
+            // Verifica se a lista de bikes no bypass aprovado bate com a lista de bikes atual da carretinha
+            return currentBikeIds.length === bypassBikes.length && 
+                   currentBikeIds.every(id => bypassBikes.includes(id));
           });
+
+          if (matchingBypassDoc) {
+            hasBypass = true;
+            // Propaga localmente para que o modal e verificações recebam o estado correto
+            bikesRaw.forEach(b => {
+              b.bypassAuthorized = true;
+            });
+          }
         }
       } catch (e) {
         console.warn('[Bypass Double-Check] Falha ao verificar aprovação direta:', e);
@@ -8505,22 +8594,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
                                 <button onClick={async () => {
                                   setIsLoading(true);
                                   try {
-                                    const r = await apiCall({ action: 'getNextTrailerNumber' });
-                                    const next = r.success ? r.next : 1;
-                                    handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${next}`);
+                                    const nextName = await getNextTrailerName(mechanicsList);
+                                    handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), nextName);
                                   } catch (err: any) {
                                     console.error('Erro ao calcular sequência de carretinha:', err);
-                                    const todayStr = localDateStr();
-                                    const lastDate = localStorage.getItem('trailer_seq_date');
-                                    let lastUsed = 0;
-                                    if (lastDate === todayStr) {
-                                      lastUsed = parseInt(localStorage.getItem('trailer_seq_last') || '0');
-                                    } else {
-                                      localStorage.setItem('trailer_seq_date', todayStr);
-                                    }
-                                    const nextLocal = (lastUsed % 5) + 1;
-                                    localStorage.setItem('trailer_seq_last', nextLocal.toString());
-                                    handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), `Carretinha ${nextLocal}`);
+                                    handleOrganizeTrailer((bikes as any[]).map(b => b.patrimonio), 'Carretinha 1');
                                   } finally {
                                     setIsLoading(false);
                                   }
@@ -11098,29 +11176,31 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 ) : (
                   <div className="space-y-1 flex-1">
                     {/* Cabeçalho da Tabela */}
-                    <div className="flex items-center gap-1.5 px-3 py-1 bg-gray-100 rounded-lg text-[9px] font-black text-gray-400 uppercase tracking-wider mb-1 flex-shrink-0">
-                      <span className="w-12 flex-shrink-0">Patrimônio</span>
-                      <span className="w-20 flex-shrink-0">Mecânico</span>
-                      <span className="flex-1 min-w-0">Reparo Realizado</span>
-                      <span className="w-22 flex-shrink-0 text-center">Entrada</span>
+                    <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-gray-100 rounded-lg text-[9px] font-black text-gray-400 uppercase tracking-wider mb-1 flex-shrink-0">
+                      <span className="w-16 flex-shrink-0">Patrimônio</span>
+                      <span className="w-24 flex-shrink-0">Mecânico</span>
+                      <span className="w-24 flex-shrink-0 text-center">Entrada</span>
                       <span className="w-4 flex-shrink-0"></span>
-                      <span className="w-22 flex-shrink-0 text-center">Saída</span>
+                      <span className="w-24 flex-shrink-0 text-center">Saída</span>
                     </div>
 
                     <div className="space-y-1 overflow-y-auto">
                       {filtered.map((r, i) => (
-                        <div key={r.id || i} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-100 rounded-lg text-[10px] hover:bg-gray-50/50">
-                          <span className="font-black text-gray-800 font-mono w-12 flex-shrink-0">{r.bikeNumber}</span>
-                          <span className="text-blue-600 font-bold w-20 truncate flex-shrink-0" title={r.mecanico}>{r.mecanico}</span>
-                          <div className="flex-1 min-w-0 flex items-center gap-1">
-                            <span className="text-gray-600 truncate" title={r.treatment || '—'}>{r.treatment || '—'}</span>
+                        <div
+                          key={r.id || i}
+                          onClick={() => setSelectedRepair(r)}
+                          className="flex items-center justify-between gap-2 px-3 py-2 bg-white border border-gray-100 rounded-lg text-[10px] hover:bg-gray-50 hover:border-gray-300 hover:shadow-sm cursor-pointer transition-all duration-150 active:scale-[0.99]"
+                        >
+                          <span className="font-black text-gray-800 font-mono w-16 flex-shrink-0 flex items-center gap-1">
+                            #{r.bikeNumber}
                             {r.trailerName && (
-                              <span className="text-purple-600 font-bold flex-shrink-0 bg-purple-50 px-1 rounded text-[8px] whitespace-nowrap">{r.trailerName}</span>
+                              <span className="text-purple-600 font-bold bg-purple-50 px-1 rounded text-[7px] whitespace-nowrap">C</span>
                             )}
-                          </div>
-                          <span className="text-orange-500 font-mono w-22 flex-shrink-0 text-center whitespace-nowrap">{fmt(r.dataEntrada)}</span>
-                          <span className="text-gray-300 w-4 flex-shrink-0 text-center flex-shrink-0">→</span>
-                          <span className="text-green-600 font-mono w-22 flex-shrink-0 text-center whitespace-nowrap">{fmt(r.dataSaida)}</span>
+                          </span>
+                          <span className="text-blue-600 font-bold w-24 truncate flex-shrink-0" title={r.mecanico}>{r.mecanico}</span>
+                          <span className="text-orange-500 font-mono w-24 flex-shrink-0 text-center whitespace-nowrap">{fmt(r.dataEntrada)}</span>
+                          <span className="text-gray-300 w-4 flex-shrink-0 text-center">→</span>
+                          <span className="text-green-600 font-mono w-24 flex-shrink-0 text-center whitespace-nowrap">{fmt(r.dataSaida)}</span>
                         </div>
                       ))}
                     </div>
@@ -11137,6 +11217,71 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 </button>
               </div>
             </div>
+
+            {/* Caixa/Modal com Detalhes do Reparo */}
+            {selectedRepair && (
+              <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 p-4 animate-fade-in" onClick={() => setSelectedRepair(null)}>
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden border border-gray-100 text-left" onClick={e => e.stopPropagation()}>
+                  {/* Header */}
+                  <div className="bg-gray-950 p-4 text-white flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Wrench className="w-5 h-5 text-orange-500" />
+                      <div>
+                        <h3 className="text-sm font-black uppercase tracking-wider">Serviço Detalhado</h3>
+                        <p className="text-[10px] text-gray-400">Patrimônio #{selectedRepair.bikeNumber}</p>
+                      </div>
+                    </div>
+                    <button onClick={() => setSelectedRepair(null)} className="p-1 hover:bg-white/25 rounded-full transition-colors">
+                      <XIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Content */}
+                  <div className="p-4 space-y-4">
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div>
+                        <span className="text-[9px] font-bold text-gray-400 uppercase block mb-0.5">Mecânico</span>
+                        <span className="font-extrabold text-gray-800 text-sm">{selectedRepair.mecanico}</span>
+                      </div>
+                      {selectedRepair.trailerName && (
+                        <div>
+                          <span className="text-[9px] font-bold text-gray-400 uppercase block mb-0.5">Carretinha</span>
+                          <span className="font-extrabold text-purple-700 text-sm bg-purple-50 px-1.5 py-0.5 rounded-md inline-block">{selectedRepair.trailerName}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="border-t border-gray-100 pt-3">
+                      <span className="text-[9px] font-bold text-gray-400 uppercase block mb-1">Reparo Realizado</span>
+                      <div className="bg-orange-50/50 border border-orange-100 rounded-xl p-3 text-gray-800 text-xs font-medium leading-relaxed shadow-sm">
+                        {selectedRepair.treatment || '—'}
+                      </div>
+                    </div>
+
+                    <div className="border-t border-gray-100 pt-3 grid grid-cols-2 gap-3 text-[10px] font-mono">
+                      <div>
+                        <span className="text-[9px] font-sans font-bold text-gray-400 uppercase block mb-0.5">Data de Entrada</span>
+                        <span className="text-orange-600 font-bold">{fmt(selectedRepair.dataEntrada)}</span>
+                      </div>
+                      <div>
+                        <span className="text-[9px] font-sans font-bold text-gray-400 uppercase block mb-0.5">Data de Saída</span>
+                        <span className="text-green-600 font-bold">{fmt(selectedRepair.dataSaida)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Footer */}
+                  <div className="p-3 bg-gray-50 border-t border-gray-100 flex justify-end">
+                    <button
+                      onClick={() => setSelectedRepair(null)}
+                      className="px-4 py-2 bg-gray-950 text-white text-xs font-black rounded-xl hover:bg-gray-800 active:scale-95 transition-all shadow-md shadow-gray-200"
+                    >
+                      Voltar ao Histórico
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}
