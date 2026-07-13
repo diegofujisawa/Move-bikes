@@ -2271,7 +2271,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     processManualInsert(bikePat, '', targetStatus);
   };
 
-  const processManualInsert = async (bikePat: string, mechanicName: string, targetStatus: string) => {
+  const processManualInsert = async (bikePatRaw: string, mechanicName: string, targetStatus: string) => {
+    const bikePat = String(bikePatRaw).trim().replace(/^0+/, '');
+    if (!bikePat) return;
+
     setIsBikeSearchLoading(true);
     try {
       let finalName = mechanicName || driverName;
@@ -2318,6 +2321,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
               bateria: currentBattery,
               ultimaAtualizacao: serverTimestamp()
             }, { merge: true }).catch(() => {});
+
+            // Sincroniza com o Google Sheets
+            try {
+              await apiCall({
+                action: 'insertBikeMechanics',
+                bikeNumber: bikePat,
+                mechanicName: finalName,
+                targetStatus
+              });
+            } catch (e) {
+              console.warn('[Sheets] insertBikeMechanics manual insert failed:', e);
+            }
           }
           
           setSuccessMessage(`Bike ${bikePat} movida para ${targetStatus}.`);
@@ -2325,6 +2340,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
           setSearchTerm('');
           setBikeSearchTerm('');
           setBikeSearchResult([]);
+          setError(null);
           return;
         }
         // Outros status — envia direto ao ADM como antes
@@ -2339,6 +2355,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setSuccessMessage(`Solicitação de alteração de status para bike ${bikePat} enviada ao ADM.`);
         setBikeSearchTerm('');
         setBikeSearchResult([]);
+        setError(null);
         return;
       }
 
@@ -2354,6 +2371,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
         refreshAll(true);
         setBikeSearchTerm('');
         setBikeSearchResult([]);
+        setError(null);
       } else {
         setError(res.error || 'Erro ao inserir bike.');
       }
@@ -3432,12 +3450,21 @@ const MainScreen: React.FC<MainScreenProps> = ({
       return;
     }
 
-    // ADM / perfil com acesso direto: move direto no Firebase
+    // ADM / perfil com acesso direto: move direto no Firebase e no Sheets
     try {
       await setDoc(doc(db, 'mechanics_flow', bikeId), {
         status: 'Aguardando Manutenção',
         ultimaAtualizacao: serverTimestamp()
       }, { merge: true });
+
+      await apiCall({
+        action: 'insertBikeMechanics',
+        bikeNumber: bikeId,
+        mechanicName: driverName,
+        targetStatus: 'Aguardando Manutenção'
+      }).catch(e => {
+        console.warn('[Sheets] insertBikeMechanics direct update failed:', e);
+      });
     } catch (err: any) {
       console.error('Erro ao mover para Aguardando Manutenção no Firebase:', err);
     }
@@ -4147,6 +4174,23 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (action.type === 'alterar_status_lote') {
         // Lote de bikes — confirma entrada na mecânica de todas de uma vez
         const bikes: string[] = action.bikes || [];
+        
+        // 1. Atualiza no Google Sheets em lote de alta performance
+        try {
+          const res = await apiCall({
+            action: 'insertBikeMechanics',
+            bikeNumbers: bikes,
+            targetStatus: 'Aguardando Manutenção',
+            mechanicName: action.mechanicName || action.userName || action.driverName || 'ADM'
+          });
+          if (!res.success) {
+            console.warn('[Sheets] update status in batch failed:', res.error);
+          }
+        } catch (e) {
+          console.warn('[Sheets] update status in batch failed:', e);
+        }
+
+        // 2. Atualiza no Firebase
         await Promise.all(bikes.map(async (bikeId) => {
           try {
             await setDoc(doc(db, 'mechanics_flow', bikeId), {
@@ -4217,6 +4261,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
             }, { merge: true });
           } catch (e) {
             console.warn('[Firebase] insertBikeMechanics flow update failed:', e);
+          }
+
+          // Sincroniza com o Google Sheets
+          try {
+            await apiCall({
+              action: 'insertBikeMechanics',
+              bikeNumber: action.bikeNumber,
+              mechanicName: action.mechanicName || '',
+              targetStatus: action.targetStatus
+            });
+          } catch (e) {
+            console.warn('[Sheets] insertBikeMechanics status_change failed:', e);
           }
         }
       } else if (action.type === 'trailer_validation') {
@@ -4655,6 +4711,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
     setTrailerQrModal(null);
     setIsLoading(true);
     const bikeIds = expectedBikes.map(b => b.patrimonio);
+
+    // v85.52: Marca requisições de bypass aprovadas antigas para esta carretinha como "used" para evitar reutilização posterior
+    try {
+      const qBypassToClean = query(
+        collection(db, 'pending_actions'),
+        where('type', '==', 'trailer_bypass_request'),
+        where('trailerName', '==', trailerName),
+        where('status', '==', 'approved')
+      );
+      const bypassSnapToClean = await getDocs(qBypassToClean);
+      if (!bypassSnapToClean.empty) {
+        await Promise.all(bypassSnapToClean.docs.map(docSnap => 
+          updateDoc(doc(db, 'pending_actions', docSnap.id), {
+            status: 'used',
+            usedAt: serverTimestamp()
+          })
+        ));
+      }
+    } catch (e) {
+      console.warn('[Bypass Cleanup] Erro ao limpar bypass usado:', e);
+    }
+
     // Protege e mantém status 'Reserva' para continuar exibindo na seção Reserva até aceite do motorista
     bikeIds.forEach(id => {
       protectMechanicBike(id, { trailerStatus: 'finalized' });
@@ -7727,7 +7805,39 @@ const MainScreen: React.FC<MainScreenProps> = ({
             </button>
           </div>
         )}
-        {successMessage && <div className="text-green-600 bg-green-100 p-3 rounded-md text-sm mb-4">{successMessage}</div>}
+         {successMessage && <div className="text-green-600 bg-green-100 p-3 rounded-md text-sm mb-4">{successMessage}</div>}
+
+        {/* BUSCA DE BIKE - RESULTADO OU INSERÇÃO MANUAL */}
+        {!isAdm && isMecanica && !searchedBike && searchTerm.trim() && !isSearching && (
+          <div className="mb-4 p-4 border border-dashed border-blue-200 rounded-lg bg-blue-50/50 flex flex-col items-center gap-3 animate-fade-in">
+            <div className="text-center">
+              <p className="text-sm font-semibold text-blue-800">
+                Inserir bike <span className="font-mono font-black text-blue-900 bg-blue-100 px-1.5 py-0.5 rounded">#{searchTerm.trim()}</span> manualmente no fluxo da mecânica?
+              </p>
+              <p className="text-xs text-blue-600 mt-1">
+                Se a bicicleta não foi encontrada na consulta, você ainda pode registrá-la selecionando um status abaixo:
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 w-full max-w-sm mt-1">
+              <button onClick={() => handleManualInsert(searchTerm.trim(), 'Alterar Status')}
+                className="px-3 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-[10px] font-black uppercase shadow-sm transition-all active:scale-95">
+                Alterar Status
+              </button>
+              <button onClick={() => handleManualInsert(searchTerm.trim(), 'Aguardando Manutenção')}
+                className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-[10px] font-black uppercase shadow-sm transition-all active:scale-95">
+                Aguardando Manutenção
+              </button>
+              <button onClick={() => handleManualInsert(searchTerm.trim(), 'Em Manutenção')}
+                className="px-3 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 text-[10px] font-black uppercase shadow-sm transition-all active:scale-95">
+                Manutenção
+              </button>
+              <button onClick={() => handleManualInsert(searchTerm.trim(), 'Reserva')}
+                className="px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-[10px] font-black uppercase shadow-sm transition-all active:scale-95">
+                Reserva
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* RESULTADO DA BUSCA */}
         {!isAdm && searchedBike && (
