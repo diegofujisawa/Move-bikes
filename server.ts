@@ -112,6 +112,7 @@ async function startServer() {
       const method = req.method;
       const headers: Record<string, string> = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Connection': 'close',
       };
 
       const init: RequestInit = {
@@ -125,9 +126,9 @@ async function startServer() {
         init.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
       }
 
-      // We use a generous timeout for the proxy
+      // We use a generous timeout of 120 seconds for the proxy to accommodate slow Apps Script responses
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
       init.signal = controller.signal;
 
       try {

@@ -121,7 +121,7 @@ async function fetchWithTimeout(
   resource: RequestInfo,
   options: RequestInit & { timeout?: number } = {}
 ): Promise<Response> {
-  const { timeout = 60000 } = options;
+  const { timeout = 120000 } = options;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
   try {
@@ -268,7 +268,7 @@ export const apiGetCall = async (
       credentials: credentialsMode,
       cache: 'no-store',
       redirect: 'follow',
-      timeout: customTimeout || 90000,
+      timeout: customTimeout || 120000,
     });
 
     if (!response.ok) {
@@ -355,7 +355,7 @@ export const apiCall = async (
       redirect: 'follow',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(enriched),
-      timeout: 90000,
+      timeout: 120000,
     });
 
     if (!response.ok) {
