@@ -461,7 +461,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const [activeTechnicaCategory, setActiveTechnicaCategory] = useState<string | null>(null);
   const [selectedMechanicFilter, setSelectedMechanicFilter] = useState<string>('Todos');
   const [selectedBatteryFilter, setSelectedBatteryFilter] = useState<'asc' | 'desc' | 'Todos'>('Todos');
-  const [mechanicSummaryPeriod, setMechanicSummaryPeriod] = useState<'diario'|'semanal'|'mensal'>('diario');
   const [productionDrillDown, setProductionDrillDown] = useState<{ mechanic: string; type: 'man' | 'res'; bikes: string[] } | null>(null);
   const [isMechanicHistoryOpen, setIsMechanicHistoryOpen] = useState(false);
   const [mechanicHistory, setMechanicHistory] = useState<any[]>([]);
@@ -596,10 +595,10 @@ const MainScreen: React.FC<MainScreenProps> = ({
     const activeStatuses = ['Alterar Status', 'Não encontrada', 'Aguardando Manutenção', 'Em Manutenção', 'Reserva', 'Aguardando Técnica', 'Em Técnica'];
     const validMechanicsStatuses = activeStatuses;
     
-    // Identifica as bikes que estão em validação de carretinha ou alteração de status em lote para ocultá-las da visualização ativa e evitar loopings
+    // Identifica as bikes que estão em validação de carretinha para ocultá-las da visualização ativa e evitar loopings
     const bikesInPendingActions = new Set(
       pendingActions
-        .filter(a => a.type === 'trailer_validation' || a.type === 'alterar_status_lote')
+        .filter(a => a.type === 'trailer_validation')
         .flatMap(a => a.bikes || [])
         .map(p => String(p).trim().replace(/^0+/, ''))
     );
@@ -2748,21 +2747,35 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
-  const fetchMechanicHistory = async () => {
+  const fetchMechanicHistory = async (filterDate?: string) => {
     setIsMechanicHistoryLoading(true);
     try {
-      // Busca reports mais recentes de Reparo (saída) e Mecânica (entrada) ordenados por data decrescente
       const { getDocs: _gd, query: _q, orderBy: _ob, collection: _col, limit: _lim, where: _w, Timestamp: _ts } = await import('firebase/firestore');
       
-      // Buscamos apenas os reports dos últimos 7 dias (limite de 300) para economizar drasticamente a quota de leitura do Firebase,
-      // evitando estourar o limite diário de 50.000 leituras, mantendo alto desempenho e agilidade.
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      const snapAll = await _gd(_q(
-        _col(db, 'reports'),
-        _w('timestamp', '>=', _ts.fromDate(sevenDaysAgo)),
-        _ob('timestamp', 'desc'),
-        _lim(300)
-      ));
+      const targetDate = filterDate !== undefined ? filterDate : mechanicHistoryFilter.date;
+      let snapAll;
+      
+      if (targetDate) {
+        // Se houver uma data de filtro, busca todos os registros desse dia específico
+        const startOfDay = new Date(targetDate + 'T00:00:00');
+        const endOfDay = new Date(targetDate + 'T23:59:59.999');
+        snapAll = await _gd(_q(
+          _col(db, 'reports'),
+          _w('timestamp', '>=', _ts.fromDate(startOfDay)),
+          _w('timestamp', '<=', _ts.fromDate(endOfDay)),
+          _ob('timestamp', 'desc'),
+          _lim(1000)
+        ));
+      } else {
+        // Se for "Tudo", buscamos os últimos 30 dias com um limite expandido de 1500 registros para abranger todo o histórico sem truncamento
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        snapAll = await _gd(_q(
+          _col(db, 'reports'),
+          _w('timestamp', '>=', _ts.fromDate(thirtyDaysAgo)),
+          _ob('timestamp', 'desc'),
+          _lim(1500)
+        ));
+      }
       
       const reparosDocs: any[] = [];
       const entradasDocs: any[] = [];
@@ -2831,7 +2844,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
       })
       .sort((a: any, b: any) => (b.dataSaida?.toMillis?.() || 0) - (a.dataSaida?.toMillis?.() || 0));
 
-      setMechanicHistory(records);
+      // Deduplica os registros para evitar duplicações no Histórico de Manutenções quando temos
+      // relatórios diferentes para a finalização do reparo e a finalização da carretinha.
+      // Filtramos combinando o número da bike e o timestamp da entrada (dataEntrada).
+      const uniqueRecordsMap = new Map<string, any>();
+      records.forEach(r => {
+        const entryTime = r.dataEntrada?.toMillis?.() || (r.dataEntrada?.toDate?.() ? r.dataEntrada.toDate().getTime() : (r.dataEntrada ? new Date(r.dataEntrada).getTime() : 0));
+        const key = `${r.bikeNumber}_${entryTime}`;
+        if (!uniqueRecordsMap.has(key)) {
+          uniqueRecordsMap.set(key, r);
+        } else {
+          const existing = uniqueRecordsMap.get(key);
+          const existingIsTrailer = String(existing.observacao || '').startsWith('Carretinha');
+          const currentIsTrailer = String(r.observacao || '').startsWith('Carretinha');
+          // Preferimos o registro que tem a tratativa do mecânico (não-trailer)
+          if (existingIsTrailer && !currentIsTrailer) {
+            uniqueRecordsMap.set(key, r);
+          }
+        }
+      });
+      const deduplicatedRecords = Array.from(uniqueRecordsMap.values());
+
+      setMechanicHistory(deduplicatedRecords);
     } catch (e) {
       console.error('fetchMechanicHistory:', e);
     } finally {
@@ -2839,20 +2873,35 @@ const MainScreen: React.FC<MainScreenProps> = ({
     }
   };
 
-  const fetchTechnicaHistory = async () => {
+  const fetchTechnicaHistory = async (filterDate?: string) => {
     setIsTechnicaHistoryLoading(true);
     try {
       const { getDocs: _gd, query: _q, orderBy: _ob, collection: _col, limit: _lim, where: _w, Timestamp: _ts } = await import('firebase/firestore');
       
-      // Buscamos apenas os reports dos últimos 7 dias (limite de 300) para economizar drasticamente a quota de leitura do Firebase,
-      // evitando estourar o limite diário de 50.000 leituras, mantendo alto desempenho e agilidade.
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      const snapAll = await _gd(_q(
-        _col(db, 'reports'),
-        _w('timestamp', '>=', _ts.fromDate(sevenDaysAgo)),
-        _ob('timestamp', 'desc'),
-        _lim(300)
-      ));
+      const targetDate = filterDate !== undefined ? filterDate : technicaHistoryFilter.date;
+      let snapAll;
+      
+      if (targetDate) {
+        // Se houver uma data de filtro, busca todos os registros desse dia específico
+        const startOfDay = new Date(targetDate + 'T00:00:00');
+        const endOfDay = new Date(targetDate + 'T23:59:59.999');
+        snapAll = await _gd(_q(
+          _col(db, 'reports'),
+          _w('timestamp', '>=', _ts.fromDate(startOfDay)),
+          _w('timestamp', '<=', _ts.fromDate(endOfDay)),
+          _ob('timestamp', 'desc'),
+          _lim(1000)
+        ));
+      } else {
+        // Se for "Tudo", buscamos os últimos 30 dias com um limite expandido de 1500 registros para garantir que registros antigos não sejam omitidos
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        snapAll = await _gd(_q(
+          _col(db, 'reports'),
+          _w('timestamp', '>=', _ts.fromDate(thirtyDaysAgo)),
+          _ob('timestamp', 'desc'),
+          _lim(1500)
+        ));
+      }
       
       const tecDocs: any[] = [];
       const mecDocs: any[] = [];
@@ -4277,6 +4326,26 @@ const MainScreen: React.FC<MainScreenProps> = ({
             }, { merge: true });
           } catch (e) {
             console.warn(`[Firebase] update status to Aguardando Manutenção failed for ${bikeId}:`, e);
+          }
+        }));
+
+        // 3. Gera histórico na movimentação da bike (coleção reports)
+        await Promise.all(bikes.map(async (bikeId) => {
+          try {
+            await addDoc(collection(db, 'reports'), {
+              patrimonio: bikeId,
+              status: 'Aguardando Manutenção',
+              motorista: action.mechanicName || 'Mecânico',
+              observacao: `Alteração de status confirmada por ADM: ${driverName}`,
+              timestamp: serverTimestamp(),
+              type: 'Mecânica',
+              statusSistema: '',
+              bateria: '',
+              trava: '',
+              localidade: ''
+            });
+          } catch (e) {
+            console.warn(`[Firebase] reports write failed for bike ${bikeId} in handleApproveAction:`, e);
           }
         }));
       } else if (action.type === 'status_change') {
@@ -7675,16 +7744,6 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
         {/* RESUMO DE PRODUÇÃO — acima da busca */}
         {(isMecanica || isTecnica) && (() => {
-          const periods = [
-            { key: 'diario' as const, label: 'Dia' },
-            { key: 'semanal' as const, label: 'Semana' },
-            { key: 'mensal' as const, label: 'Mês' },
-          ];
-          const now = new Date();
-          const cutoff = new Date();
-          if (mechanicSummaryPeriod === 'semanal') { cutoff.setDate(now.getDate() - 7); cutoff.setHours(0,0,0,0); }
-          else if (mechanicSummaryPeriod === 'mensal') { cutoff.setMonth(now.getMonth() - 1); cutoff.setHours(0,0,0,0); }
-          else { cutoff.setHours(0,0,0,0); }
           const sourceList = isTecnica ? technicaList : mechanicsList;
           const activeStatuses = isTecnica
             ? ['Em Técnica', 'Aguardando Técnica']
@@ -7731,27 +7790,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
               byMechanic[matchedKey] = { manutencao: 0, reserva: 0, bikesMan: [], bikesRes: [] };
             }
             
-            const targetDateRaw = isMainStatus ? b.dataEntrada : (b.dataSaida || b.dataEntrada);
-            let entryDate = null;
-            if (targetDateRaw) {
-              if (targetDateRaw.toDate) {
-                entryDate = targetDateRaw.toDate();
-              } else {
-                const parsed = new Date(targetDateRaw);
-                if (!isNaN(parsed.getTime())) {
-                  entryDate = parsed;
-                }
-              }
-            }
-            
-            if (!entryDate || entryDate >= cutoff) {
-              if (isMainStatus) { 
-                byMechanic[matchedKey].manutencao++; 
-                byMechanic[matchedKey].bikesMan.push(b.patrimonio); 
-              } else { 
-                byMechanic[matchedKey].reserva++; 
-                byMechanic[matchedKey].bikesRes.push(b.patrimonio); 
-              }
+            if (isMainStatus) { 
+              byMechanic[matchedKey].manutencao++; 
+              byMechanic[matchedKey].bikesMan.push(b.patrimonio); 
+            } else { 
+              byMechanic[matchedKey].reserva++; 
+              byMechanic[matchedKey].bikesRes.push(b.patrimonio); 
             }
           });
           const mechs = Object.entries(byMechanic);
@@ -7763,22 +7807,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
                   <div className="p-1.5 bg-amber-50 rounded-lg text-amber-600">
                     <TrendingUp className="w-4 h-4" />
                   </div>
-                  <span className="text-xs font-black text-gray-700 uppercase tracking-wider">Produção de {isTecnica ? 'Técnicos' : 'Mecânicos'}</span>
-                </div>
-                <div className="flex bg-gray-100 rounded-xl p-0.5 gap-0.5 shadow-inner">
-                  {periods.map(p => (
-                    <button key={p.key} onClick={() => setMechanicSummaryPeriod(p.key)}
-                      className={`text-[9px] font-black uppercase px-2.5 py-1 rounded-lg transition-all duration-200 ${
-                        mechanicSummaryPeriod === p.key 
-                          ? 'bg-white text-gray-800 shadow-sm font-black' 
-                          : 'text-gray-400 hover:text-gray-600'
-                      }`}
-                    >{p.label}</button>
-                  ))}
+                  <span className="text-xs font-black text-gray-700 uppercase tracking-wider">Bikes por {isTecnica ? 'Técnico' : 'Mecânico'} (Tempo Real)</span>
                 </div>
               </div>
               {mechs.length === 0 ? (
-                <p className="text-xs text-gray-400 italic text-center py-4">Nenhum dado registrado para o período</p>
+                <p className="text-xs text-gray-400 italic text-center py-4">Nenhum mecânico com bike vinculada</p>
               ) : (
                 <div className="space-y-2.5">
                   {mechs.map(([name, counts]) => (
@@ -8123,7 +8156,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
             </button>
             {/* Ícone Histórico */}
             <button
-              onClick={() => { setIsMechanicHistoryOpen(true); fetchMechanicHistory(); }}
+              onClick={() => {
+                setMechanicHistoryFilter({ mechanic: 'Todos', date: '' });
+                setIsMechanicHistoryOpen(true);
+                fetchMechanicHistory('');
+              }}
               className="flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 bg-gray-50 border-gray-200 hover:bg-gray-100"
             >
               <div className="p-1.5 rounded-full mb-1 bg-gray-700 text-white">
@@ -8181,7 +8218,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 {(() => {
                   const bikesInPendingActions = new Set(
                     pendingActions
-                      .filter(a => a.type === 'trailer_validation' || a.type === 'alterar_status_lote')
+                      .filter(a => a.type === 'trailer_validation')
                       .flatMap(a => a.bikes || [])
                       .map(p => String(p).trim().replace(/^0+/, ''))
                   );
@@ -8728,7 +8765,11 @@ const MainScreen: React.FC<MainScreenProps> = ({
             </button>
             {/* Histórico Técnica */}
             <button
-              onClick={() => { setIsTechnicaHistoryOpen(true); fetchTechnicaHistory(); }}
+              onClick={() => {
+                setTechnicaHistoryFilter({ technician: 'Todos', date: '' });
+                setIsTechnicaHistoryOpen(true);
+                fetchTechnicaHistory('');
+              }}
               className="flex flex-col items-center justify-center p-2 border rounded-xl shadow-sm transition-all active:scale-95 bg-gray-50 border-gray-200 hover:bg-gray-100"
             >
               <div className="p-1.5 rounded-full mb-1 bg-gray-700 text-white">
@@ -11035,14 +11076,25 @@ const MainScreen: React.FC<MainScreenProps> = ({
                 <div className="flex-1 min-w-[130px]">
                   <label className="text-[9px] font-black text-gray-400 uppercase block mb-1">Data de Saída</label>
                   <input type="date" value={technicaHistoryFilter.date} max={localDateStr()}
-                    onChange={e => setTechnicaHistoryFilter(prev => ({ ...prev, date: e.target.value }))}
+                    onChange={e => {
+                      const newDate = e.target.value;
+                      setTechnicaHistoryFilter(prev => ({ ...prev, date: newDate }));
+                      fetchTechnicaHistory(newDate);
+                    }}
                     className="w-full text-xs p-1.5 border rounded-lg bg-white font-bold text-gray-700 outline-none"
                   />
                 </div>
                 <div className="flex items-end gap-1">
-                  <button onClick={() => setTechnicaHistoryFilter({ technician: 'Todos', date: localDateStr() })}
+                  <button onClick={() => {
+                    const today = localDateStr();
+                    setTechnicaHistoryFilter({ technician: 'Todos', date: today });
+                    fetchTechnicaHistory(today);
+                  }}
                     className="px-2 py-1.5 bg-gray-200 text-gray-600 text-[10px] font-bold rounded-lg hover:bg-gray-300 whitespace-nowrap">Hoje</button>
-                  <button onClick={() => setTechnicaHistoryFilter(prev => ({ ...prev, date: '' }))}
+                  <button onClick={() => {
+                    setTechnicaHistoryFilter(prev => ({ ...prev, date: '' }));
+                    fetchTechnicaHistory('');
+                  }}
                     className="px-2 py-1.5 bg-gray-100 text-gray-500 text-[10px] font-bold rounded-lg hover:bg-gray-200 whitespace-nowrap">Tudo</button>
                 </div>
               </div>
@@ -11151,17 +11203,28 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     type="date"
                     value={mechanicHistoryFilter.date}
                     max={localDateStr()}
-                    onChange={e => setMechanicHistoryFilter(prev => ({ ...prev, date: e.target.value }))}
+                    onChange={e => {
+                      const newDate = e.target.value;
+                      setMechanicHistoryFilter(prev => ({ ...prev, date: newDate }));
+                      fetchMechanicHistory(newDate);
+                    }}
                     className="w-full text-xs p-1.5 border rounded-lg bg-white font-bold text-gray-700 outline-none"
                   />
                 </div>
                 <div className="flex items-end gap-1">
                   <button
-                    onClick={() => setMechanicHistoryFilter({ mechanic: 'Todos', date: localDateStr() })}
+                    onClick={() => {
+                      const today = localDateStr();
+                      setMechanicHistoryFilter({ mechanic: 'Todos', date: today });
+                      fetchMechanicHistory(today);
+                    }}
                     className="px-2 py-1.5 bg-gray-200 text-gray-600 text-[10px] font-bold rounded-lg hover:bg-gray-300 whitespace-nowrap"
                   >Hoje</button>
                   <button
-                    onClick={() => setMechanicHistoryFilter(prev => ({ ...prev, date: '' }))}
+                    onClick={() => {
+                      setMechanicHistoryFilter(prev => ({ ...prev, date: '' }));
+                      fetchMechanicHistory('');
+                    }}
                     className="px-2 py-1.5 bg-gray-100 text-gray-500 text-[10px] font-bold rounded-lg hover:bg-gray-200 whitespace-nowrap"
                   >Tudo</button>
                 </div>
@@ -11192,7 +11255,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                           className="flex items-center justify-between gap-2 px-3 py-2 bg-white border border-gray-100 rounded-lg text-[10px] hover:bg-gray-50 hover:border-gray-300 hover:shadow-sm cursor-pointer transition-all duration-150 active:scale-[0.99]"
                         >
                           <span className="font-black text-gray-800 font-mono w-16 flex-shrink-0 flex items-center gap-1">
-                            #{r.bikeNumber}
+                            {r.bikeNumber}
                             {r.trailerName && (
                               <span className="text-purple-600 font-bold bg-purple-50 px-1 rounded text-[7px] whitespace-nowrap">C</span>
                             )}
