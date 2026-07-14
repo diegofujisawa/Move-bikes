@@ -525,6 +525,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
   const searchCacheRef = useRef<Record<string, BicycleData>>({});
   const searchResultRef = useRef<HTMLDivElement>(null);
   const processingBikesRef = useRef<Set<string>>(new Set());
+  const deletedDocsRef = useRef<Set<string>>(new Set());
 
   const markBikeHandled = useCallback((bikeNumber: string) => {
     const now = Date.now();
@@ -659,16 +660,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
         const isServerNewer = (statusOrder[normSStatus] || 0) > (statusOrder[normFbStatus] || 0);
 
         if (isServerNewer) {
-          // Limpeza assíncrona em background do documento stale no Firestore
-          (async () => {
-            try {
-              const { deleteDoc: _deleteDoc, doc: _doc } = await import('firebase/firestore');
-              await _deleteDoc(_doc(db, 'mechanics_flow', pat));
-              await _deleteDoc(_doc(db, 'technical_flow', pat));
-            } catch (err) {
-              console.warn('[Firebase] Cleanup of stale mechanics_flow/technical_flow document failed for', pat, err);
-            }
-          })();
+          const deleteKey = `server_newer_${pat}`;
+          if (!deletedDocsRef.current.has(deleteKey)) {
+            deletedDocsRef.current.add(deleteKey);
+            // Limpeza assíncrona em background do documento stale no Firestore
+            (async () => {
+              try {
+                const { deleteDoc: _deleteDoc, doc: _doc } = await import('firebase/firestore');
+                await _deleteDoc(_doc(db, 'mechanics_flow', pat));
+                await _deleteDoc(_doc(db, 'technical_flow', pat));
+              } catch (err) {
+                console.warn('[Firebase] Cleanup of stale mechanics_flow/technical_flow document failed for', pat, err);
+              }
+            })();
+          }
         }
 
         // Prioridade 1: Se o status do Firebase for ATIVO, ele prevalece sobre o servidor (exceto para o caso mestre ou se o servidor for mais atual).
@@ -704,16 +709,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
       const isLiveSystemExit = normLiveStatus && (statusOrder[normLiveStatus] || 0) >= 5;
 
       if (isLiveSystemExit) {
-        // Limpeza assíncrona em background do documento stale no Firestore
-        (async () => {
-          try {
-            const { deleteDoc: _deleteDoc, doc: _doc } = await import('firebase/firestore');
-            await _deleteDoc(_doc(db, 'mechanics_flow', pat));
-            await _deleteDoc(_doc(db, 'technical_flow', pat));
-          } catch (err) {
-            console.warn('[Firebase] Cleanup of exited fbBike document failed for', pat, err);
-          }
-        })();
+        const deleteKey = `live_exit_${pat}`;
+        if (!deletedDocsRef.current.has(deleteKey)) {
+          deletedDocsRef.current.add(deleteKey);
+          // Limpeza assíncrona em background do documento stale no Firestore
+          (async () => {
+            try {
+              const { deleteDoc: _deleteDoc, doc: _doc } = await import('firebase/firestore');
+              await _deleteDoc(_doc(db, 'mechanics_flow', pat));
+              await _deleteDoc(_doc(db, 'technical_flow', pat));
+            } catch (err) {
+              console.warn('[Firebase] Cleanup of exited fbBike document failed for', pat, err);
+            }
+          })();
+        }
         return; // Pula essa bike! Não adiciona à lista
       }
 
@@ -4433,13 +4442,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
           handleFirestoreError(e, OperationType.WRITE, `bikes/${action.bikes.join(',')}`);
         }
 
-        const res = await apiCall({ action: 'organizeTrailer', bikeNumbers: action.bikes, trailerName: action.trailerName }, 1, true);
-        if (!res.success) throw new Error(res.error || 'Erro ao aprovar carretinha.');
-
-        // v85.45: Auto-finaliza no Sheets também ao aprovar ação da carretinha do mecânico para mudar status para Remanejada
-        await apiCall({ action: 'finalizeTrailer', trailerName: action.trailerName }).catch(e => {
-          console.warn('Erro ao rodar finalizeTrailer ao aprovar carretinha:', e);
-        });
+        // Sincronização robusta com Google Sheets (não-bloqueante se falhar ou demorar)
+        try {
+          const res = await apiCall({ action: 'organizeTrailer', bikeNumbers: action.bikes, trailerName: action.trailerName }, 1, true);
+          if (!res.success) {
+            console.warn('[Sheets] organizeTrailer failed:', res.error);
+          } else {
+            // v85.45: Auto-finaliza no Sheets também ao aprovar ação da carretinha do mecânico para mudar status para Remanejada
+            await apiCall({ action: 'finalizeTrailer', trailerName: action.trailerName }).catch(e => {
+              console.warn('Erro ao rodar finalizeTrailer ao aprovar carretinha:', e);
+            });
+          }
+        } catch (e) {
+          console.warn('[Sheets] organizeTrailer/finalizeTrailer integration failed:', e);
+        }
 
         // v85.30: Para carretinhas, não remove da lista de pendentes até ser enviada para o motorista.
         // Apenas marca como ativada para exibição no card.
@@ -4526,14 +4542,18 @@ const MainScreen: React.FC<MainScreenProps> = ({
         }, { merge: true })
       ));
 
-      // 2. Cria a notificação para o motorista
-      await apiCall({
-        action: 'createRequest', 
-        patrimonio: bikes.join(', '),
-        ocorrencia: `[CARRETINHA] ${trailerName}`,
-        local: 'Atribuído via ADM', 
-        recipient: targetDriverName
-      }, 1, true);
+      // 2. Cria a notificação para o motorista (não-bloqueante se falhar ou demorar)
+      try {
+        await apiCall({
+          action: 'createRequest', 
+          patrimonio: bikes.join(', '),
+          ocorrencia: `[CARRETINHA] ${trailerName}`,
+          local: 'Atribuído via ADM', 
+          recipient: targetDriverName
+        }, 1, true);
+      } catch (e) {
+        console.warn('[Sheets] createRequest failed in handleAssignTrailerToDriver:', e);
+      }
 
       // 3. Aprova a ação pendente (se não for manual)
       if (!action.id.startsWith('manual_assign_')) {
