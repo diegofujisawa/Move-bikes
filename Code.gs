@@ -976,7 +976,7 @@ function getFinalizedBikesToday(limit = 1000, customBlockers = null) {
     const driver = String(row[4] || '').trim().toLowerCase();
     if (!pat) return;
     const tsDate = ts instanceof Date ? ts : parseTimestamp(ts);
-    if (tsDate && (Math.abs(now - tsDate) / 60000 < 60) && blockers.some(s => st.includes(s))) {
+    if (tsDate && (Math.abs(now - tsDate) / 60000 < 1440) && blockers.some(s => st.includes(s))) {
       finalized.add(pat);
       finalized.add(String(parseFloat(pat)));
       if (driver) {

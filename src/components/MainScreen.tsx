@@ -5921,8 +5921,27 @@ const MainScreen: React.FC<MainScreenProps> = ({
         setPendingRequests(pendingOnly);
       }
       if (d.driverState) { 
-        setRouteBikes(d.driverState.routeBikes || []); 
-        setCollectedBikes(d.driverState.collectedBikes || []); 
+        const sheetsRoute = d.driverState.routeBikes || [];
+        const sheetsCollected = d.driverState.collectedBikes || [];
+
+        // Filtra bikes protegidas por grace period para evitar que voltem ao roteiro/posse no startup
+        const PROTECTION_WINDOW = 300000; // 5 minutos
+        const now = Date.now();
+        const reconciledRoute = sheetsRoute.filter((b: string) => {
+          const bikeId = String(b).trim();
+          const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
+          if (lastHandledAt && (now - lastHandledAt < PROTECTION_WINDOW)) return false;
+          return true;
+        });
+        const reconciledCollected = sheetsCollected.filter((b: string) => {
+          const bikeId = String(b).trim();
+          const lastHandledAt = recentlyHandledBikesRef.current.get(bikeId);
+          if (lastHandledAt && (now - lastHandledAt < PROTECTION_WINDOW)) return false;
+          return true;
+        });
+
+        setRouteBikes(reconciledRoute); 
+        setCollectedBikes(reconciledCollected); 
       }
       if (d.bikeDetails) {
         const details = d.bikeDetails;

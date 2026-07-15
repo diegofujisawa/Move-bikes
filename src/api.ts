@@ -140,6 +140,9 @@ function parseJsonResponse(text: string): any {
   } catch {
     console.error('[API] Falha ao parsear JSON. Conteúdo retornado:', text.slice(0, 1000));
     const lowerText = text.toLowerCase();
+    if (lowerText.includes('starting server') || lowerText.includes('<title>starting server...</title>')) {
+      throw new Error('__SERVER_STARTING__');
+    }
     if (
       lowerText.includes('service invoked too many times') ||
       lowerText.includes('too many simultaneous invocations') ||
@@ -295,7 +298,7 @@ export const apiGetCall = async (
     return result;
 
   } catch (err: any) {
-    if (retries > 0 && isRetryableNetworkError(err)) {
+    if (retries > 0 && (isRetryableNetworkError(err) || err.message === '__SERVER_STARTING__')) {
       const backoff = calcBackoff(attempt);
       console.warn(`[GET] Tentando novamente (${retries} restantes) em ${Math.round(backoff)}ms...`);
       await delay(backoff);
@@ -368,6 +371,15 @@ export const apiCall = async (
     try {
       result = parseJsonResponse(await response.text());
     } catch (parseErr: any) {
+      if (parseErr.message === '__SERVER_STARTING__') {
+        if (retries > 0) {
+          const backoff = calcBackoff(attempt);
+          if (!silent) console.warn(`[API] Servidor iniciando. Tentativa ${attempt + 1}. Retry em ${Math.round(backoff)}ms...`);
+          await delay(backoff);
+          return apiCall({ ...payload, idempotencyKey }, retries - 1, silent);
+        }
+        throw new Error('O servidor está iniciando. Aguarde alguns segundos e atualize a página.');
+      }
       if (parseErr.message === '__SERVER_BUSY__') {
         if (retries > 0) {
           const backoff = calcBackoff(attempt);
@@ -430,14 +442,14 @@ export const apiCall = async (
       }
     }
 
-    if (retries > 0 && isRetryableNetworkError(err)) {
+    if (retries > 0 && (isRetryableNetworkError(err) || err.message === '__SERVER_STARTING__')) {
       const backoff = calcBackoff(attempt);
       if (isReadAction) {
-        if (!silent) console.warn(`[API][READ] Retry por falha de rede (${retries} restantes) em ${Math.round(backoff)}ms...`);
+        if (!silent) console.warn(`[API][READ] Retry por falha de rede/inicialização (${retries} restantes) em ${Math.round(backoff)}ms...`);
         await delay(backoff);
         return apiCall(payload, retries - 1, silent);
       } else {
-        if (!silent) console.warn(`[API][WRITE] Retry com idempotencyKey (${retries} restantes) em ${Math.round(backoff)}ms...`);
+        if (!silent) console.warn(`[API][WRITE] Retry com idempotencyKey por falha de rede/inicialização (${retries} restantes) em ${Math.round(backoff)}ms...`);
         await delay(backoff);
         return apiCall({ ...payload, idempotencyKey }, retries - 1, silent);
       }
