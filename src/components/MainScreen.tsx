@@ -4883,7 +4883,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const executeTrailerFinalization = async () => {
     if (!trailerQrModal) return;
-    const { trailerName, expectedBikes, confirmedBikes } = trailerQrModal;
+    const { trailerName, expectedBikes, confirmedBikes, isBypassAuthorized } = trailerQrModal;
     if (confirmedBikes.size < expectedBikes.length) return;
     await stopTrailerScanner();
     setTrailerQrModal(null);
@@ -5852,24 +5852,20 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   useEffect(() => {
     if (isMecanica && activeMechanicCategory === 'Reserva') {
-      const fetchTrailersHistory = async () => {
-        try {
-          const today = localDateStr();
-          const { getDocs: _gd, query: _q, where: _w, collection: _col } = await import('firebase/firestore');
-          const q = _q(_col(db, 'trailers_history'), _w('date', '==', today));
-          const snap = await _gd(q);
-          const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-          list.sort((a: any, b: any) => {
-            const tA = a.timestamp?.toMillis ? a.timestamp.toMillis() : (a.timestamp instanceof Date ? a.timestamp.getTime() : (typeof a.timestamp === 'number' ? a.timestamp : 0));
-            const tB = b.timestamp?.toMillis ? b.timestamp.toMillis() : (b.timestamp instanceof Date ? b.timestamp.getTime() : (typeof b.timestamp === 'number' ? b.timestamp : 0));
-            return tB - tA;
-          });
-          setTrailersHistory(list);
-        } catch (err) {
-          console.error('Erro ao buscar histórico de carretinhas:', err);
-        }
-      };
-      fetchTrailersHistory();
+      const today = localDateStr();
+      const q = query(collection(db, 'trailers_history'), where('date', '==', today));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        list.sort((a: any, b: any) => {
+          const tA = a.timestamp?.toMillis ? a.timestamp.toMillis() : (a.timestamp instanceof Date ? a.timestamp.getTime() : (typeof a.timestamp === 'number' ? a.timestamp : 0));
+          const tB = b.timestamp?.toMillis ? b.timestamp.toMillis() : (b.timestamp instanceof Date ? b.timestamp.getTime() : (typeof b.timestamp === 'number' ? b.timestamp : 0));
+          return tB - tA;
+        });
+        setTrailersHistory(list);
+      }, (err) => {
+        console.error('Erro ao buscar histórico de carretinhas:', err);
+      });
+      return () => unsubscribe();
     }
   }, [isMecanica, activeMechanicCategory]);
 
