@@ -4678,12 +4678,12 @@ const MainScreen: React.FC<MainScreenProps> = ({
       if (prev.confirmedBikes.has(found.patrimonio)) {
         return { ...prev, lastError: null, lastScanned: `${bikeId} já confirmada ✓`, batteryFailed: null };
       }
-      // Valida bateria ≥ {trailerBatteryLimit}%
+      // Valida bateria ≥ {trailerBatteryLimit}% (ignora se bypass autorizado)
       const bateriaVal = found.bateria !== undefined ? Number(found.bateria) : undefined;
       const bateriaPct = bateriaVal !== undefined
         ? (bateriaVal <= 1 && bateriaVal > 0 ? Math.round(bateriaVal * 100) : Math.round(bateriaVal))
         : undefined;
-      if (bateriaPct !== undefined && bateriaPct < trailerBatteryLimit) {
+      if (!prev.isBypassAuthorized && bateriaPct !== undefined && bateriaPct < trailerBatteryLimit) {
         return {
           ...prev,
           lastError: null,
@@ -4691,8 +4691,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
           batteryFailed: found.patrimonio,
         };
       }
-      // Valida comunicação — última info deve ser dentro de 5 minutos
-      if (found.ultimaInfo) {
+      // Valida comunicação — última info deve ser dentro de 5 minutos (ignora se bypass autorizado)
+      if (!prev.isBypassAuthorized && found.ultimaInfo) {
         const lastInfoDate = (() => {
           const s = String(found.ultimaInfo).trim();
           if (s.includes('/')) {
@@ -4883,8 +4883,8 @@ const MainScreen: React.FC<MainScreenProps> = ({
 
   const executeTrailerFinalization = async () => {
     if (!trailerQrModal) return;
-    const { trailerName, expectedBikes, confirmedBikes, isBypassAuthorized } = trailerQrModal;
-    if (!isBypassAuthorized && confirmedBikes.size < expectedBikes.length) return;
+    const { trailerName, expectedBikes, confirmedBikes } = trailerQrModal;
+    if (confirmedBikes.size < expectedBikes.length) return;
     await stopTrailerScanner();
     setTrailerQrModal(null);
     setIsLoading(true);
@@ -6963,7 +6963,7 @@ const MainScreen: React.FC<MainScreenProps> = ({
                     Cancelar
                   </button>
                   <button onClick={executeTrailerFinalization}
-                    disabled={(!allConfirmed && !isBypassAuthorized) || isLoading}
+                    disabled={!allConfirmed || isLoading}
                     className={`flex-1 py-2.5 text-white rounded-xl font-bold text-xs uppercase shadow-lg active:scale-95 disabled:bg-gray-300 disabled:shadow-none transition-all ${
                       isBypassAuthorized ? 'bg-orange-600 hover:bg-orange-700 shadow-orange-100' : 'bg-green-600 hover:bg-green-700'
                     }`}>
