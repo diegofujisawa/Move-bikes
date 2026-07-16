@@ -10,7 +10,9 @@
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
-    "lint": "eslint . --report-unused-disable-directives --max-warnings 100"
+    "lint": "eslint . --report-unused-disable-directives --max-warnings 100",
+    "deploy": "npm run build && wrangler deploy",
+    "preview": "npm run build && wrangler dev"
   },
   "dependencies": {
     "@google/genai": "^1.49.0",
@@ -26,6 +28,7 @@
     "recharts": "^3.8.1"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.45.0",
     "@types/express": "^5.0.6",
     "@types/node": "^22.14.0",
     "@types/react": "^18.3.1",
@@ -41,6 +44,7 @@
     "tsx": "^4.22.4",
     "typescript": "~5.8.2",
     "typescript-eslint": "^8.56.0",
-    "vite": "^6.2.0"
+    "vite": "^6.2.0",
+    "wrangler": "^4.111.0"
   }
 }
