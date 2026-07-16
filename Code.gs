@@ -957,8 +957,8 @@ function getChassiInfo(bikeNumber) {
   }
 }
 
-// Helper para identificar bikes que já tiveram baixa recentemente (60 min)
-function getFinalizedBikesToday(limit = 1000, customBlockers = null) {
+// Helper para identificar bikes que já tiveram baixa recentemente (60 min por padrão ou maxMinutes customizado)
+function getFinalizedBikesToday(limit = 1000, customBlockers = null, maxMinutes = 1440) {
   const sheet = getSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
   const finalized = new Set();
   if (!sheet) return finalized;
@@ -976,7 +976,7 @@ function getFinalizedBikesToday(limit = 1000, customBlockers = null) {
     const driver = String(row[4] || '').trim().toLowerCase();
     if (!pat) return;
     const tsDate = ts instanceof Date ? ts : parseTimestamp(ts);
-    if (tsDate && (Math.abs(now - tsDate) / 60000 < 1440) && blockers.some(s => st.includes(s))) {
+    if (tsDate && (Math.abs(now - tsDate) / 60000 < maxMinutes) && blockers.some(s => st.includes(s))) {
       finalized.add(pat);
       finalized.add(String(parseFloat(pat)));
       if (driver) {
@@ -1450,7 +1450,7 @@ function getDriverState(driverName, providedSheet) {
   if (lastRow < 2) return { success: true, data: { routeBikes: [], collectedBikes: [] } };
   
   // v85.23: Filtra bikes entregues recentemente (60 min) para garantir que não retornem ao app
-  const deliveredRecently = getFinalizedBikesToday(500, ['estação', 'estacao', 'filial', 'vandalizada', 'remanejada', 'mecanica', 'manutenção', 'técnica', 'recuperada', 'encontrada']);
+  const deliveredRecently = getFinalizedBikesToday(500, ['estação', 'estacao', 'filial', 'vandalizada', 'remanejada', 'mecanica', 'manutenção', 'técnica', 'recuperada', 'encontrada'], 60);
   const normTarget = normalizeName(driverName);
   const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
   
@@ -1459,9 +1459,8 @@ function getDriverState(driverName, providedSheet) {
       let route     = (data[i][COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
       let collected = (data[i][COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
       
-      // Filtra bikes que tiveram baixa no relatório recentemente
+      // Filtra bikes que tiveram baixa no relatório recentemente apenas da lista de roteiro para evitar esconder bikes legítimas em posse
       route = route.filter(b => !deliveredRecently.has(b));
-      collected = collected.filter(b => !deliveredRecently.has(b));
 
       return {
         success: true,
@@ -2499,7 +2498,7 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
     const stateData = lastRowSt > 1 ? stateSheet.getRange(2, 1, lastRowSt - 1, 4).getValues() : [];
     const realTime = {};
     drivers.forEach(d => { realTime[d] = { route: [], collected: [] }; });
-    const deliveredRecently = getFinalizedBikesToday(500, ['estação', 'estacao', 'filial', 'vandalizada', 'remanejada', 'mecanica', 'manutenção', 'técnica', 'recuperada', 'encontrada']);
+    const deliveredRecently = getFinalizedBikesToday(500, ['estação', 'estacao', 'filial', 'vandalizada', 'remanejada', 'mecanica', 'manutenção', 'técnica', 'recuperada', 'encontrada'], 60);
     stateData.forEach(row => {
       const driverRaw = (row[COLUMN_INDICES.STATE.MOTORISTA - 1] || '').toString().trim();
       const driverKey = driverLookup[driverRaw.toLowerCase()];
@@ -2507,8 +2506,8 @@ function getDriversSummary(timeRange = 'day', providedSheets = null, driverNameF
         let route     = (row[COLUMN_INDICES.STATE.ROTEIRO - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
         let collected = (row[COLUMN_INDICES.STATE.RECOLHIDAS - 1] || '').toString().split(',').map(s => s.trim()).filter(Boolean);
         
+        // Filtra apenas do roteiro para evitar que desapareçam bikes legitimamente coletadas
         route = route.filter(b => !deliveredRecently.has(b));
-        collected = collected.filter(b => !deliveredRecently.has(b));
 
         realTime[driverKey] = { route, collected };
       }
